@@ -50,8 +50,14 @@ const B3_CHECK_INTERVAL_MS = 60_000;
 /** Failsafe: never enter if |spread| > this (e.g. bad data). Also never enter when spread is 0. */
 const MAX_SPREAD_PCT = 2;
 
+/** After B2 places for an asset, B1 is delayed for this long (same asset). */
+const B1_DELAY_AFTER_B2_MS = 15 * 60 * 1000;
+
 /** In-memory: already placed an order this window for (bot, asset). Cleared when window changes. */
 const enteredThisWindow = new Set<string>();
+
+/** In-memory: timestamp (ms) when B2 last placed for each asset. B1 skips that asset for 15 min after. */
+const lastB2OrderByAsset = new Map<Asset, number>();
 
 function windowKey(bot: string, asset: Asset, windowEndMs: number): string {
   return `${windowEndMs}-${bot}-${asset}`;
@@ -192,6 +198,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // --- B1: last 2.5 min, check every 5s, bid 90–96%, place 96% limit (or market in last 1 min) ---
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
+      const t = lastB2OrderByAsset.get(asset);
+      if (t != null && now.getTime() - t < B1_DELAY_AFTER_B2_MS) {
+        if (tickCount % 6 === 0) {
+          const minLeft = Math.ceil((B1_DELAY_AFTER_B2_MS - (now.getTime() - t)) / 60000);
+          console.log(`[tick] B1 ${asset} skip: 15 min delay after B2 order (${minLeft} min left)`);
+        }
+        continue;
+      }
       const outsideB1 = isOutsideSpreadThreshold('B1', asset, spreadMagnitude, spreadThresholds);
       const bidPct = kalshiBid != null ? kalshiYesBidAsPercent(kalshiBid) : 0;
       const bidOk = bidPct >= 90 && bidPct <= 96;
@@ -259,6 +273,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         try {
           const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2, side);
           enteredThisWindow.add(key);
+          lastB2OrderByAsset.set(asset, now.getTime());
           await logPosition({
             bot: 'B2',
             asset,
@@ -278,6 +293,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2, side);
           enteredThisWindow.add(key);
+          lastB2OrderByAsset.set(asset, now.getTime());
           await logPosition({
             bot: 'B2',
             asset,
@@ -360,7 +376,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
   }
 }
 
-/** Run loop: B1 every 5s, B2 every 30s, B3 every 60s. */
+/** Run loop: B1 every 5s, B2 every 30s, B3 every 30s (so we check in the first minute of the 8-min window). */
 export function startBotLoop(): void {
   let tickCount = 0;
   const interval = setInterval(async () => {
@@ -373,7 +389,7 @@ export function startBotLoop(): void {
     }
     const shouldB1 = true;
     const shouldB2 = tickCount % 6 === 0;
-    const shouldB3 = tickCount % 12 === 0;
+    const shouldB3 = tickCount % 6 === 0; // every 30s so B3 checks during full 8 min (incl. 8-min-left)
     if (shouldB1 || shouldB2 || shouldB3) {
       try {
         await runOneTick(now, tickCount);
