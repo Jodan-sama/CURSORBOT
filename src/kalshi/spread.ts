@@ -58,7 +58,7 @@ export async function fetchCoinGeckoPricesAll(): Promise<Record<Asset, number>> 
   };
 }
 
-/** Fetches current spot price. Tries Binance first; on 451 or failure, uses CoinGecko. */
+/** Fetches current spot price. Always prefers Binance (more accurate); only uses CoinGecko when Binance is unavailable (e.g. 451 geo-block). */
 export async function fetchBinancePrice(asset: Asset): Promise<number> {
   try {
     return await fetchBinancePriceOnly(asset);

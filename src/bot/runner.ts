@@ -47,6 +47,9 @@ const B1_CHECK_INTERVAL_MS = 5_000;
 const B2_CHECK_INTERVAL_MS = 30_000;
 const B3_CHECK_INTERVAL_MS = 60_000;
 
+/** Failsafe: never enter if |spread| > this (e.g. bad data). Also never enter when spread is 0. */
+const MAX_SPREAD_PCT = 2;
+
 /** In-memory: already placed an order this window for (bot, asset). Cleared when window changes. */
 const enteredThisWindow = new Set<string>();
 
@@ -131,9 +134,15 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         const km = await getKalshiMarket(kalshiTicker);
         const parsed = parseKalshiTicker(kalshiTicker);
         const tickerStrike = parsed?.strikeFromTicker;
+        const floorStrike = km.floor_strike ?? null;
+        // Ticker is exact for the contract; floor_strike can be wrong (e.g. 15 for SOL). Prefer ticker when reasonable, else floor_strike. Same API load (we already fetch market for yes_bid).
         const useTickerStrike =
           tickerStrike != null && isReasonableStrike(asset, tickerStrike);
-        kalshiStrike = (useTickerStrike ? tickerStrike : null) ?? km.floor_strike ?? null;
+        const validFloor =
+          floorStrike != null &&
+          floorStrike !== 0 &&
+          isReasonableStrike(asset, floorStrike);
+        kalshiStrike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
         kalshiBid = km.yes_bid ?? null;
         if (kalshiStrike != null && currentPrice != null) {
           signedSpreadPct = strikeSpreadPctSigned(currentPrice, kalshiStrike);
@@ -146,6 +155,15 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
     if (signedSpreadPct == null) continue;
     const spreadMagnitude = Math.abs(signedSpreadPct);
+    // Failsafe: never enter on 0 spread or |spread| > 2% (bad/stale data).
+    if (spreadMagnitude === 0) {
+      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: spread is 0 (failsafe)`);
+      continue;
+    }
+    if (spreadMagnitude > MAX_SPREAD_PCT) {
+      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: |spread| ${spreadMagnitude.toFixed(2)}% > ${MAX_SPREAD_PCT}% (failsafe)`);
+      continue;
+    }
     const side = sideFromSignedSpread(signedSpreadPct);
 
     const sizeKalshiB1 = await getPositionSize('kalshi', 'B1', asset);

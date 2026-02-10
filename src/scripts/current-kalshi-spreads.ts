@@ -65,9 +65,14 @@ async function runOne(): Promise<void> {
     const market = await getKalshiMarket(ticker);
     const parsed = parseKalshiTicker(ticker);
     const tickerStrike = parsed?.strikeFromTicker;
+    const floorStrike = market.floor_strike ?? null;
     const useTickerStrike =
       tickerStrike != null && isReasonableStrike(asset, tickerStrike);
-    const strike = (useTickerStrike ? tickerStrike : null) ?? market.floor_strike ?? null;
+    const validFloor =
+      floorStrike != null &&
+      floorStrike !== 0 &&
+      isReasonableStrike(asset, floorStrike);
+    const strike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
     if (strike == null) {
       console.log(`${asset}   | (no strike)`);
       continue;

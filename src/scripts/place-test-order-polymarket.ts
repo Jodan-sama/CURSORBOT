@@ -42,9 +42,14 @@ async function main() {
   const km = await getKalshiMarket(ticker);
   const parsedK = parseKalshiTicker(ticker);
   const tickerStrike = parsedK?.strikeFromTicker;
+  const floorStrike = km.floor_strike ?? null;
   const useTickerStrike =
     tickerStrike != null && isReasonableStrike(ASSET, tickerStrike);
-  const strike = (useTickerStrike ? tickerStrike : null) ?? km.floor_strike ?? null;
+  const validFloor =
+    floorStrike != null &&
+    floorStrike !== 0 &&
+    isReasonableStrike(ASSET, floorStrike);
+  const strike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
   if (strike == null) {
     console.error('No strike; cannot determine winning side.');
     process.exit(1);
