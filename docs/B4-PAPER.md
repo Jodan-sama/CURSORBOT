@@ -34,21 +34,9 @@ After deploying (`git pull && npm run build`):
 # Option A: nohup (survives disconnect; log in b4-paper.log)
 cd /root/cursorbot && nohup node dist/scripts/b4-paper.js >> b4-paper.log 2>&1 &
 
-# Option B: systemd (restarts on crash; same env as main bot)
-# Create /etc/systemd/system/cursorbot-b4.service:
-# [Unit]
-# Description=B4 paper trader
-# After=network.target
-# [Service]
-# Type=simple
-# WorkingDirectory=/root/cursorbot
-# ExecStart=/usr/bin/node dist/scripts/b4-paper.js
-# Restart=always
-# RestartSec=10
-# EnvironmentFile=/root/cursorbot/.env
-# [Install]
-# WantedBy=multi-user.target
-# Then: systemctl daemon-reload && systemctl enable --now cursorbot-b4
+# Option B: systemd (restarts on crash/reboot; recommended)
+sudo cp /root/cursorbot/deploy/cursorbot-b4.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cursorbot-b4
 ```
 
 Events are also written to Supabase **`b4_paper_log`**; the dashboard shows the last 20 rows at the bottom.

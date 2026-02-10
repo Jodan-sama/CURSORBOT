@@ -1,0 +1,14 @@
+[Unit]
+Description=B4 paper trader (BTC 54->56/60, first 3 min of 15m window)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/cursorbot
+ExecStart=/usr/bin/node dist/scripts/b4-paper.js
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/cursorbot/.env
+
+[Install]
+WantedBy=multi-user.target
