@@ -1,5 +1,7 @@
 /**
  * Main bot loop: B1/B2/B3 timing, spread checks, order placement (Kalshi + Polymarket), B3 blocking.
+ * Entry logic is Kalshi-only (spread from Kalshi strike + Binance price). Polymarket mirrors those
+ * entries: same side/window, Poly sizes from dashboard; we only place Poly when we have Kalshi ticker.
  */
 
 import type { Asset } from '../kalshi/ticker.js';
@@ -188,7 +190,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
         }
       }
-      if (isPolymarketEnabled() && polySlug) {
+      // Poly mirrors Kalshi: same entry (we use Kalshi data); only place when we have Kalshi ticker.
+      if (kalshiTicker && isPolymarketEnabled() && polySlug) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, useMarket ? 0.99 : 0.96, sizePolyB1, side);
           enteredThisWindow.add(key);
@@ -236,7 +239,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
         }
       }
-      if (isPolymarketEnabled() && polySlug) {
+      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker.
+      if (kalshiTicker && isPolymarketEnabled() && polySlug) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2, side);
           enteredThisWindow.add(key);
@@ -286,7 +290,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
         }
       }
-      if (isPolymarketEnabled() && polySlug) {
+      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker.
+      if (kalshiTicker && isPolymarketEnabled() && polySlug) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB3, side);
           placed = true;
