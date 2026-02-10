@@ -118,9 +118,20 @@ export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
     undefined,
     true
   );
-  const creds = await clientNoCreds.createOrDeriveApiKey();
+  let creds: { key: string; secret: string; passphrase: string } | null = null;
+  try {
+    creds = await clientNoCreds.createApiKey();
+  } catch (e: unknown) {
+    const status = (e as { response?: { status?: number } })?.response?.status;
+    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? '';
+    if (status === 400 || /create api key|could not create/i.test(String(msg))) {
+      creds = await clientNoCreds.deriveApiKey();
+    } else {
+      throw e;
+    }
+  }
   if (!creds?.key || !creds?.secret || !creds?.passphrase) {
-    throw new Error('createOrDeriveApiKey did not return key/secret/passphrase');
+    throw new Error('derive/create API key did not return key/secret/passphrase');
   }
   cachedDerivedClient = new ClobClient(
     CLOB_HOST,
