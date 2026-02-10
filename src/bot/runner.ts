@@ -93,6 +93,20 @@ async function tryPlaceKalshi(
   return { orderId, filled: res.order?.status === 'filled' };
 }
 
+/** Run fn with proxy set (only CLOB/Polymarket traffic); rest of bot uses direct. */
+async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (!proxy) return fn();
+  const { ProxyAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
+  const prev = getGlobalDispatcher();
+  try {
+    setGlobalDispatcher(new ProxyAgent(proxy));
+    return await fn();
+  } finally {
+    setGlobalDispatcher(prev);
+  }
+}
+
 async function tryPlacePolymarket(
   slug: string,
   asset: Asset,
@@ -100,11 +114,13 @@ async function tryPlacePolymarket(
   size: number,
   side: 'yes' | 'no'
 ): Promise<{ orderId?: string }> {
-  const parsed = await getPolyMarketBySlug(slug);
-  const client = createPolyClobClient(getPolyClobConfigFromEnv());
-  const params = orderParamsFromParsedMarket(parsed, price, size, side);
-  const result = await createAndPostPolyOrder(client, params);
-  return { orderId: result.orderID };
+  return withPolyProxy(async () => {
+    const parsed = await getPolyMarketBySlug(slug);
+    const client = createPolyClobClient(getPolyClobConfigFromEnv());
+    const params = orderParamsFromParsedMarket(parsed, price, size, side);
+    const result = await createAndPostPolyOrder(client, params);
+    return { orderId: result.orderID };
+  });
 }
 
 export async function runOneTick(now: Date, tickCount: number = 0): Promise<void> {

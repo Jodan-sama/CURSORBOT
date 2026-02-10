@@ -6,12 +6,6 @@
  */
 import 'dotenv/config';
 
-if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY) {
-  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
-  const { ProxyAgent, setGlobalDispatcher } = await import('undici');
-  setGlobalDispatcher(new ProxyAgent(proxy));
-}
-
 import { getCurrentPolySlug } from '../clock.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import { createPolyClobClient, getPolyClobConfigFromEnv, createAndPostPolyOrder, orderParamsFromParsedMarket } from '../polymarket/clob.js';
@@ -58,10 +52,16 @@ async function main() {
   const side = signedSpread >= 0 ? 'yes' : 'no';
   console.log('Strike:', strike, '| Price:', price, '| Signed spread:', signedSpread.toFixed(3), '% | Winning side:', side);
 
+  // Only CLOB (order) goes through proxy; Binance/Kalshi/Gamma above used direct.
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (proxy) {
+    const { ProxyAgent, setGlobalDispatcher } = await import('undici');
+    setGlobalDispatcher(new ProxyAgent(proxy));
+  }
   const config = getPolyClobConfigFromEnv();
   const client = createPolyClobClient(config);
   const params = orderParamsFromParsedMarket(parsed, PRICE, TEST_SIZE, side);
-  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, '...');
+  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, ' (through proxy)...');
 
   const result = await createAndPostPolyOrder(client, params);
   console.log('Result:', result);
