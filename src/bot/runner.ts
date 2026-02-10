@@ -294,6 +294,10 @@ export function startBotLoop(): void {
   const interval = setInterval(async () => {
     tickCount += 1;
     const now = new Date();
+    // Heartbeat every 60s so logs show the process is alive
+    if (tickCount % 12 === 0) {
+      console.log(`[cursorbot] alive | UTC ${now.toISOString()} | Kalshi only`);
+    }
     const shouldB1 = true;
     const shouldB2 = tickCount % 6 === 0;
     const shouldB3 = tickCount % 12 === 0;
