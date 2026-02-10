@@ -1,14 +1,15 @@
 # B4 paper trader
 
-B4 is a **paper-only** bot: it does not place real orders. It watches the **BTC** 15‑minute Polymarket in the **first 3 minutes** of each window and logs when a 54→56 buy and 60 sell would have been possible.
+B4 is a **paper-only** bot: it does not place real orders. It watches **BTC, ETH, and SOL** 15‑minute Polymarket markets in the **first 3 minutes** of each window and logs when a 54→56 buy and 60 sell would have been possible.
 
 ## Logic
 
+- **Assets:** BTC, ETH, SOL (same rules for each).
 - **Window:** First 3 minutes of each 15m market (e.g. :00–:03, :15–:18, :30–:33, :45–:48).
-- **Check:** Every 1 second (BTC market prices from Gamma).
+- **Check:** Every 1 second (market prices from Gamma). If a fetch fails, the error is written to `b4-paper.log` (asset, slug, error) so you can debug.
 - **Entry:** If **yes** or **no** price reaches **54¢+** (0.54), log “buy at 56 possible” in that direction.
 - **Exit:** When that same side reaches **60¢+** (0.60), log “sell at 60 possible”.
-- **Once per cycle:** One entry and one exit per 15m window; then it waits for the next window.
+- **Once per cycle:** One entry and one exit per asset per 15m window; then it waits for the next window.
 
 ## Run
 
@@ -39,7 +40,10 @@ sudo cp /root/cursorbot/deploy/cursorbot-b4.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now cursorbot-b4
 ```
 
-Events are also written to Supabase **`b4_paper_log`**; the dashboard shows the last 20 rows at the bottom.
+Events are also written to Supabase **`b4_paper_log`** (with an **asset** column); the dashboard shows the last 20 rows at the bottom. If Supabase is down (e.g. 500), the file log still gets the line but the dashboard won’t show it until Supabase is back.
+
+**If `b4_paper_log` already exists** without an `asset` column, run in Supabase SQL:  
+`ALTER TABLE b4_paper_log ADD COLUMN asset text DEFAULT 'BTC';`
 
 ## Log file
 
@@ -48,8 +52,9 @@ Events are appended to **`b4-paper.log`** in the current working directory (e.g.
 **Example lines:**
 
 ```
-2026-02-10T19:00:01.234Z | window=1770749100 | event=BUY_56_POSSIBLE | direction=yes | price=0.542
-2026-02-10T19:00:45.678Z | window=1770749100 | event=SELL_60_POSSIBLE | direction=yes | price=0.601
+2026-02-10T19:00:01.234Z | window=1770749100 | asset=BTC | event=BUY_56_POSSIBLE | direction=yes | price=0.542
+2026-02-10T19:00:45.678Z | window=1770749100 | asset=BTC | event=SELL_60_POSSIBLE | direction=yes | price=0.601
+2026-02-10T19:01:00.000Z | B4 fetch failed asset=ETH slug=eth-updown-15m-1770749100 err=Gamma event ... 404
 ```
 
 ## View or download the log

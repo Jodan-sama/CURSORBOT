@@ -53,11 +53,12 @@ create table if not exists error_log (
 
 create index if not exists error_log_created_at on error_log (created_at desc);
 
--- B4 paper trader log (last 20 shown on dashboard)
+-- B4 paper trader log (last 20 shown on dashboard). asset = BTC | ETH | SOL.
 create table if not exists b4_paper_log (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
   window_unix bigint not null,
+  asset text not null default 'BTC',
   event text not null,
   direction text,
   price numeric

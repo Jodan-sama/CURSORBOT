@@ -152,6 +152,7 @@ export async function isAssetBlocked(asset: Asset): Promise<boolean> {
 /** Append B4 paper trader event to Supabase (for dashboard). Does not throw. */
 export async function logB4Paper(entry: {
   window_unix: number;
+  asset: string;
   event: string;
   direction: string | null;
   price: number | null;
@@ -159,6 +160,7 @@ export async function logB4Paper(entry: {
   try {
     await getDb().from('b4_paper_log').insert({
       window_unix: entry.window_unix,
+      asset: entry.asset,
       event: entry.event,
       direction: entry.direction ?? null,
       price: entry.price ?? null,

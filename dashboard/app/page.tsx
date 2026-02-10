@@ -74,6 +74,7 @@ type B4Log = {
   id: string;
   created_at: string;
   window_unix: number;
+  asset: string | null;
   event: string;
   direction: string | null;
   price: number | null;
@@ -422,14 +423,15 @@ export default function Dashboard() {
 
       <section style={{ marginTop: 24 }}>
         <h2 style={headingStyle}>B4 paper (last 20)</h2>
-        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>BTC 54→56 buy / 60 sell, first 3 min of each 15m window.</p>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>BTC/ETH/SOL 54→56 buy / 60 sell, first 3 min of each 15m window. Fetch errors logged to b4-paper.log.</p>
         {b4Logs.length === 0 ? (
           <p style={{ color: '#666' }}>No B4 events yet.</p>
         ) : (
-          <table style={{ width: '100%', maxWidth: 520, borderCollapse: 'collapse', fontSize: 13 }}>
+          <table style={{ width: '100%', maxWidth: 560, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Event</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Dir</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Price</th>
@@ -439,6 +441,7 @@ export default function Dashboard() {
               {b4Logs.map((r) => (
                 <tr key={r.id}>
                   <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(r.created_at, true)}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{r.asset ?? 'BTC'}</td>
                   <td style={{ borderBottom: '1px solid #eee' }}>{r.event}</td>
                   <td style={{ borderBottom: '1px solid #eee' }}>{r.direction ?? '—'}</td>
                   <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{r.price != null ? Number(r.price).toFixed(3) : '—'}</td>
