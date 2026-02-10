@@ -8,7 +8,7 @@ import 'dotenv/config';
 
 import { getCurrentPolySlug } from '../clock.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
-import { createPolyClobClient, getPolyClobConfigFromEnv, createAndPostPolyOrder, orderParamsFromParsedMarket } from '../polymarket/clob.js';
+import { createPolyClobClient, getPolyClobConfigFromEnv, getOrCreateDerivedPolyClient, createAndPostPolyOrder, orderParamsFromParsedMarket } from '../polymarket/clob.js';
 import { getCurrentKalshiTicker } from '../kalshi/market.js';
 import { getKalshiMarket } from '../kalshi/market.js';
 import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
@@ -56,7 +56,7 @@ async function main() {
     const parsed = await getPolyMarketBySlug(slug);
     console.log('Market:', parsed.conditionId, '| outcomePrices:', parsed.outcomePrices);
     const config = getPolyClobConfigFromEnv();
-    const client = createPolyClobClient(config);
+    const client = config ? createPolyClobClient(config) : await getOrCreateDerivedPolyClient();
     const params = orderParamsFromParsedMarket(parsed, PRICE, TEST_SIZE, side);
     return await createAndPostPolyOrder(client, params);
   };

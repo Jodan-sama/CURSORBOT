@@ -23,6 +23,7 @@ import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   createPolyClobClient,
   getPolyClobConfigFromEnv,
+  getOrCreateDerivedPolyClient,
   createAndPostPolyOrder,
   orderParamsFromParsedMarket,
 } from '../polymarket/clob.js';
@@ -137,7 +138,10 @@ async function tryPlacePolymarket(
 ): Promise<{ orderId?: string }> {
   return withPolyProxy(async () => {
     const parsed = await getPolyMarketBySlug(slug);
-    const client = createPolyClobClient(getPolyClobConfigFromEnv());
+    const config = getPolyClobConfigFromEnv();
+    const client = config
+      ? createPolyClobClient(config)
+      : await getOrCreateDerivedPolyClient();
     const params = orderParamsFromParsedMarket(parsed, price, size, side);
     const r = await createAndPostPolyOrder(client, params);
     return { orderId: r.orderID };

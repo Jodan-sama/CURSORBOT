@@ -57,19 +57,31 @@ export interface CreatePolyOrderParams {
 }
 
 /**
- * Build CLOB client from env or explicit config.
- * Requires: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE.
- * Optional: HTTP_PROXY and HTTPS_PROXY (set in restricted regions; omit in e.g. Amsterdam to call CLOB directly).
+ * Whether to derive API key from wallet (recommended by Polymarket). Set POLYMARKET_DERIVE_KEY=true and omit API_KEY/SECRET/PASSPHRASE.
  */
-export function getPolyClobConfigFromEnv(): PolyClobConfig {
+export function useDerivedPolyKey(): boolean {
+  return process.env.POLYMARKET_DERIVE_KEY?.trim().toLowerCase() === 'true';
+}
+
+/**
+ * Build CLOB client from env or explicit config.
+ * Requires: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER.
+ * Either: POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE (static key)
+ * Or: POLYMARKET_DERIVE_KEY=true (derive key from wallet via createOrDeriveApiKey; call getOrCreateDerivedPolyClient inside proxy).
+ */
+export function getPolyClobConfigFromEnv(): PolyClobConfig | null {
   const privateKey = process.env.POLYMARKET_PRIVATE_KEY?.trim();
   const funder = process.env.POLYMARKET_FUNDER?.trim();
+  if (!privateKey || !funder) {
+    throw new Error('Missing Polymarket env: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER');
+  }
+  if (useDerivedPolyKey()) return null;
   const apiKey = process.env.POLYMARKET_API_KEY?.trim();
   const apiSecret = process.env.POLYMARKET_API_SECRET?.trim();
   const apiPassphrase = process.env.POLYMARKET_API_PASSPHRASE?.trim();
-  if (!privateKey || !funder || !apiKey || !apiSecret || !apiPassphrase) {
+  if (!apiKey || !apiSecret || !apiPassphrase) {
     throw new Error(
-      'Missing Polymarket env: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE'
+      'Missing Polymarket env: set POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE or POLYMARKET_DERIVE_KEY=true to derive from wallet'
     );
   }
   return {
@@ -79,6 +91,48 @@ export function getPolyClobConfigFromEnv(): PolyClobConfig {
     apiSecret,
     apiPassphrase,
   };
+}
+
+let cachedDerivedClient: ClobClient | null = null;
+
+/**
+ * Create CLOB client using API key derived from the wallet (createOrDeriveApiKey). Call this inside withPolyProxy. Caches the client for the process.
+ */
+export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
+  if (cachedDerivedClient) return cachedDerivedClient;
+  const privateKey = process.env.POLYMARKET_PRIVATE_KEY?.trim();
+  const funder = process.env.POLYMARKET_FUNDER?.trim();
+  if (!privateKey || !funder) {
+    throw new Error('Missing POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER for derive mode');
+  }
+  const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || DEFAULT_POLYGON_RPC;
+  const provider = new JsonRpcProvider(rpcUrl);
+  const signer = new Wallet(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`, provider);
+  const clientNoCreds = new ClobClient(
+    CLOB_HOST,
+    CHAIN_ID as 137,
+    signer,
+    undefined,
+    SIGNATURE_TYPE as SignatureType,
+    funder,
+    undefined,
+    true
+  );
+  const creds = await clientNoCreds.createOrDeriveApiKey();
+  if (!creds?.key || !creds?.secret || !creds?.passphrase) {
+    throw new Error('createOrDeriveApiKey did not return key/secret/passphrase');
+  }
+  cachedDerivedClient = new ClobClient(
+    CLOB_HOST,
+    CHAIN_ID as 137,
+    signer,
+    creds,
+    SIGNATURE_TYPE as SignatureType,
+    funder,
+    undefined,
+    true
+  );
+  return cachedDerivedClient;
 }
 
 /**

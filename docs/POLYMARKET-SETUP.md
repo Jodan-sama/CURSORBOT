@@ -15,7 +15,9 @@ You can get the private key from the wallet you use with Polymarket (e.g. MetaMa
 
 ## 2. Polymarket CLOB API credentials
 
-The CLOB (Central Limit Order Book) API needs API key auth. You need to create these in Polymarket’s UI:
+**Recommended:** Set **POLYMARKET_DERIVE_KEY=true** and do not set the three API_ vars below. The bot will derive the API key from your wallet (createOrDeriveApiKey), which avoids 401 Invalid api key.
+
+**Otherwise** the CLOB needs API key auth. You need to create these in Polymarket’s UI:
 
 - **POLYMARKET_API_KEY**
 - **POLYMARKET_API_SECRET**
