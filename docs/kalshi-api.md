@@ -32,10 +32,10 @@ KXBTC15M-YYMMDDHHMM-SS
 - **Detail endpoint** `GET /markets/{ticker}` → use `market.floor_strike` (reliable).
 - Use the market detail endpoint per ticker to get `floor_strike`.
 
-## Current Price Source
+## Current Price Source (for spread %)
 
-- **Binance API:** `GET https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT`
-- Response field: `price` (string, e.g. `"97234.50"`).
+- **Kalshi does not expose** the live reference/index price (CF Benchmarks BRTI, etc.) in the public API. Settlement uses that index; we don’t have it for pre-trade spread.
+- **We use Binance** as the “current price” for spread: `GET https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT`. So spread % is `(Binance_price - floor_strike) / Binance_price * 100`. It’s a proxy; if Kalshi adds a reference-price endpoint we can switch.
 
 ## Spread Calculation
 
