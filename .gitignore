@@ -1,0 +1,14 @@
+# Env and secrets – never commit
+.env
+.env.local
+.env.*.local
+*.pem
+.ssh/
+
+# Build and deps
+node_modules/
+dist/
+
+# Logs and OS
+*.log
+.DS_Store

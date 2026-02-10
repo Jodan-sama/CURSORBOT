@@ -1,0 +1,134 @@
+/**
+ * Supabase client and helpers for bot config, positions log, and B3 blocks.
+ */
+
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
+export type Asset = 'BTC' | 'ETH' | 'SOL';
+export type BotId = 'B1' | 'B2' | 'B3';
+export type Venue = 'kalshi' | 'polymarket';
+
+export interface BotConfigRow {
+  id: string;
+  emergency_off: boolean;
+  position_size_kalshi: number;
+  position_size_polymarket: number;
+  updated_at: string;
+}
+
+export interface PositionRow {
+  id: string;
+  entered_at: string;
+  bot: BotId;
+  asset: Asset;
+  venue: Venue;
+  strike_spread_pct: number;
+  position_size: number;
+  ticker_or_slug: string | null;
+  order_id: string | null;
+  raw: Record<string, unknown> | null;
+}
+
+export interface AssetBlockRow {
+  asset: Asset;
+  block_until: string;
+  created_at: string;
+}
+
+function getSupabase(): SupabaseClient {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_ANON_KEY;
+  if (!url || !key) throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY required');
+  return createClient(url, key);
+}
+
+let client: SupabaseClient | null = null;
+
+export function getDb(): SupabaseClient {
+  if (!client) client = getSupabase();
+  return client;
+}
+
+/** Read emergency off and default position sizes. */
+export async function getBotConfig(): Promise<BotConfigRow> {
+  const { data, error } = await getDb()
+    .from('bot_config')
+    .select('*')
+    .eq('id', 'default')
+    .single();
+  if (error) throw new Error(`bot_config: ${error.message}`);
+  if (!data) throw new Error('bot_config: no row');
+  return data as BotConfigRow;
+}
+
+/** Check if trading is paused. */
+export async function isEmergencyOff(): Promise<boolean> {
+  const c = await getBotConfig();
+  return c.emergency_off;
+}
+
+/** Get position size for a venue (with optional per-bot/asset override). */
+export async function getPositionSize(
+  venue: Venue,
+  bot?: BotId,
+  asset?: Asset
+): Promise<number> {
+  const config = await getBotConfig();
+  const defaultSize =
+    venue === 'kalshi' ? config.position_size_kalshi : config.position_size_polymarket;
+  if (!bot || !asset) return defaultSize;
+  const { data } = await getDb()
+    .from('bot_position_sizes')
+    .select(venue === 'kalshi' ? 'size_kalshi' : 'size_polymarket')
+    .eq('bot', bot)
+    .eq('asset', asset)
+    .maybeSingle();
+  const override = data as { size_kalshi?: number; size_polymarket?: number } | null;
+  const val = venue === 'kalshi' ? override?.size_kalshi : override?.size_polymarket;
+  return val != null ? val : defaultSize;
+}
+
+/** Log a new position. */
+export async function logPosition(entry: {
+  bot: BotId;
+  asset: Asset;
+  venue: Venue;
+  strike_spread_pct: number;
+  position_size: number;
+  ticker_or_slug?: string;
+  order_id?: string;
+  raw?: Record<string, unknown>;
+}): Promise<void> {
+  const { error } = await getDb().from('positions').insert({
+    bot: entry.bot,
+    asset: entry.asset,
+    venue: entry.venue,
+    strike_spread_pct: entry.strike_spread_pct,
+    position_size: entry.position_size,
+    ticker_or_slug: entry.ticker_or_slug ?? null,
+    order_id: entry.order_id ?? null,
+    raw: entry.raw ?? null,
+  });
+  if (error) throw new Error(`logPosition: ${error.message}`);
+}
+
+/** Set block for asset (B3 filled → block B1/B2). block_until is when the block expires. */
+export async function setAssetBlock(asset: Asset, blockUntil: Date): Promise<void> {
+  const { error } = await getDb()
+    .from('asset_blocks')
+    .upsert({ asset, block_until: blockUntil.toISOString() }, { onConflict: 'asset' });
+  if (error) throw new Error(`setAssetBlock: ${error.message}`);
+}
+
+/** True if this asset is currently blocked (B3 filled recently). */
+export async function isAssetBlocked(asset: Asset): Promise<boolean> {
+  const now = new Date().toISOString();
+  const { data, error } = await getDb()
+    .from('asset_blocks')
+    .select('asset')
+    .eq('asset', asset)
+    .gt('block_until', now)
+    .maybeSingle();
+  if (error) throw new Error(`isAssetBlocked: ${error.message}`);
+  return data != null;
+}
