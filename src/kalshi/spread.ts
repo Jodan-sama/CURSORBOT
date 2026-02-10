@@ -58,20 +58,25 @@ export async function fetchCoinGeckoPricesAll(): Promise<Record<Asset, number>> 
   };
 }
 
-/** Fetches current spot price. Always prefers Binance (more accurate); only uses CoinGecko when Binance is unavailable (e.g. 451 geo-block). */
+const PRICE_RETRY_DELAY_MS = 1500;
+
+/** Fetches current spot price. Prefers Binance (with one retry); falls back to CoinGecko on failure. */
 export async function fetchBinancePrice(asset: Asset): Promise<number> {
   try {
     return await fetchBinancePriceOnly(asset);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('451') || msg.includes('Binance')) {
+    try {
+      await new Promise((r) => setTimeout(r, PRICE_RETRY_DELAY_MS));
+      return await fetchBinancePriceOnly(asset);
+    } catch {
       try {
         return await fetchCoinGeckoPrice(asset);
       } catch (e2) {
-        throw new Error(`Price fetch failed (Binance: ${msg}; CoinGecko: ${e2 instanceof Error ? e2.message : e2})`);
+        const msg = e instanceof Error ? e.message : String(e);
+        const msg2 = e2 instanceof Error ? e2.message : String(e2);
+        throw new Error(`Price fetch failed (Binance: ${msg}; CoinGecko: ${msg2})`);
       }
     }
-    throw e;
   }
 }
 

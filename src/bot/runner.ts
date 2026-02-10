@@ -272,21 +272,25 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
         }
       }
-      // Poly mirrors Kalshi: same entry (we use Kalshi data); only place when we have Kalshi ticker and size > 0.
+      // Poly mirrors Kalshi: same entry (we use Kalshi data); only place when we have Kalshi ticker and size > 0. CLOB min notional $1.
       if (kalshiTicker && isPolymarketEnabled() && polySlug && sizePolyB1 > 0) {
         try {
-          const { orderId } = await tryPlacePolymarket(polySlug, asset, useMarket ? 0.99 : 0.96, sizePolyB1, side);
-          enteredThisWindow.add(key);
-          await logPosition({
-            bot: 'B1',
-            asset,
-            venue: 'polymarket',
-            strike_spread_pct: signedSpreadPct,
-            position_size: sizePolyB1,
-            ticker_or_slug: polySlug,
-            order_id: orderId,
-          });
-          console.log(`B1 Poly ${asset} orderId=${orderId}`);
+          const priceB1 = useMarket ? 0.99 : 0.96;
+          const sizeB1 = sizePolyB1 * priceB1 >= 1 ? sizePolyB1 : Math.max(sizePolyB1, Math.ceil(1 / priceB1));
+          const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB1, sizeB1, side);
+          if (orderId) {
+            enteredThisWindow.add(key);
+            await logPosition({
+              bot: 'B1',
+              asset,
+              venue: 'polymarket',
+              strike_spread_pct: signedSpreadPct,
+              position_size: sizeB1,
+              ticker_or_slug: polySlug,
+              order_id: orderId,
+            });
+            console.log(`B1 Poly ${asset} orderId=${orderId}`);
+          }
         } catch (e) {
           await logError(e, { bot: 'B1', asset, venue: 'polymarket' });
         }
@@ -323,22 +327,26 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
         }
       }
-      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0.
+      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0. CLOB min notional $1.
       if (kalshiTicker && isPolymarketEnabled() && polySlug && sizePolyB2 > 0) {
         try {
-          const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2, side);
-          enteredThisWindow.add(key);
-          lastB2OrderByAsset.set(asset, now.getTime());
-          await logPosition({
-            bot: 'B2',
-            asset,
-            venue: 'polymarket',
-            strike_spread_pct: signedSpreadPct,
-            position_size: sizePolyB2,
-            ticker_or_slug: polySlug,
-            order_id: orderId,
-          });
-          console.log(`B2 Poly ${asset} orderId=${orderId}`);
+          const priceB2 = 0.97;
+          const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, Math.ceil(1 / priceB2));
+          const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB2, sizeB2, side);
+          if (orderId) {
+            enteredThisWindow.add(key);
+            lastB2OrderByAsset.set(asset, now.getTime());
+            await logPosition({
+              bot: 'B2',
+              asset,
+              venue: 'polymarket',
+              strike_spread_pct: signedSpreadPct,
+              position_size: sizeB2,
+              ticker_or_slug: polySlug,
+              order_id: orderId,
+            });
+            console.log(`B2 Poly ${asset} orderId=${orderId}`);
+          }
         } catch (e) {
           await logError(e, { bot: 'B2', asset, venue: 'polymarket' });
         }
@@ -375,22 +383,26 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
         }
       }
-      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0.
+      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0. CLOB min notional $1.
       if (kalshiTicker && isPolymarketEnabled() && polySlug && sizePolyB3 > 0) {
         try {
-          const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB3, side);
-          placed = true;
-          enteredThisWindow.add(key);
-          await logPosition({
-            bot: 'B3',
-            asset,
-            venue: 'polymarket',
-            strike_spread_pct: signedSpreadPct,
-            position_size: sizePolyB3,
-            ticker_or_slug: polySlug,
-            order_id: orderId,
-          });
-          console.log(`B3 Poly ${asset} orderId=${orderId}`);
+          const priceB3 = 0.97;
+          const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, Math.ceil(1 / priceB3));
+          const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB3, sizeB3, side);
+          if (orderId) {
+            placed = true;
+            enteredThisWindow.add(key);
+            await logPosition({
+              bot: 'B3',
+              asset,
+              venue: 'polymarket',
+              strike_spread_pct: signedSpreadPct,
+              position_size: sizeB3,
+              ticker_or_slug: polySlug,
+              order_id: orderId,
+            });
+            console.log(`B3 Poly ${asset} orderId=${orderId}`);
+          }
         } catch (e) {
           await logError(e, { bot: 'B3', asset, venue: 'polymarket' });
         }

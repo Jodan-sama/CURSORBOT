@@ -350,10 +350,10 @@ export default function Dashboard() {
         {errors.length === 0 ? (
           <p style={{ color: '#666' }}>No errors logged.</p>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+          <table style={{ width: '100%', maxWidth: 720, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', width: 120 }}>Time</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Message</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Context</th>
               </tr>
@@ -362,8 +362,8 @@ export default function Dashboard() {
               {errors.map((e) => (
                 <tr key={e.id}>
                   <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(e.created_at, true)}</td>
-                  <td style={{ borderBottom: '1px solid #eee', maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.message}</td>
-                  <td style={{ borderBottom: '1px solid #eee' }}>{e.context ? JSON.stringify(e.context) : '—'}</td>
+                  <td style={{ borderBottom: '1px solid #eee', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.message}>{e.message}</td>
+                  <td style={{ borderBottom: '1px solid #eee', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.context ? JSON.stringify(e.context) : undefined}>{e.context ? JSON.stringify(e.context) : '—'}</td>
                 </tr>
               ))}
             </tbody>
