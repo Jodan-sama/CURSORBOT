@@ -4,7 +4,7 @@
 
 import { createPrivateKey, sign as cryptoSign, constants } from 'node:crypto';
 
-const DEFAULT_BASE = 'https://api.trade.kalshi.com/trade-api/v2';
+const DEFAULT_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 
 export interface KalshiAuthConfig {
   keyId: string;

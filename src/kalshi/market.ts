@@ -5,7 +5,7 @@
 import type { Asset } from './ticker.js';
 import { getCurrentWindowEnd } from '../clock.js';
 
-const DEFAULT_BASE = 'https://api.trade.kalshi.com/trade-api/v2';
+const DEFAULT_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 
 const SERIES_TICKER: Record<Asset, string> = {
   BTC: 'KXBTC15M',

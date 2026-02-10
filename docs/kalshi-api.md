@@ -8,7 +8,7 @@
 - Signature: RSA-PSS SHA256 of `timestamp + method + path` (path without query), then base64.
 
 ## Base URL
-- Production: `https://api.trade.kalshi.com/trade-api/v2`
+- Production: `https://api.elections.kalshi.com/trade-api/v2`
 - Demo: `https://demo-api.kalshi.co/trade-api/v2`
 
 ## Ticker Format

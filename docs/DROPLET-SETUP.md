@@ -90,7 +90,7 @@ Paste the block below, then **replace every placeholder** with your real values.
 
 ```env
 # Kalshi
-KALSHI_BASE_URL=https://api.trade.kalshi.com/trade-api/v2
+KALSHI_BASE_URL=https://api.elections.kalshi.com/trade-api/v2
 KALSHI_KEY_ID=your_kalshi_key_id
 KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
 ... your full PEM with \n for newlines ...
