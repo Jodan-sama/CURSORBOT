@@ -30,6 +30,17 @@ const buttonDisabledStyle: React.CSSProperties = { ...buttonStyle, opacity: 0.6,
 
 const headingStyle: React.CSSProperties = { fontFamily: 'var(--font-din-condensed), Barlow Condensed, sans-serif' };
 
+/** Format ISO timestamp as MST (Utah), e.g. "10:41" or "Feb 10, 10:41". */
+function formatMst(iso: string, withDate = false): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const tz = 'America/Denver';
+  if (withDate) {
+    return d.toLocaleString('en-US', { timeZone: tz, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+  return d.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 type Config = {
   emergency_off: boolean;
   position_size_kalshi: number;
@@ -350,7 +361,7 @@ export default function Dashboard() {
             <tbody>
               {errors.map((e) => (
                 <tr key={e.id}>
-                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{new Date(e.created_at).toISOString()}</td>
+                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(e.created_at, true)}</td>
                   <td style={{ borderBottom: '1px solid #eee', maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.message}</td>
                   <td style={{ borderBottom: '1px solid #eee' }}>{e.context ? JSON.stringify(e.context) : '—'}</td>
                 </tr>
@@ -384,7 +395,7 @@ export default function Dashboard() {
           <tbody>
             {positions.map((p) => (
               <tr key={p.id}>
-                <td style={{ borderBottom: '1px solid #eee' }}>{new Date(p.entered_at).toISOString()}</td>
+                <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
                 <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
                 <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
                 <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
