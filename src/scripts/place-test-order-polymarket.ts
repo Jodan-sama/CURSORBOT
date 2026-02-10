@@ -16,8 +16,8 @@ import { fetchBinancePrice } from '../kalshi/spread.js';
 import { strikeSpreadPctSigned } from '../kalshi/spread.js';
 
 const ASSET = 'BTC';
-const TEST_SIZE = 1;
-const PRICE = 1; // use 1 so notional is $1 (min size); 0.99 was below min
+const TEST_SIZE = 2; // size * price must be >= $1; price in [0.01, 0.99]
+const PRICE = 0.99;
 
 async function main() {
   const now = new Date();
