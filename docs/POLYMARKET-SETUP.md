@@ -43,8 +43,8 @@ If this is missing or not `true`, the bot trades **Kalshi only**.
 
 Polymarket may restrict access from some regions/IPs. If the bot is in a **restricted region** (e.g. certain countries), CLOB requests can fail unless they go through a proxy.
 
-- If the droplet is in a **non‑restricted region** (e.g. Amsterdam, as in your setup), you can **omit** proxy env vars and the bot will call the CLOB directly.
-- If you see CLOB/order errors that look like geo or access restrictions, set **HTTP_PROXY** and **HTTPS_PROXY** to the same proxy URL (e.g. Proxy Empire). See `docs/polymarket-api.md` for the format.
+- If the droplet is in a **non‑restricted region** (e.g. Amsterdam), **omit** `HTTP_PROXY` and `HTTPS_PROXY`; the bot will call the CLOB directly.
+- If you see CLOB/order errors (e.g. "Maximum number of redirects exceeded" or geo blocks), set **HTTP_PROXY** and **HTTPS_PROXY** to the same proxy URL. The CLOB client uses **axios**; the bot now routes axios through the proxy when these env vars are set (so getTickSize and order POST both use the proxy).
 
 ---
 
@@ -69,6 +69,41 @@ Otherwise the client uses a default public RPC.
 | API key | `POLYMARKET_API_KEY` | Polymarket → Profile/Settings → API (or Developer / Trading API). |
 | API secret | `POLYMARKET_API_SECRET` | Same place as API key (shown once when you create the key). |
 | API passphrase | `POLYMARKET_API_PASSPHRASE` | Same place as API key. |
-| Turn on Poly | `ENABLE_POLYMARKET=true` | Set in `.env` on the droplet. |
+| Turn on Poly | `ENABLE_POLYMARKET=true` | Set in `.env` on the droplet. No quotes, no spaces, lowercase `true`. systemd’s `EnvironmentFile` expects plain `KEY=value` lines (no `export`). |
 
 After you set these on the droplet and restart the bot (`systemctl restart cursorbot`), the bot will place orders on both Kalshi and Polymarket when conditions are met (same spread/winning-side logic: it only buys the winning side on Poly too).
+
+---
+
+## What’s next to get Polymarket running
+
+1. **Put all required env vars in the droplet’s `.env`**  
+   Edit on the droplet. **If you get “Cannot open file for writing: No such file or directory”:**
+   - Find the real repo path: `sudo grep WorkingDirectory /etc/systemd/system/cursorbot.service` (e.g. `WorkingDirectory=/root/cursorbot` or `/opt/cursorbot`).
+   - Go there and edit `.env` from inside that directory:
+     ```bash
+     cd /root/cursorbot
+     nano .env
+     ```
+     (If your service file shows a different path, use that instead of `/root/cursorbot`.)
+   - If the repo path doesn’t exist at all, clone the repo there first (see DROPLET-SETUP.md), then create `.env` in that folder.
+   Add (or append) these vars:
+   - `POLYMARKET_PRIVATE_KEY`
+   - `POLYMARKET_FUNDER`
+   - `POLYMARKET_API_KEY`
+   - `POLYMARKET_API_SECRET`
+   - `POLYMARKET_API_PASSPHRASE`
+   - `ENABLE_POLYMARKET=true`  
+   (Optional: `POLYGON_RPC_URL` if you use Alchemy/other. Proxy only if the droplet is in a restricted region.)
+
+2. **Restart the bot** (on the droplet):
+   ```bash
+   sudo systemctl restart cursorbot
+   ```
+
+3. **Confirm it’s running**  
+   - `sudo systemctl status cursorbot` → should be `active (running)`.
+   - `sudo journalctl -u cursorbot -f` → when a window hits, you should see lines like `B1 Poly BTC orderId=…` or `B2 Poly ETH orderId=…` if Poly is placing orders. Kalshi lines look like `B1 Kalshi BTC …`.
+
+4. **Check the dashboard**  
+   Recent positions should show some with **exchange: polymarket** and order IDs. Any Poly-related errors will appear under “Recent errors”.

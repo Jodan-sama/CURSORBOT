@@ -100,17 +100,25 @@ async function tryPlaceKalshi(
   return { orderId, filled: res.order?.status === 'filled' };
 }
 
-/** Run fn with proxy set (only CLOB/Polymarket traffic); rest of bot uses direct. */
+/** Run fn with proxy set for CLOB/Polymarket. CLOB client uses axios (not fetch), so we set axios.defaults.httpsAgent; undici is for any fetch. */
 async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
   if (!proxy) return fn();
-  const { ProxyAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
-  const prev = getGlobalDispatcher();
+  const axios = (await import('axios')).default;
+  const { HttpsProxyAgent } = await import('https-proxy-agent');
+  const prevUndici = (await import('undici')).getGlobalDispatcher();
+  const { setGlobalDispatcher, ProxyAgent } = await import('undici');
+  const prevAxiosAgent = axios.defaults.httpsAgent;
+  const prevAxiosProxy = axios.defaults.proxy;
   try {
     setGlobalDispatcher(new ProxyAgent(proxy));
+    axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
+    axios.defaults.proxy = false;
     return await fn();
   } finally {
-    setGlobalDispatcher(prev);
+    setGlobalDispatcher(prevUndici);
+    axios.defaults.httpsAgent = prevAxiosAgent;
+    axios.defaults.proxy = prevAxiosProxy;
   }
 }
 
@@ -365,6 +373,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B3', asset, venue: 'polymarket' });
         }
       }
+      // Block on order placement (resting limit counts even if it never fills)
       if (placed) {
         const blockUntil = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
         await setAssetBlock(asset, blockUntil);

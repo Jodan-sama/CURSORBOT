@@ -104,6 +104,8 @@ If the droplet is in a non‑restricted region (e.g. Amsterdam), you can remove 
 1. Edit `/root/cursorbot/.env` and **remove or comment out** the `HTTP_PROXY` and `HTTPS_PROXY` lines.
 2. Restart: `sudo systemctl restart cursorbot`.
 
+**Note:** The CLOB client uses **axios** (not fetch). The bot now sets `axios.defaults.httpsAgent` to a proxy agent when proxy env vars are set, so both getTickSize and order placement go through the proxy. Previously only undici (fetch) was proxied, so CLOB requests never used the proxy and could hit redirect/geo errors.
+
 ## Delay timers and blackout
 
 - **B2 → B1:** After B2 places an order for an asset, B1 skips that asset for **15 minutes** (same asset only).

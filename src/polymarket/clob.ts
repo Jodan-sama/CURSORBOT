@@ -59,16 +59,10 @@ export interface CreatePolyOrderParams {
 
 /**
  * Build CLOB client from env or explicit config.
- * Requires: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE
- * Requires: HTTP_PROXY and HTTPS_PROXY (Polymarket can ban direct connections; never place orders without proxy).
+ * Requires: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE.
+ * Optional: HTTP_PROXY and HTTPS_PROXY (set in restricted regions; omit in e.g. Amsterdam to call CLOB directly).
  */
 export function getPolyClobConfigFromEnv(): PolyClobConfig {
-  const proxy = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
-  if (!proxy?.trim()) {
-    throw new Error(
-      'Polymarket orders require proxy: set HTTP_PROXY and HTTPS_PROXY in .env (direct connection can get you banned)'
-    );
-  }
   const privateKey = process.env.POLYMARKET_PRIVATE_KEY;
   const funder = process.env.POLYMARKET_FUNDER;
   const apiKey = process.env.POLYMARKET_API_KEY;
