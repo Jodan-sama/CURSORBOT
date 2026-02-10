@@ -5,10 +5,9 @@
 import 'dotenv/config';
 
 if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY) {
-  process.env.GLOBAL_AGENT_HTTP_PROXY = process.env.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? '';
-  process.env.GLOBAL_AGENT_HTTPS_PROXY = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
-  const { bootstrap } = await import('global-agent');
-  bootstrap();
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  const { ProxyAgent, setGlobalDispatcher } = await import('undici');
+  setGlobalDispatcher(new ProxyAgent(proxy));
 }
 
 import { startBotLoop } from './runner.js';

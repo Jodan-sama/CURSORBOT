@@ -19,7 +19,7 @@
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.6.1",
     "ethers": "^6.16.0",
-    "global-agent": "^4.1.2"
+    "undici": "^6.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
