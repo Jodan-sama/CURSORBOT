@@ -66,12 +66,22 @@ async function main() {
         const prevUndici = undici.getGlobalDispatcher();
         const prevAxiosAgent = axios.defaults.httpsAgent;
         const prevAxiosProxy = axios.defaults.proxy;
+        const interceptor = axios.interceptors.response.use(
+          (r) => r,
+          (err) => {
+            if (err.response) {
+              console.error('[test] CLOB response error:', err.response.status, err.response.statusText, JSON.stringify(err.response.data));
+            }
+            return Promise.reject(err);
+          }
+        );
         try {
           undici.setGlobalDispatcher(new undici.ProxyAgent(proxy));
           axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
           axios.defaults.proxy = false;
           return await createAndPostPolyOrder(client, params);
         } finally {
+          axios.interceptors.response.eject(interceptor);
           undici.setGlobalDispatcher(prevUndici);
           axios.defaults.httpsAgent = prevAxiosAgent;
           axios.defaults.proxy = prevAxiosProxy;
