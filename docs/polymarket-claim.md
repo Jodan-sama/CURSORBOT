@@ -18,17 +18,27 @@ Polymarket’s docs: [Redeeming Tokens](https://docs.polymarket.com/developers/C
 - **conditionId**: The market’s condition ID (we have this from Gamma, e.g. in `positions.ticker_or_slug` or from the market’s `conditionId`).
 - **indexSets**: For binary (Yes/No), typically `[1, 2]` (both outcome sets) – exact values depend on the CTF encoding; see [Deployment and Additional Information](https://docs.polymarket.com/developers/CTF/deployment-resources).
 
-## What we need to add
+## In-repo claim script
 
-A **claim** step (script or bot step) that:
+The project includes a script that calls the CTF contract’s `redeemPositions` using your Polymarket wallet (`POLYMARKET_PRIVATE_KEY`) and `POLYGON_RPC_URL`.
 
-1. Reads resolved positions (e.g. from our `positions` table for Polymarket, or from the CLOB/API).
-2. For each winning position, calls the CTF contract’s `redeemPositions` from your **wallet** (same key as `POLYMARKET_PRIVATE_KEY`).
-3. Uses the correct **CTF contract address** and **collateral (USDC)** address on Polygon (from Polymarket’s deployment docs).
+**Run once (with condition IDs):**
 
-Implementation options:
+```bash
+# After build
+node dist/scripts/claim-polymarket.js <conditionId1> [conditionId2] ...
+# Or set CONDITION_IDS=id1,id2 in .env and run:
+npm run claim-poly
+```
 
-- **Node script**: Use `ethers` with your wallet, get CTF ABI and addresses from Polymarket’s CTF docs, call `redeemPositions` for each condition/position.
-- **Manual**: Claim from the Polymarket UI (portfolio → resolved positions → Claim).
+**Cron (e.g. hourly):** If you have condition IDs to redeem, pass them via env or args. Example:
 
-If you want this automated in-repo, the next step is to add a small `src/polymarket/redeem.ts` (or a `scripts/claim-polymarket.ts`) that uses your existing Polymarket wallet and the CTF contract addresses from the docs.
+```bash
+crontab -e
+# Add (run every hour):
+0 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js
+```
+
+To redeem specific markets, set `CONDITION_IDS` in `.env` (comma-separated) or pass condition IDs as script arguments. You need a small amount of POL on Polygon to pay gas for the redeem tx.
+
+**Manual option:** Claim from the Polymarket UI (portfolio → resolved positions → Claim).
