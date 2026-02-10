@@ -24,9 +24,6 @@ async function main() {
   const slug = getCurrentPolySlug(ASSET, now);
   console.log('Current BTC 15m Poly slug:', slug);
 
-  const parsed = await getPolyMarketBySlug(slug);
-  console.log('Market:', parsed.conditionId, '| outcomePrices:', parsed.outcomePrices);
-
   const ticker = await getCurrentKalshiTicker(ASSET, undefined, now);
   if (!ticker) {
     console.error('No Kalshi ticker for strike; cannot determine winning side.');
@@ -52,12 +49,18 @@ async function main() {
   const side = signedSpread >= 0 ? 'yes' : 'no';
   console.log('Strike:', strike, '| Price:', price, '| Signed spread:', signedSpread.toFixed(3), '% | Winning side:', side);
 
-  const config = getPolyClobConfigFromEnv();
-  const client = createPolyClobClient(config);
-  const params = orderParamsFromParsedMarket(parsed, PRICE, TEST_SIZE, side);
-  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, ' (only this request uses proxy)...');
-
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, proxy ? ' (Gamma + CLOB via proxy)' : ' (no proxy)...');
+
+  const runPolyGammaAndOrder = async (): Promise<{ orderID?: string; status?: string }> => {
+    const parsed = await getPolyMarketBySlug(slug);
+    console.log('Market:', parsed.conditionId, '| outcomePrices:', parsed.outcomePrices);
+    const config = getPolyClobConfigFromEnv();
+    const client = createPolyClobClient(config);
+    const params = orderParamsFromParsedMarket(parsed, PRICE, TEST_SIZE, side);
+    return await createAndPostPolyOrder(client, params);
+  };
+
   const result = proxy
     ? await (async () => {
         const axios = (await import('axios')).default;
@@ -79,7 +82,7 @@ async function main() {
           undici.setGlobalDispatcher(new undici.ProxyAgent(proxy));
           axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
           axios.defaults.proxy = false;
-          return await createAndPostPolyOrder(client, params);
+          return await runPolyGammaAndOrder();
         } finally {
           axios.interceptors.response.eject(interceptor);
           undici.setGlobalDispatcher(prevUndici);
@@ -87,7 +90,7 @@ async function main() {
           axios.defaults.proxy = prevAxiosProxy;
         }
       })()
-    : await createAndPostPolyOrder(client, params);
+    : await runPolyGammaAndOrder();
   console.log('Result:', result);
   if (result.orderID) {
     console.log('Test order placed: orderID=', result.orderID, '| status=', result.status);

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "build": "tsc",
     "start": "node dist/index.js",
     "bot": "node dist/bot/run.js",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "patch-package": "^8.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

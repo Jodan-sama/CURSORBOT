@@ -122,6 +122,7 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** All Polymarket HTTP (Gamma + CLOB) runs through proxy when set. Polygon RPC (signing) uses Alchemy via POLYGON_RPC_URL in createPolyClobClient. */
 async function tryPlacePolymarket(
   slug: string,
   asset: Asset,
@@ -129,10 +130,13 @@ async function tryPlacePolymarket(
   size: number,
   side: 'yes' | 'no'
 ): Promise<{ orderId?: string }> {
-  const parsed = await getPolyMarketBySlug(slug);
-  const client = createPolyClobClient(getPolyClobConfigFromEnv());
-  const params = orderParamsFromParsedMarket(parsed, price, size, side);
-  return withPolyProxy(() => createAndPostPolyOrder(client, params).then((r) => ({ orderId: r.orderID })));
+  return withPolyProxy(async () => {
+    const parsed = await getPolyMarketBySlug(slug);
+    const client = createPolyClobClient(getPolyClobConfigFromEnv());
+    const params = orderParamsFromParsedMarket(parsed, price, size, side);
+    const r = await createAndPostPolyOrder(client, params);
+    return { orderId: r.orderID };
+  });
 }
 
 export async function runOneTick(now: Date, tickCount: number = 0): Promise<void> {

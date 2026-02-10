@@ -41,16 +41,16 @@ If this is missing or not `true`, the bot trades **Kalshi only**.
 
 ## 4. Proxy (only if needed)
 
-Polymarket may restrict access from some regions/IPs. If the bot is in a **restricted region** (e.g. certain countries), CLOB requests can fail unless they go through a proxy.
+**All Polymarket HTTP runs through the proxy when set:** Gamma API (market data) and CLOB (getTickSize + place order) both use the proxy when `HTTP_PROXY`/`HTTPS_PROXY` are set. Polygon RPC (signing) uses **Alchemy** via `POLYGON_RPC_URL` (no proxy, avoids timeouts).
 
-- If the droplet is in a **non‑restricted region** (e.g. Amsterdam), **omit** `HTTP_PROXY` and `HTTPS_PROXY`; the bot will call the CLOB directly.
-- If you see CLOB/order errors (e.g. "Maximum number of redirects exceeded" or geo blocks), set **HTTP_PROXY** and **HTTPS_PROXY** to the same proxy URL. The CLOB client uses **axios**; the bot now routes axios through the proxy when these env vars are set (so getTickSize and order POST both use the proxy).
+- If the droplet is in a **non‑restricted region** (e.g. Amsterdam), **omit** `HTTP_PROXY` and `HTTPS_PROXY`; the bot will call Gamma and CLOB directly.
+- If you see redirect/geo errors, set **HTTP_PROXY** and **HTTPS_PROXY**; then every Polymarket HTTP call (Gamma + CLOB) goes through the proxy.
 
 ---
 
-## 5. Optional: Polygon RPC
+## 5. Polygon RPC (Alchemy)
 
-The CLOB client uses the wallet to sign. If you hit rate limits or need a specific RPC:
+The CLOB client uses the wallet to sign via Polygon RPC. The bot uses **Alchemy** by default (`POLYGON_RPC_URL`). Set your own key to avoid rate limits:
 
 ```bash
 POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY

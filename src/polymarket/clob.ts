@@ -1,7 +1,6 @@
 /**
  * Polymarket CLOB order placement via @polymarket/clob-client.
- * Polygon RPC (signer/nonce) uses POLYGON_RPC_URL (e.g. Alchemy) to avoid rate limits.
- * Order HTTP requests use HTTP_PROXY/HTTPS_PROXY only when placing the order.
+ * All Polymarket: Polygon RPC uses POLYGON_RPC_URL (Alchemy); HTTP (Gamma + CLOB) uses proxy when set. Callers run both inside the same proxy context.
  */
 
 import { Wallet } from '@ethersproject/wallet';

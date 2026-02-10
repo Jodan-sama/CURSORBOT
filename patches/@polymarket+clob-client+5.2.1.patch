@@ -1,0 +1,12 @@
+diff --git a/node_modules/@polymarket/clob-client/dist/http-helpers/index.js b/node_modules/@polymarket/clob-client/dist/http-helpers/index.js
+index 3a42157..a075b42 100644
+--- a/node_modules/@polymarket/clob-client/dist/http-helpers/index.js
++++ b/node_modules/@polymarket/clob-client/dist/http-helpers/index.js
+@@ -92,7 +92,6 @@ const errorHandling = (err) => {
+                 status: err.response?.status,
+                 statusText: err.response?.statusText,
+                 data: err.response?.data,
+-                config: err.response?.config,
+             }));
+             if (err.response?.data) {
+                 if (typeof err.response?.data === "string" ||
