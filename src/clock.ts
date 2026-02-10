@@ -51,7 +51,7 @@ export function isB2Window(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 5;
 }
 
-/** B3: last 8 min → true when minutesLeft in (0, 8]. B2 and B3 both run when minutesLeft in (0, 5]. */
+/** B3: last 8 min of window → true when minutesLeft in (0, 8] (so 8, 7, 6, 5, 4, 3, 2, 1 min left). */
 export function isB3Window(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 8;
 }
@@ -59,4 +59,14 @@ export function isB3Window(minutesLeft: number): boolean {
 /** B1: use market order in the final 1 minute. */
 export function isB1MarketOrderWindow(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 1;
+}
+
+/** Blackout: no trades 08:00–08:15 MST (Utah, Mountain) Mon–Fri. We check in UTC: 8am MST = 15:00 UTC (MST is UTC-7). */
+export function isBlackoutWindow(now: Date = new Date()): boolean {
+  const day = now.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
+  const hour = now.getUTCHours();
+  const min = now.getUTCMinutes();
+  if (day < 1 || day > 5) return false; // weekend
+  if (hour !== 15) return false; // 8am MST = 15:00 UTC
+  return min < 15; // 15:00:00 through 15:14:59 UTC (= 08:00–08:15 MST)
 }

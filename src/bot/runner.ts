@@ -12,6 +12,7 @@ import {
   isB3Window,
   isB1MarketOrderWindow,
   getCurrentPolySlug,
+  isBlackoutWindow,
 } from '../clock.js';
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
 import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
@@ -128,6 +129,10 @@ async function tryPlacePolymarket(
 
 export async function runOneTick(now: Date, tickCount: number = 0): Promise<void> {
   if (await isEmergencyOff()) return;
+  if (isBlackoutWindow(now)) {
+    if (tickCount % 12 === 0) console.log('[tick] blackout 08:00–08:15 MST (Utah) Mon–Fri; no trades');
+    return;
+  }
 
   const minutesLeft = minutesLeftInWindow(now);
   const windowEndMs = getCurrentWindowEndMs();

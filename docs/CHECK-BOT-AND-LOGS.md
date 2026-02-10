@@ -28,6 +28,13 @@ You’ll see “Cursorbot starting…” and then either nothing (idle until a w
 sudo journalctl -u cursorbot -n 100
 ```
 
+## Check if Polymarket is working
+
+1. **Heartbeat** – Every ~60s the log should show `[cursorbot] alive | ... | Kalshi + Polymarket` (not "Kalshi only") when `ENABLE_POLYMARKET=true` in `.env`. If it says "Kalshi only", Poly is off or env is wrong.
+2. **When a B1/B2/B3 window hits** – Look for lines like `B1 Poly BTC orderId=…` or `B2 Poly ETH orderId=…`. If you only see `B1 Kalshi …` and never `B1 Poly …`, either spread/size didn’t qualify for Poly or Poly failed (check step 3).
+3. **Dashboard** – **Recent positions** should sometimes show **exchange: polymarket**. **Recent errors** will show Poly-related failures (e.g. CLOB auth, proxy, or “missing env”).
+4. **Poly env** – On the droplet, ensure `.env` has all six: `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `ENABLE_POLYMARKET=true`. Restart after any change: `systemctl restart cursorbot`.
+
 ## Errors in the dashboard
 
 Errors are written to Supabase **error_log** and shown in the **dashboard** under “Recent errors”.
@@ -61,9 +68,44 @@ sudo systemctl restart cursorbot
 
 The bots will only place orders on Kalshi.
 
+## Current Kalshi spreads (script)
+
+**Important:** `ssh` starts a *new* shell on the droplet. If SSH fails (e.g. "Permission denied"), the next commands you type run on **your Mac**, not the droplet. So you’d be doing `cd /root/cursorbot` on your Mac (which has no `/root`), and `npx tsx src/scripts/...` would look for the file in your Mac home directory and fail.
+
+### Option A – Run on the droplet (Binance works there)
+
+1. **Get a shell on the droplet** (one command; wait until you see the droplet prompt, e.g. `root@cursorbot:~#`):
+   ```bash
+   ssh root@188.166.15.165
+   ```
+   If you get "Permission denied (publickey)", set up SSH access first (add your Mac’s public key to the droplet, or use password auth if enabled).
+
+2. **Then**, on the droplet, go to the repo and run the script (the path may be different on your droplet; common: `/root/cursorbot` or `~/cursorbot`):
+   ```bash
+   cd /root/cursorbot
+   npx tsx src/scripts/current-kalshi-spreads.ts
+   ```
+
+### Option B – Run on your Mac (from project folder)
+
+Only the project directory has `src/scripts/`. Run from your **project root** (e.g. CURSORBOT):
+
+```bash
+cd /Users/jodan/Documents/CURSORBOT
+npx tsx src/scripts/current-kalshi-spreads.ts
+```
+
+Binance may return 451 (geo-block) from some regions; if so, use Option A on the droplet.
+
 ## No proxy (e.g. Amsterdam)
 
 If the droplet is in a non‑restricted region (e.g. Amsterdam), you can remove the proxy so Polymarket CLOB is called directly:
 
 1. Edit `/root/cursorbot/.env` and **remove or comment out** the `HTTP_PROXY` and `HTTPS_PROXY` lines.
 2. Restart: `sudo systemctl restart cursorbot`.
+
+## Delay timers and blackout
+
+- **B2 → B1:** After B2 places an order for an asset, B1 skips that asset for **15 minutes** (same asset only).
+- **B3 → B1/B2:** After B3 places for an asset, both B1 and B2 skip that asset for **1 hour** (via `asset_blocks` in Supabase).
+- **Blackout:** No trades on any bot during **08:00–08:15 MST (Utah, Mountain time) Monday–Friday** (15:00–15:15 UTC). The log will show `[tick] blackout 08:00–08:15 MST (Utah) Mon–Fri; no trades` about once a minute during that window.
