@@ -47,11 +47,11 @@ If you prefer to keep RLS off for a private project, you can leave policies perm
 1. Go to [vercel.com](https://vercel.com) and log in (with GitHub).
 2. **Add New** → **Project**.
 3. **Import** your GitHub repo (e.g. `YOUR_USERNAME/CURSORBOT`).
-4. **Configure:**
-   - **Root Directory:** click **Edit** and set to **`dashboard`** (so Vercel builds the Next.js app in that folder).
-   - **Framework Preset:** should detect Next.js.
-   - **Build Command:** leave default (`next build`).
-   - **Output Directory:** leave default.
+4. **Configure (important):**
+   - **Root Directory:** click **Edit** → set to **`dashboard`**. If you leave this blank, Vercel will build the repo root (the bot’s `tsc`), which will fail with “No Output Directory named public”.
+   - **Framework Preset:** Next.js (should auto-detect once root is `dashboard`).
+   - **Build Command:** leave default (`npm run build` / `next build`).
+   - **Output Directory:** leave default (Next.js uses `.next`; do not set to `public`).
 5. **Environment Variables** — add these (click “Add” for each):
 
    | Name | Value |
@@ -60,6 +60,11 @@ If you prefer to keep RLS off for a private project, you can leave policies perm
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon (public) key |
 
 6. Click **Deploy**.
+
+**If you see “No Output Directory named public” after the build succeeds:** Vercel is not treating the app as Next.js. Go to **Settings** → **Build & Development Settings** and:
+- Set **Framework Preset** to **Next.js** (not “Other”).
+- Leave **Output Directory** blank (do not set to `public`). Next.js uses `.next`; Vercel will detect it when the framework is Next.js.
+Then save and redeploy.
 
 ---
 

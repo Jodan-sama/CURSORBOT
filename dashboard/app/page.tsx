@@ -17,6 +17,17 @@ function getSupabase(): SupabaseClient {
 const BOTS = ['B1', 'B2', 'B3'] as const;
 const ASSETS = ['BTC', 'ETH', 'SOL'] as const;
 
+const buttonStyle: React.CSSProperties = {
+  padding: '8px 16px',
+  backgroundColor: '#0D9488',
+  color: '#000',
+  border: 'none',
+  borderRadius: 6,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+const buttonDisabledStyle: React.CSSProperties = { ...buttonStyle, opacity: 0.6, cursor: 'not-allowed' };
+
 type Config = {
   emergency_off: boolean;
   position_size_kalshi: number;
@@ -53,8 +64,11 @@ export default function Dashboard() {
   const [spreadRows, setSpreadRows] = useState<SpreadRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [kalshiSize, setKalshiSize] = useState('');
-  const [polySize, setPolySize] = useState('');
+  const [botSizes, setBotSizes] = useState<Record<string, { kalshi: string; poly: string }>>({
+    B1: { kalshi: '', poly: '' },
+    B2: { kalshi: '', poly: '' },
+    B3: { kalshi: '', poly: '' },
+  });
   const [spreadEdits, setSpreadEdits] = useState<Record<string, string>>({});
   const [csvLoading, setCsvLoading] = useState(false);
 
@@ -65,11 +79,13 @@ export default function Dashboard() {
       { data: posData },
       { data: errData },
       spreadResult,
+      { data: botSizesData },
     ] = await Promise.all([
       getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
       getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
       getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
       Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
+      getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
     ]);
     setConfig(configData ?? null);
     setPositions((posData ?? []) as Position[]);
@@ -86,10 +102,20 @@ export default function Dashboard() {
       edits[`${r.bot}-${r.asset}`] = String(r.threshold_pct);
     });
     setSpreadEdits(edits);
-    if (configData) {
-      setKalshiSize(String(configData.position_size_kalshi));
-      setPolySize(String(configData.position_size_polymarket));
+    const defaultK = configData ? String(configData.position_size_kalshi) : '';
+    const defaultP = configData ? String(configData.position_size_polymarket) : '';
+    const sizesRows = (botSizesData ?? []) as { bot: string; asset: string; size_kalshi: number | null; size_polymarket: number | null }[];
+    const nextBotSizes: Record<string, { kalshi: string; poly: string }> = { B1: { kalshi: defaultK, poly: defaultP }, B2: { kalshi: defaultK, poly: defaultP }, B3: { kalshi: defaultK, poly: defaultP } };
+    for (const bot of BOTS) {
+      const first = sizesRows.find((r) => r.bot === bot);
+      if (first) {
+        nextBotSizes[bot] = {
+          kalshi: first.size_kalshi != null ? String(first.size_kalshi) : defaultK,
+          poly: first.size_polymarket != null ? String(first.size_polymarket) : defaultP,
+        };
+      }
     }
+    setBotSizes(nextBotSizes);
   }
 
   useEffect(() => {
@@ -106,13 +132,18 @@ export default function Dashboard() {
   async function saveSizes(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    await getSupabase()
-      .from('bot_config')
-      .update({
-        position_size_kalshi: parseFloat(kalshiSize) || 0,
-        position_size_polymarket: parseFloat(polySize) || 0,
-      })
-      .eq('id', 'default');
+    for (const bot of BOTS) {
+      const k = parseFloat(botSizes[bot]?.kalshi ?? '');
+      const p = parseFloat(botSizes[bot]?.poly ?? '');
+      const sizeKalshi = Number.isNaN(k) ? null : k;
+      const sizePoly = Number.isNaN(p) ? null : p;
+      for (const asset of ASSETS) {
+        await getSupabase().from('bot_position_sizes').upsert(
+          { bot, asset, size_kalshi: sizeKalshi, size_polymarket: sizePoly },
+          { onConflict: 'bot,asset' }
+        );
+      }
+    }
     await load();
     setSaving(false);
   }
@@ -183,7 +214,7 @@ export default function Dashboard() {
           type="button"
           onClick={() => setEmergencyOff(true)}
           disabled={saving || config?.emergency_off}
-          style={{ marginRight: 8, padding: '8px 16px' }}
+          style={{ marginRight: 8, ...(saving || config?.emergency_off ? buttonDisabledStyle : buttonStyle) }}
         >
           Emergency OFF
         </button>
@@ -191,22 +222,52 @@ export default function Dashboard() {
           type="button"
           onClick={() => setEmergencyOff(false)}
           disabled={saving || !config?.emergency_off}
-          style={{ padding: '8px 16px' }}
+          style={saving || !config?.emergency_off ? buttonDisabledStyle : buttonStyle}
         >
           Resume
         </button>
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2>Position sizes</h2>
+        <h2>Position sizes (per bot)</h2>
         <form onSubmit={saveSizes}>
-          <label style={{ display: 'block', marginBottom: 8 }}>
-            Kalshi size: <input type="number" step="any" value={kalshiSize} onChange={(e) => setKalshiSize(e.target.value)} style={{ marginLeft: 8 }} />
-          </label>
-          <label style={{ display: 'block', marginBottom: 8 }}>
-            Polymarket size: <input type="number" step="any" value={polySize} onChange={(e) => setPolySize(e.target.value)} style={{ marginLeft: 8 }} />
-          </label>
-          <button type="submit" disabled={saving} style={{ padding: '8px 16px' }}>Save</button>
+          <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Bot</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Kalshi</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Polymarket</th>
+              </tr>
+            </thead>
+            <tbody>
+              {BOTS.map((bot) => (
+                <tr key={bot}>
+                  <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px', fontWeight: 600 }}>{bot}</td>
+                  <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={botSizes[bot]?.kalshi ?? ''}
+                      onChange={(e) => setBotSizes((prev) => ({ ...prev, [bot]: { ...prev[bot], kalshi: e.target.value } }))}
+                      style={{ width: 72, padding: '4px 6px' }}
+                    />
+                  </td>
+                  <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={botSizes[bot]?.poly ?? ''}
+                      onChange={(e) => setBotSizes((prev) => ({ ...prev, [bot]: { ...prev[bot], poly: e.target.value } }))}
+                      style={{ width: 72, padding: '4px 6px' }}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save position sizes</button>
         </form>
       </section>
 
@@ -243,7 +304,7 @@ export default function Dashboard() {
               ))}
             </tbody>
           </table>
-          <button type="submit" disabled={saving} style={{ padding: '8px 16px' }}>Save spread thresholds</button>
+          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save spread thresholds</button>
         </form>
       </section>
 
@@ -276,7 +337,7 @@ export default function Dashboard() {
       <section>
         <h2>Recent positions (last 200)</h2>
         <p style={{ marginBottom: 8 }}>
-          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ padding: '8px 16px' }}>
+          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={csvLoading ? buttonDisabledStyle : buttonStyle}>
             {csvLoading ? 'Preparing…' : 'Download CSV (last 200 trades)'}
           </button>
         </p>
