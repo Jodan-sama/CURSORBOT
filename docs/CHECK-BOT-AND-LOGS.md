@@ -108,6 +108,6 @@ If the droplet is in a non‑restricted region (e.g. Amsterdam), you can remove 
 
 ## Delay timers and blackout
 
-- **B2 → B1:** After B2 places an order for an asset, B1 skips that asset for **15 minutes** (same asset only).
+- **B2 → B1:** After B2 places an order for an asset, B1 skips that asset for **15 minutes** (same asset only). Also: if during any B2 check the spread is **above 0.5%**, B1 is delayed **15 minutes** for that asset (even if B2 didn’t place).
 - **B3 → B1/B2:** After B3 places for an asset, both B1 and B2 skip that asset for **1 hour** (via `asset_blocks` in Supabase).
 - **Blackout:** No trades on any bot during **08:00–08:15 MST (Utah, Mountain time) Monday–Friday** (15:00–15:15 UTC). The log will show `[tick] blackout 08:00–08:15 MST (Utah) Mon–Fri; no trades` about once a minute during that window.
