@@ -37,8 +37,12 @@ export async function createKalshiOrder(params: CreateKalshiOrderParams): Promis
     type: params.type,
   };
   if (params.type === 'limit') {
-    body.yes_price = params.yes_price ?? 50;
-    body.no_price = params.no_price ?? 100 - (params.yes_price ?? 50);
+    // Kalshi requires exactly one of yes_price, no_price, yes_price_dollars, no_price_dollars.
+    if (params.side === 'yes') {
+      body.yes_price = params.yes_price ?? 50;
+    } else {
+      body.no_price = params.no_price ?? 50;
+    }
   }
   return kalshiFetch<KalshiOrderResponse>('/portfolio/orders', {
     method: 'POST',
