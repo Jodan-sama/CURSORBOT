@@ -93,7 +93,7 @@ async function tryPlacePolymarket(
   return { orderId: result.orderID };
 }
 
-export async function runOneTick(now: Date): Promise<void> {
+export async function runOneTick(now: Date, tickCount: number = 0): Promise<void> {
   if (await isEmergencyOff()) return;
 
   const minutesLeft = minutesLeftInWindow(now);
@@ -139,10 +139,18 @@ export async function runOneTick(now: Date): Promise<void> {
     // --- B1: last 2.5 min, check every 5s, bid 90–96%, place 96% limit (or market in last 1 min) ---
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
-      if (enteredThisWindow.has(key)) continue;
-      if (!isOutsideSpreadThreshold('B1', asset, spreadPct)) continue;
+      const outsideB1 = isOutsideSpreadThreshold('B1', asset, spreadPct);
       const bidPct = kalshiBid != null ? kalshiYesBidAsPercent(kalshiBid) : 0;
-      if (bidPct < 90 || bidPct > 96) continue;
+      const bidOk = bidPct >= 90 && bidPct <= 96;
+      if (enteredThisWindow.has(key)) continue;
+      if (!outsideB1) {
+        if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: spread ${spreadPct.toFixed(2)}% inside threshold`);
+        continue;
+      }
+      if (!bidOk) {
+        if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% not in 90-96`);
+        continue;
+      }
 
       const useMarket = isB1MarketOrderWindow(minutesLeft);
       if (kalshiTicker) {
@@ -186,8 +194,12 @@ export async function runOneTick(now: Date): Promise<void> {
     // --- B2: last 5 min, check every 30s, place 97% limit ---
     if (isB2Window(minutesLeft)) {
       const key = windowKey('B2', asset, windowEndMs);
+      const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadPct);
       if (enteredThisWindow.has(key)) continue;
-      if (!isOutsideSpreadThreshold('B2', asset, spreadPct)) continue;
+      if (!outsideB2) {
+        if (tickCount % 6 === 0) console.log(`[tick] B2 ${asset} skip: spread ${spreadPct.toFixed(2)}% inside threshold`);
+        continue;
+      }
 
       if (kalshiTicker) {
         try {
@@ -230,8 +242,12 @@ export async function runOneTick(now: Date): Promise<void> {
     // --- B3: last 8 min, check every 1 min, place 97% limit; on place set block B2 15min, B1 30min ---
     if (isB3Window(minutesLeft)) {
       const key = windowKey('B3', asset, windowEndMs);
+      const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadPct);
       if (enteredThisWindow.has(key)) continue;
-      if (!isOutsideSpreadThreshold('B3', asset, spreadPct)) continue;
+      if (!outsideB3) {
+        if (tickCount % 12 === 0) console.log(`[tick] B3 ${asset} skip: spread ${spreadPct.toFixed(2)}% inside threshold`);
+        continue;
+      }
 
       let placed = false;
       if (kalshiTicker) {
@@ -303,7 +319,7 @@ export function startBotLoop(): void {
     const shouldB3 = tickCount % 12 === 0;
     if (shouldB1 || shouldB2 || shouldB3) {
       try {
-        await runOneTick(now);
+        await runOneTick(now, tickCount);
       } catch (e) {
         await logError(e, { stage: 'runOneTick' });
       }

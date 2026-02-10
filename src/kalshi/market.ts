@@ -29,6 +29,8 @@ export interface GetMarketResponse {
 export interface KalshiMarketListItem {
   ticker: string;
   expiration_time?: string;
+  /** When the 15m window actually expires (use this to match current window; expiration_time is contract expiry ~1 week out). */
+  expected_expiration_time?: string;
   status?: string;
   [key: string]: unknown;
 }
@@ -52,6 +54,7 @@ export async function listKalshiMarkets(
 
 /**
  * Resolve the current 15m market ticker for an asset (expiration at current window end).
+ * Uses expected_expiration_time (15m window) not expiration_time (contract expiry ~1 week out).
  */
 export async function getCurrentKalshiTicker(
   asset: Asset,
@@ -65,7 +68,8 @@ export async function getCurrentKalshiTicker(
   let best: KalshiMarketListItem | null = null;
   let bestDiff = Infinity;
   for (const m of markets) {
-    const exp = m.expiration_time;
+    const exp =
+      (m.expected_expiration_time as string | undefined) ?? m.expiration_time;
     if (!exp) continue;
     const expMs = new Date(exp).getTime();
     const diff = Math.abs(expMs - targetMs);
