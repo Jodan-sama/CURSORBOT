@@ -25,6 +25,8 @@ The CLOB (Central Limit Order Book) API needs API key auth. You need to create t
 
 If you can’t find the API section, check Polymarket’s help or docs; the exact menu name can change.
 
+**401 Unauthorized / Invalid api key:** The key must be for **production** (not test) and **tied to the same wallet** as `POLYMARKET_FUNDER`. Ensure `.env` has only **one** set of `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE` (no duplicate lines). The bot trims whitespace and uses Polymarket server time for L2 signing to avoid clock skew.
+
 ---
 
 ## 3. Enable Polymarket on the bot

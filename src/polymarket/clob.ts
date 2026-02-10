@@ -62,11 +62,11 @@ export interface CreatePolyOrderParams {
  * Optional: HTTP_PROXY and HTTPS_PROXY (set in restricted regions; omit in e.g. Amsterdam to call CLOB directly).
  */
 export function getPolyClobConfigFromEnv(): PolyClobConfig {
-  const privateKey = process.env.POLYMARKET_PRIVATE_KEY;
-  const funder = process.env.POLYMARKET_FUNDER;
-  const apiKey = process.env.POLYMARKET_API_KEY;
-  const apiSecret = process.env.POLYMARKET_API_SECRET;
-  const apiPassphrase = process.env.POLYMARKET_API_PASSPHRASE;
+  const privateKey = process.env.POLYMARKET_PRIVATE_KEY?.trim();
+  const funder = process.env.POLYMARKET_FUNDER?.trim();
+  const apiKey = process.env.POLYMARKET_API_KEY?.trim();
+  const apiSecret = process.env.POLYMARKET_API_SECRET?.trim();
+  const apiPassphrase = process.env.POLYMARKET_API_PASSPHRASE?.trim();
   if (!privateKey || !funder || !apiKey || !apiSecret || !apiPassphrase) {
     throw new Error(
       'Missing Polymarket env: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE'
@@ -99,7 +99,9 @@ export function createPolyClobClient(config: PolyClobConfig): ClobClient {
     signer,
     creds,
     SIGNATURE_TYPE as SignatureType,
-    config.funder
+    config.funder,
+    undefined, // geoBlockToken
+    true // useServerTime: use Polymarket server time for L2 signing to avoid 401 from clock skew
   );
 }
 
