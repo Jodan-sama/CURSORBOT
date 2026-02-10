@@ -61,8 +61,10 @@ export function isB1MarketOrderWindow(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 1;
 }
 
-/** Blackout: no trades 08:00–08:15 MST (Utah, Mountain) Mon–Fri. We check in UTC: 8am MST = 15:00 UTC (MST is UTC-7). */
+/** Blackout: no trades 08:00–08:15 MST (Utah) Mon–Fri. Set BLACKOUT_08_15_MST=true to enable; otherwise 24/7. */
 export function isBlackoutWindow(now: Date = new Date()): boolean {
+  const enabled = process.env.BLACKOUT_08_15_MST?.trim().toLowerCase() === 'true';
+  if (!enabled) return false;
   const day = now.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
   const hour = now.getUTCHours();
   const min = now.getUTCMinutes();
