@@ -28,6 +28,8 @@ const buttonStyle: React.CSSProperties = {
 };
 const buttonDisabledStyle: React.CSSProperties = { ...buttonStyle, opacity: 0.6, cursor: 'not-allowed' };
 
+const headingStyle: React.CSSProperties = { fontFamily: 'var(--font-din-condensed), Barlow Condensed, sans-serif' };
+
 type Config = {
   emergency_off: boolean;
   position_size_kalshi: number;
@@ -203,10 +205,10 @@ export default function Dashboard() {
 
   return (
     <div>
-      <h1>Cursorbot Control</h1>
+      <h1 style={headingStyle}>Cursorbot Control</h1>
 
       <section style={{ marginBottom: 24 }}>
-        <h2>Emergency</h2>
+        <h2 style={headingStyle}>Emergency</h2>
         <p>
           Status: <strong>{config?.emergency_off ? 'OFF (no new orders)' : 'Running'}</strong>
         </p>
@@ -229,7 +231,7 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2>Position sizes (per bot)</h2>
+        <h2 style={headingStyle}>Position sizes (per bot)</h2>
         <form onSubmit={saveSizes}>
           <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
             <thead>
@@ -272,7 +274,7 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2>Spread thresholds (%)</h2>
+        <h2 style={headingStyle}>Spread thresholds (%)</h2>
         <p style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>Bot enters when spread is <strong>outside</strong> this % (e.g. 0.57 means enter if spread &gt; 0.57%).</p>
         <form onSubmit={saveSpreadThresholds}>
           <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
@@ -309,7 +311,7 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2>Recent errors</h2>
+        <h2 style={headingStyle}>Recent errors</h2>
         {errors.length === 0 ? (
           <p style={{ color: '#666' }}>No errors logged.</p>
         ) : (
@@ -335,7 +337,7 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2>Recent positions (last 200)</h2>
+        <h2 style={headingStyle}>Recent positions (last 200)</h2>
         <p style={{ marginBottom: 8 }}>
           <button type="button" onClick={downloadCsv} disabled={csvLoading} style={csvLoading ? buttonDisabledStyle : buttonStyle}>
             {csvLoading ? 'Preparing…' : 'Download CSV (last 200 trades)'}
