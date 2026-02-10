@@ -73,51 +73,58 @@ export default function Dashboard() {
   });
   const [spreadEdits, setSpreadEdits] = useState<Record<string, string>>({});
   const [csvLoading, setCsvLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   async function load() {
-    const spreadPromise = getSupabase().from('spread_thresholds').select('bot, asset, threshold_pct');
-    const [
-      { data: configData },
-      { data: posData },
-      { data: errData },
-      spreadResult,
-      { data: botSizesData },
-    ] = await Promise.all([
-      getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-      getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
-      getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
-      Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
-      getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
-    ]);
-    setConfig(configData ?? null);
-    setPositions((posData ?? []) as Position[]);
-    setErrors((errData ?? []) as ErrorLog[]);
-    const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
-    setSpreadRows(rows);
-    const defaults: Record<string, string> = {
-      'B1-BTC': '0.21', 'B1-ETH': '0.23', 'B1-SOL': '0.27',
-      'B2-BTC': '0.57', 'B2-ETH': '0.57', 'B2-SOL': '0.62',
-      'B3-BTC': '1', 'B3-ETH': '1', 'B3-SOL': '1',
-    };
-    const edits: Record<string, string> = { ...defaults };
-    rows.forEach((r) => {
-      edits[`${r.bot}-${r.asset}`] = String(r.threshold_pct);
-    });
-    setSpreadEdits(edits);
-    const defaultK = configData ? String(configData.position_size_kalshi) : '';
-    const defaultP = configData ? String(configData.position_size_polymarket) : '';
-    const sizesRows = (botSizesData ?? []) as { bot: string; asset: string; size_kalshi: number | null; size_polymarket: number | null }[];
-    const nextBotSizes: Record<string, { kalshi: string; poly: string }> = { B1: { kalshi: defaultK, poly: defaultP }, B2: { kalshi: defaultK, poly: defaultP }, B3: { kalshi: defaultK, poly: defaultP } };
-    for (const bot of BOTS) {
-      const first = sizesRows.find((r) => r.bot === bot);
-      if (first) {
-        nextBotSizes[bot] = {
-          kalshi: first.size_kalshi != null ? String(first.size_kalshi) : defaultK,
-          poly: first.size_polymarket != null ? String(first.size_polymarket) : defaultP,
-        };
+    setLoadError(null);
+    try {
+      const spreadPromise = getSupabase().from('spread_thresholds').select('bot, asset, threshold_pct');
+      const [
+        { data: configData },
+        { data: posData },
+        { data: errData },
+        spreadResult,
+        { data: botSizesData },
+      ] = await Promise.all([
+        getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
+        getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
+        Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
+        getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
+      ]);
+      setConfig(configData ?? null);
+      setPositions((posData ?? []) as Position[]);
+      setErrors((errData ?? []) as ErrorLog[]);
+      const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
+      setSpreadRows(rows);
+      const defaults: Record<string, string> = {
+        'B1-BTC': '0.21', 'B1-ETH': '0.23', 'B1-SOL': '0.27',
+        'B2-BTC': '0.57', 'B2-ETH': '0.57', 'B2-SOL': '0.62',
+        'B3-BTC': '1', 'B3-ETH': '1', 'B3-SOL': '1',
+      };
+      const edits: Record<string, string> = { ...defaults };
+      rows.forEach((r) => {
+        edits[`${r.bot}-${r.asset}`] = String(r.threshold_pct);
+      });
+      setSpreadEdits(edits);
+      const defaultK = configData ? String(configData.position_size_kalshi) : '';
+      const defaultP = configData ? String(configData.position_size_polymarket) : '';
+      const sizesRows = (botSizesData ?? []) as { bot: string; asset: string; size_kalshi: number | null; size_polymarket: number | null }[];
+      const nextBotSizes: Record<string, { kalshi: string; poly: string }> = { B1: { kalshi: defaultK, poly: defaultP }, B2: { kalshi: defaultK, poly: defaultP }, B3: { kalshi: defaultK, poly: defaultP } };
+      for (const bot of BOTS) {
+        const first = sizesRows.find((r) => r.bot === bot);
+        if (first) {
+          nextBotSizes[bot] = {
+            kalshi: first.size_kalshi != null ? String(first.size_kalshi) : defaultK,
+            poly: first.size_polymarket != null ? String(first.size_polymarket) : defaultP,
+          };
+        }
       }
+      setBotSizes(nextBotSizes);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLoadError(msg);
     }
-    setBotSizes(nextBotSizes);
   }
 
   useEffect(() => {
@@ -202,6 +209,23 @@ export default function Dashboard() {
   }
 
   if (loading) return <p>Loading…</p>;
+
+  if (loadError) {
+    return (
+      <div>
+        <h1 style={headingStyle}>Cursorbot Control</h1>
+        <p style={{ color: '#b91c1c', marginTop: 16 }}>
+          Could not load data: {loadError}
+        </p>
+        <p style={{ fontSize: 14, color: '#666', marginTop: 8 }}>
+          Check that <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> are set in Vercel, and that your Supabase project is not paused.
+        </p>
+        <button type="button" onClick={() => { setLoadError(null); setLoading(true); load().finally(() => setLoading(false)); }} style={{ marginTop: 12, ...buttonStyle }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div>

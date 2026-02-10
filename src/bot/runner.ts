@@ -135,7 +135,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
   for (const asset of ASSETS) {
     if (await isAssetBlocked(asset)) {
-      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skipped (B3 cooldown, blocked ~30 min)`);
+      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skipped (B3 cooldown, blocked 1h)`);
       continue;
     }
 
@@ -361,9 +361,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         }
       }
       if (placed) {
-        const blockUntil = new Date(now.getTime() + 30 * 60 * 1000);
+        const blockUntil = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
         await setAssetBlock(asset, blockUntil);
-        console.log(`B3 placed for ${asset}: block B1/B2 until ${blockUntil.toISOString()}`);
+        console.log(`B3 placed for ${asset}: block B1/B2 1h until ${blockUntil.toISOString()}`);
       }
     }
   }
