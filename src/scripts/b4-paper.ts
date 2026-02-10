@@ -37,6 +37,7 @@ type State = {
   direction: Direction | null;
   sold: boolean;
   loggedCheck?: boolean;
+  lastSampleSec?: number; // last sec we logged a B4 sample (multiples of 10)
 };
 
 const stateByAsset: Partial<Record<Asset, State>> = {};
@@ -48,6 +49,12 @@ function getState(asset: Asset, windowUnix: number): State {
     stateByAsset[asset] = s;
   }
   return s;
+}
+
+/** Seconds into the current 15m window (0 at window start). */
+function secondsIntoWindow(now: Date, windowUnix: number): number {
+  const windowStartUnix = windowUnix - 900;
+  return Math.floor(now.getTime() / 1000) - windowStartUnix;
 }
 
 async function tickAsset(asset: Asset, now: Date): Promise<void> {
@@ -70,11 +77,20 @@ async function tickAsset(asset: Asset, now: Date): Promise<void> {
   if (yesPrice == null || noPrice == null) return;
 
   const state = getState(asset, windowUnix);
+  const sec = secondsIntoWindow(now, windowUnix);
 
-  // Once per asset per window: log that we're checking and current prices (so log isn't empty if no 54/60)
+  // Once per asset per window: log that we're checking and current prices
   if (!state.loggedCheck) {
     state.loggedCheck = true;
     logLine(`B4 check asset=${asset} slug=${slug} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
+  }
+
+  // Every 10 seconds during the window: log max price once per bucket so we see we're sampling the whole 3 min
+  const bucket = Math.floor(sec / 10) * 10;
+  if (sec >= 0 && sec <= 179 && bucket >= 0 && state.lastSampleSec !== bucket) {
+    (state as State).lastSampleSec = bucket;
+    const maxP = Math.max(yesPrice, noPrice);
+    logLine(`B4 sample sec=${bucket} asset=${asset} max=${maxP.toFixed(3)} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
   }
 
   if (!state.entered) {
@@ -105,9 +121,8 @@ async function tick(now: Date): Promise<void> {
   const minutesLeft = minutesLeftInWindow(now);
   if (!isB4Window(minutesLeft)) return;
 
-  for (const asset of B4_ASSETS) {
-    await tickAsset(asset, now);
-  }
+  // Check all three assets in parallel so we get ~1s between full rounds (not 3s)
+  await Promise.all(B4_ASSETS.map((asset) => tickAsset(asset, now)));
 }
 
 async function main(): Promise<void> {
