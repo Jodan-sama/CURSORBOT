@@ -129,14 +129,14 @@ export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
   let creds: { key: string; secret: string; passphrase: string } | null = null;
   try {
     const raw = await clientNoCreds.createApiKey();
-    creds = normalizeCreds(raw as Record<string, unknown>);
+    creds = normalizeCreds(raw as unknown as Record<string, unknown>);
   } catch (e: unknown) {
     const status = (e as { response?: { status?: number } })?.response?.status;
     const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? '';
     if (status === 400 || /create api key|could not create/i.test(String(msg))) {
       try {
         const raw = await clientNoCreds.deriveApiKey();
-        creds = normalizeCreds(raw as Record<string, unknown>);
+        creds = normalizeCreds(raw as unknown as Record<string, unknown>);
       } catch (deriveErr: unknown) {
         const deriveMsg = deriveErr instanceof Error ? deriveErr.message : String(deriveErr);
         const deriveStatus = (deriveErr as { response?: { status?: number } })?.response?.status;
