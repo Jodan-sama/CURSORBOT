@@ -388,9 +388,8 @@ export default function Dashboard() {
       <section>
         <h2 style={headingStyle}>Recent positions (last 200)</h2>
         <p style={{ marginBottom: 8 }}>
-          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={csvLoading ? buttonDisabledStyle : buttonStyle}>
-            {csvLoading ? 'Preparing…' : 'Download CSV (last 200 trades)'}
-          </button>
+          <span style={{ fontSize: 13, color: '#666' }}>Orders <strong>placed</strong> by the bot — limit orders may not fill; check the exchange for fill status.</span>
+          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 200)'}</button>
           <span style={{ display: 'block', fontSize: 13, color: '#555', marginTop: 6 }}>
             CSV includes an <strong>exchange</strong> column: <code>kalshi</code> or <code>polymarket</code>.
           </span>
@@ -423,7 +422,7 @@ export default function Dashboard() {
 
       <section style={{ marginTop: 24 }}>
         <h2 style={headingStyle}>B4 paper (last 20)</h2>
-        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>BTC/ETH/SOL 54→56 buy / 60 sell, first 3 min of each 15m window. Fetch errors logged to b4-paper.log.</p>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>Only when price hit 54¢+ in the first 3 min (BTC/ETH/SOL checked every second). More detail in <code>b4-paper.log</code> on the server.</p>
         {b4Logs.length === 0 ? (
           <p style={{ color: '#666' }}>No B4 events yet.</p>
         ) : (

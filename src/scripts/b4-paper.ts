@@ -59,23 +59,27 @@ function secondsIntoWindow(now: Date, windowUnix: number): number {
 }
 
 async function tickAsset(asset: Asset, now: Date): Promise<void> {
-  const windowUnix = getCurrentWindowEndUnix(now);
-  const minutesLeft = minutesLeftInWindow(now);
-
-  if (!isB4Window(minutesLeft)) return;
-
-  const slug = getCurrentPolySlug(asset, now);
-  let market;
   try {
-    market = await getPolyMarketBySlug(slug);
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    logLine(`B4 fetch failed asset=${asset} slug=${slug} err=${errMsg}`);
-    return;
-  }
+    const windowUnix = getCurrentWindowEndUnix(now);
+    const minutesLeft = minutesLeftInWindow(now);
 
-  // Use full array: any outcome can hit 54+. Coerce to number. Gamma may return 0-1 (0.54) or 0-100 (54).
-  let prices = market.outcomePrices.map((p) => Number(p));
+    if (!isB4Window(minutesLeft)) return;
+
+    const slug = getCurrentPolySlug(asset, now);
+    let market;
+    try {
+      market = await getPolyMarketBySlug(slug);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      logLine(`B4 fetch failed asset=${asset} slug=${slug} err=${errMsg}`);
+      return;
+    }
+
+    const rawPrices = market?.outcomePrices;
+    if (!Array.isArray(rawPrices) || rawPrices.length === 0) return;
+
+    // Use full array: any outcome can hit 54+. Coerce to number. Gamma may return 0-1 (0.54) or 0-100 (54).
+    let prices = rawPrices.map((p) => Number(p));
   if (prices.length === 0) return;
   const rawMax = Math.max(...prices);
   if (rawMax > 1.5) prices = prices.map((p) => p / 100);
@@ -121,14 +125,23 @@ async function tickAsset(asset: Asset, now: Date): Promise<void> {
       await logB4Paper({ window_unix: windowUnix, asset, event: 'SELL_60_POSSIBLE', direction: state.direction, price: sidePrice });
     }
   }
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    logLine(`B4 tickAsset failed asset=${asset} err=${errMsg}`);
+  }
 }
 
 async function tick(now: Date): Promise<void> {
-  const minutesLeft = minutesLeftInWindow(now);
-  if (!isB4Window(minutesLeft)) return;
+  try {
+    const minutesLeft = minutesLeftInWindow(now);
+    if (!isB4Window(minutesLeft)) return;
 
-  // Check all three assets in parallel so we get ~1s between full rounds (not 3s)
-  await Promise.all(B4_ASSETS.map((asset) => tickAsset(asset, now)));
+    // Check all three assets in parallel; one failure must not kill the process
+    await Promise.all(B4_ASSETS.map((asset) => tickAsset(asset, now)));
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    logLine(`B4 tick failed err=${errMsg}`);
+  }
 }
 
 async function main(): Promise<void> {
