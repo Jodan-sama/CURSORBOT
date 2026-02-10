@@ -106,7 +106,7 @@ export default function Dashboard() {
   async function saveSizes(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    await supabase
+    await getSupabase()
       .from('bot_config')
       .update({
         position_size_kalshi: parseFloat(kalshiSize) || 0,
