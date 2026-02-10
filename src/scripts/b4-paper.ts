@@ -36,6 +36,7 @@ type State = {
   entered: boolean;
   direction: Direction | null;
   sold: boolean;
+  loggedCheck?: boolean;
 };
 
 const stateByAsset: Partial<Record<Asset, State>> = {};
@@ -69,6 +70,12 @@ async function tickAsset(asset: Asset, now: Date): Promise<void> {
   if (yesPrice == null || noPrice == null) return;
 
   const state = getState(asset, windowUnix);
+
+  // Once per asset per window: log that we're checking and current prices (so log isn't empty if no 54/60)
+  if (!state.loggedCheck) {
+    state.loggedCheck = true;
+    logLine(`B4 check asset=${asset} slug=${slug} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
+  }
 
   if (!state.entered) {
     if (yesPrice >= BUY_THRESHOLD) {
