@@ -53,6 +53,7 @@ export default function Dashboard() {
   const [csvLoading, setCsvLoading] = useState(false);
 
   async function load() {
+    const spreadPromise = supabase.from('spread_thresholds').select('bot, asset, threshold_pct');
     const [
       { data: configData },
       { data: posData },
@@ -62,7 +63,7 @@ export default function Dashboard() {
       supabase.from('bot_config').select('*').eq('id', 'default').single(),
       supabase.from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
       supabase.from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
-      supabase.from('spread_thresholds').select('bot, asset, threshold_pct').then((r) => r).catch(() => ({ data: [] })),
+      Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
     ]);
     setConfig(configData ?? null);
     setPositions((posData ?? []) as Position[]);
