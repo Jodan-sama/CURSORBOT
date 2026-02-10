@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "bot": "node dist/bot/run.js",
+    "test-order": "node dist/scripts/place-test-order.js",
     "dev": "tsx watch src/index.ts",
     "test": "node --test dist/**/*.test.js"
   },
