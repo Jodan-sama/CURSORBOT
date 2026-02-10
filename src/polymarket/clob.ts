@@ -118,20 +118,36 @@ export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
     undefined,
     true
   );
+  const normalizeCreds = (raw: Record<string, unknown> | null): { key: string; secret: string; passphrase: string } | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const key = (raw.key ?? raw.apiKey ?? (raw as Record<string, unknown>).api_key) as string | undefined;
+    const secret = (raw.secret ?? (raw as Record<string, unknown>).api_secret) as string | undefined;
+    const passphrase = (raw.passphrase ?? (raw as Record<string, unknown>).api_passphrase) as string | undefined;
+    if (key && secret && passphrase) return { key, secret, passphrase };
+    return null;
+  };
   let creds: { key: string; secret: string; passphrase: string } | null = null;
   try {
-    creds = await clientNoCreds.createApiKey();
+    const raw = await clientNoCreds.createApiKey();
+    creds = normalizeCreds(raw as Record<string, unknown>);
   } catch (e: unknown) {
     const status = (e as { response?: { status?: number } })?.response?.status;
     const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? '';
     if (status === 400 || /create api key|could not create/i.test(String(msg))) {
-      creds = await clientNoCreds.deriveApiKey();
+      try {
+        const raw = await clientNoCreds.deriveApiKey();
+        creds = normalizeCreds(raw as Record<string, unknown>);
+      } catch (deriveErr: unknown) {
+        const deriveMsg = deriveErr instanceof Error ? deriveErr.message : String(deriveErr);
+        const deriveStatus = (deriveErr as { response?: { status?: number } })?.response?.status;
+        throw new Error(`createApiKey failed (400), then deriveApiKey failed: status=${deriveStatus} ${deriveMsg}`);
+      }
     } else {
       throw e;
     }
   }
   if (!creds?.key || !creds?.secret || !creds?.passphrase) {
-    throw new Error('derive/create API key did not return key/secret/passphrase');
+    throw new Error('derive/create API key did not return key/secret/passphrase (check funder address and signature type at polymarket.com/settings)');
   }
   cachedDerivedClient = new ClobClient(
     CLOB_HOST,
