@@ -91,11 +91,12 @@ async function tryPlacePolymarket(
   slug: string,
   asset: Asset,
   price: number,
-  size: number
+  size: number,
+  side: 'yes' | 'no'
 ): Promise<{ orderId?: string }> {
   const parsed = await getPolyMarketBySlug(slug);
   const client = createPolyClobClient(getPolyClobConfigFromEnv());
-  const params = orderParamsFromParsedMarket(parsed, price, size);
+  const params = orderParamsFromParsedMarket(parsed, price, size, side);
   const result = await createAndPostPolyOrder(client, params);
   return { orderId: result.orderID };
 }
@@ -184,7 +185,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (isPolymarketEnabled() && polySlug) {
         try {
-          const { orderId } = await tryPlacePolymarket(polySlug, asset, useMarket ? 0.99 : 0.96, sizePolyB1);
+          const { orderId } = await tryPlacePolymarket(polySlug, asset, useMarket ? 0.99 : 0.96, sizePolyB1, side);
           enteredThisWindow.add(key);
           await logPosition({
             bot: 'B1',
@@ -232,7 +233,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (isPolymarketEnabled() && polySlug) {
         try {
-          const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2);
+          const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2, side);
           enteredThisWindow.add(key);
           await logPosition({
             bot: 'B2',
@@ -282,7 +283,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (isPolymarketEnabled() && polySlug) {
         try {
-          const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB3);
+          const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB3, side);
           placed = true;
           enteredThisWindow.add(key);
           await logPosition({

@@ -125,17 +125,19 @@ export async function createAndPostPolyOrder(
 }
 
 /**
- * Build order params from a parsed Gamma market (buy YES = first outcome).
+ * Build order params from a parsed Gamma market.
+ * side: 'yes' = first outcome (Up), 'no' = second outcome (Down). We only buy the winning side.
  */
 export function orderParamsFromParsedMarket(
   parsed: ParsedPolyMarket,
   price: number,
-  size: number
+  size: number,
+  side: 'yes' | 'no' = 'yes'
 ): CreatePolyOrderParams {
-  const yesTokenId = parsed.clobTokenIds[0];
-  if (!yesTokenId) throw new Error('Market has no YES token');
+  const tokenId = side === 'yes' ? parsed.clobTokenIds[0] : parsed.clobTokenIds[1];
+  if (!tokenId) throw new Error(`Market has no ${side.toUpperCase()} token`);
   return {
-    tokenId: yesTokenId,
+    tokenId,
     price,
     size,
     tickSize: toTickSize(parsed.orderPriceMinTickSize),
