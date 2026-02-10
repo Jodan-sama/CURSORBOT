@@ -254,7 +254,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
 
       const useMarket = isB1MarketOrderWindow(minutesLeft);
-      if (kalshiTicker) {
+      if (kalshiTicker && sizeKalshiB1 > 0) {
         try {
           const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B1', useMarket, 96, sizeKalshiB1, side);
           enteredThisWindow.add(key);
@@ -272,8 +272,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
         }
       }
-      // Poly mirrors Kalshi: same entry (we use Kalshi data); only place when we have Kalshi ticker.
-      if (kalshiTicker && isPolymarketEnabled() && polySlug) {
+      // Poly mirrors Kalshi: same entry (we use Kalshi data); only place when we have Kalshi ticker and size > 0.
+      if (kalshiTicker && isPolymarketEnabled() && polySlug && sizePolyB1 > 0) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, useMarket ? 0.99 : 0.96, sizePolyB1, side);
           enteredThisWindow.add(key);
@@ -304,7 +304,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         continue;
       }
 
-      if (kalshiTicker) {
+      if (kalshiTicker && sizeKalshiB2 > 0) {
         try {
           const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2, side);
           enteredThisWindow.add(key);
@@ -323,8 +323,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
         }
       }
-      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker.
-      if (kalshiTicker && isPolymarketEnabled() && polySlug) {
+      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0.
+      if (kalshiTicker && isPolymarketEnabled() && polySlug && sizePolyB2 > 0) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2, side);
           enteredThisWindow.add(key);
@@ -356,7 +356,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
 
       let placed = false;
-      if (kalshiTicker) {
+      if (kalshiTicker && sizeKalshiB3 > 0) {
         try {
           const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B3', false, 97, sizeKalshiB3, side);
           placed = true;
@@ -375,8 +375,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
         }
       }
-      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker.
-      if (kalshiTicker && isPolymarketEnabled() && polySlug) {
+      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0.
+      if (kalshiTicker && isPolymarketEnabled() && polySlug && sizePolyB3 > 0) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB3, side);
           placed = true;

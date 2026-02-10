@@ -33,7 +33,8 @@ sudo journalctl -u cursorbot -n 100
 1. **Heartbeat** – Every ~60s the log should show `[cursorbot] alive | ... | Kalshi + Polymarket` (not "Kalshi only") when `ENABLE_POLYMARKET=true` in `.env`. If it says "Kalshi only", Poly is off or env is wrong.
 2. **When a B1/B2/B3 window hits** – Look for lines like `B1 Poly BTC orderId=…` or `B2 Poly ETH orderId=…`. If you only see `B1 Kalshi …` and never `B1 Poly …`, either spread/size didn’t qualify for Poly or Poly failed (check step 3).
 3. **Dashboard** – **Recent positions** should sometimes show **exchange: polymarket**. **Recent errors** will show Poly-related failures (e.g. CLOB auth, proxy, or “missing env”).
-4. **Poly env** – On the droplet, ensure `.env` has all six: `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `ENABLE_POLYMARKET=true`. Restart after any change: `systemctl restart cursorbot`.
+4. **Poly env** – On the droplet, for **derive mode** (recommended): `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, `POLYMARKET_DERIVE_KEY=true`, `ENABLE_POLYMARKET=true`. For static keys use the three `POLYMARKET_API_*` vars instead of `DERIVE_KEY`. Restart after any change: `systemctl restart cursorbot`.
+5. **Trading enabled** – In the **dashboard**, ensure **Emergency** is **Resume** (not OFF). Set **position sizes** > 0 for Kalshi and Polymarket so the bots place orders; 0 size is skipped.
 
 ## Errors in the dashboard
 
