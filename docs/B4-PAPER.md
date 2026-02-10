@@ -1,15 +1,13 @@
 # B4 paper trader
 
-B4 is a **paper-only** bot: it does not place real orders. It watches **BTC, ETH, and SOL** 15‑minute Polymarket markets in the **first 3 minutes** of each window and logs when a 54→56 buy and 60 sell would have been possible.
+B4 is a **paper-only** bot: it does not place real orders. It watches **BTC, ETH, and SOL** 15‑minute Polymarket markets and logs whether a 54→56 buy and 60 sell would have been possible.
 
 ## Logic
 
 - **Assets:** BTC, ETH, SOL (same rules for each).
-- **Window:** First 3 minutes of each 15m market (e.g. :00–:03, :15–:18, :30–:33, :45–:48).
-- **Check:** Every 1 second (market prices from Gamma). If a fetch fails, the error is written to `b4-paper.log` (asset, slug, error) so you can debug.
-- **Entry:** If **yes** or **no** price reaches **54¢+** (0.54), log “buy at 56 possible” in that direction.
-- **Exit:** When that same side reaches **60¢+** (0.60), log “sell at 60 possible”.
-- **Once per cycle:** One entry and one exit per asset per 15m window; then it waits for the next window.
+- **First 3 minutes:** Check every 1 second. If **yes** or **no** price reaches **54¢+**, log **BUY_56_POSSIBLE** (entry in that direction). If that same side reaches **60¢+** in the first 3 min, log **60_POSSIBLE** immediately. If we never hit 54¢ in the first 3 min, log **NO_ENTRY** once when the 3 min end.
+- **After first 3 minutes:** If we entered (hit 54¢), then **every 30 seconds** (at 3:00, 3:30, 4:00, … until window end) check if that side’s price is **60¢+**. If yes, log **60_POSSIBLE**. If the window ends and we had entered but never hit 60¢, log **LOSS**.
+- **Summary per asset per window:** Exactly one of: **NO_ENTRY** (never hit 54), **LOSS** (hit 54, never hit 60), or **60_POSSIBLE** (hit 54 and later 60).
 
 ## Run
 
@@ -53,7 +51,7 @@ Events are appended to **`b4-paper.log`** in the current working directory (e.g.
 
 ```
 2026-02-10T19:00:01.234Z | window=1770749100 | asset=BTC | event=BUY_56_POSSIBLE | direction=yes | price=0.542
-2026-02-10T19:00:45.678Z | window=1770749100 | asset=BTC | event=SELL_60_POSSIBLE | direction=yes | price=0.601
+2026-02-10T19:00:45.678Z | window=1770749100 | asset=BTC | event=60_POSSIBLE | direction=yes | price=0.601
 2026-02-10T19:01:00.000Z | B4 fetch failed asset=ETH slug=eth-updown-15m-1770749100 err=Gamma event ... 404
 ```
 
@@ -68,8 +66,8 @@ tail -50 /root/cursorbot/b4-paper.log
 # Follow live
 tail -f /root/cursorbot/b4-paper.log
 
-# Count successes (both buy and sell in same window)
-grep SELL_60_POSSIBLE /root/cursorbot/b4-paper.log | wc -l
+# Count 60_POSSIBLE (entered and hit 60)
+grep 60_POSSIBLE /root/cursorbot/b4-paper.log | wc -l
 ```
 
 **Download to your machine:**
@@ -78,4 +76,4 @@ grep SELL_60_POSSIBLE /root/cursorbot/b4-paper.log | wc -l
 scp -i .ssh/cursorbot_droplet root@188.166.15.165:/root/cursorbot/b4-paper.log ./
 ```
 
-Then open `b4-paper.log` locally. Each `SELL_60_POSSIBLE` line is a cycle where both the 56 buy and 60 sell were possible.
+Each **60_POSSIBLE** line is a window where we entered at 54¢+ and later saw 60¢+ in that direction. **NO_ENTRY** = never hit 54 in first 3 min. **LOSS** = hit 54 but never hit 60 by window end.

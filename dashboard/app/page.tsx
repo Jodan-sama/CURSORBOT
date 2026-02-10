@@ -422,7 +422,7 @@ export default function Dashboard() {
 
       <section style={{ marginTop: 24 }}>
         <h2 style={headingStyle}>B4 paper (last 20)</h2>
-        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>Only when price hit 54¢+ in the first 3 min (BTC/ETH/SOL checked every second). More detail in <code>b4-paper.log</code> on the server.</p>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>First 3 min: entry at 54¢. Then every 30s check for 60¢. Events: BUY_56_POSSIBLE, 60_POSSIBLE, NO_ENTRY (never hit 54), LOSS (hit 54, never 60).</p>
         {b4Logs.length === 0 ? (
           <p style={{ color: '#666' }}>No B4 events yet.</p>
         ) : (

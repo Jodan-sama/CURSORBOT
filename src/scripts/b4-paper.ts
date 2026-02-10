@@ -1,7 +1,9 @@
 /**
- * B4 paper trader: BTC, ETH, SOL. First 3 min of each 15m window.
- * When yes or no price hits 54+ (0.54), we "would" buy at 56; when that side hits 60+, we "would" sell at 60.
- * Paper only – no real orders. Logs to b4-paper.log and Supabase. Run with HTTP_PROXY/HTTPS_PROXY if needed.
+ * B4 paper trader: BTC, ETH, SOL.
+ * - First 3 min: check every second for entry (any side >= 54¢). If never hit 54¢ → log NO_ENTRY.
+ * - If entered: from 3 min to end of window, check every 30s if that side hits 60¢. If yes → log 60_POSSIBLE.
+ * - If entered but never hit 60 by end of window → log LOSS.
+ * Paper only – no real orders. Logs to b4-paper.log and Supabase.
  */
 import 'dotenv/config';
 import { appendFileSync } from 'fs';
@@ -11,14 +13,13 @@ import type { Asset } from '../kalshi/ticker.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 
 const LOG_PATH = 'b4-paper.log';
-/** Any price >= this counts as 54¢ (use epsilon so 0.54 or float 0.5399... both count). */
 const BUY_THRESHOLD = 0.54 - 1e-6;
 const SELL_AT = 0.6 - 1e-6;
 
 const B4_ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
 
 /** First 3 minutes of window = minutes left in (12, 15]. */
-function isB4Window(minutesLeft: number): boolean {
+function isFirst3Min(minutesLeft: number): boolean {
   return minutesLeft > 12 && minutesLeft <= 15;
 }
 
@@ -38,7 +39,9 @@ type State = {
   direction: Direction | null;
   sold: boolean;
   loggedCheck?: boolean;
-  lastSampleSec?: number; // last sec we logged a B4 sample (multiples of 10)
+  lastSampleSec?: number;
+  loggedNoEntry?: boolean;
+  last60Bucket?: number; // 30s bucket index after min 3 (0 = 180–209s, 1 = 210–239s, ...)
 };
 
 const stateByAsset: Partial<Record<Asset, State>> = {};
@@ -58,73 +61,108 @@ function secondsIntoWindow(now: Date, windowUnix: number): number {
   return Math.floor(now.getTime() / 1000) - windowStartUnix;
 }
 
+async function fetchPrices(asset: Asset, now: Date): Promise<{ yesPrice: number; noPrice: number } | null> {
+  const slug = getCurrentPolySlug(asset, now);
+  let market;
+  try {
+    market = await getPolyMarketBySlug(slug);
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    logLine(`B4 fetch failed asset=${asset} slug=${slug} err=${errMsg}`);
+    return null;
+  }
+  const rawPrices = market?.outcomePrices;
+  if (!Array.isArray(rawPrices) || rawPrices.length === 0) return null;
+  let prices = rawPrices.map((p) => Number(p));
+  const rawMax = Math.max(...prices);
+  if (rawMax > 1.5) prices = prices.map((p) => p / 100);
+  const p0 = prices[0] ?? 0;
+  const p1 = prices[1] ?? 0;
+  return { yesPrice: p0, noPrice: p1 };
+}
+
 async function tickAsset(asset: Asset, now: Date): Promise<void> {
   try {
     const windowUnix = getCurrentWindowEndUnix(now);
     const minutesLeft = minutesLeftInWindow(now);
+    const sec = secondsIntoWindow(now, windowUnix);
 
-    if (!isB4Window(minutesLeft)) return;
+    // Window transition: if we had a previous window with entered && !sold, log LOSS
+    const prev = stateByAsset[asset];
+    if (prev && prev.windowUnix !== windowUnix && prev.entered && !prev.sold) {
+      logLine(`window=${prev.windowUnix} | asset=${asset} | event=LOSS | direction=${prev.direction ?? '—'} (entered, never hit 60)`);
+      await logB4Paper({ window_unix: prev.windowUnix, asset, event: 'LOSS', direction: prev.direction, price: null });
+    }
 
-    const slug = getCurrentPolySlug(asset, now);
-    let market;
-    try {
-      market = await getPolyMarketBySlug(slug);
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      logLine(`B4 fetch failed asset=${asset} slug=${slug} err=${errMsg}`);
+    const state = getState(asset, windowUnix);
+
+    // ---------- First 3 minutes: entry at 54¢, and 60¢ if hit in same period ----------
+    if (isFirst3Min(minutesLeft)) {
+      const prices = await fetchPrices(asset, now);
+      if (!prices) return;
+      const { yesPrice, noPrice } = prices;
+      const maxPrice = Math.max(yesPrice, noPrice);
+      const maxIdx = yesPrice >= noPrice ? 0 : 1;
+
+      if (!state.loggedCheck) {
+        state.loggedCheck = true;
+        logLine(`B4 check asset=${asset} slug=${getCurrentPolySlug(asset, now)} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
+      }
+      const bucket = Math.floor(sec / 10) * 10;
+      if (bucket >= 0 && state.lastSampleSec !== bucket) {
+        (state as State).lastSampleSec = bucket;
+        logLine(`B4 sample sec=${bucket} asset=${asset} max=${maxPrice.toFixed(3)}`);
+      }
+
+      if (!state.entered) {
+        if (maxPrice >= BUY_THRESHOLD) {
+          state.entered = true;
+          state.direction = maxIdx === 0 ? 'yes' : 'no';
+          const sidePrice = maxIdx === 0 ? yesPrice : noPrice;
+          logLine(`window=${windowUnix} | asset=${asset} | event=BUY_56_POSSIBLE | direction=${state.direction} | price=${sidePrice.toFixed(3)}`);
+          await logB4Paper({ window_unix: windowUnix, asset, event: 'BUY_56_POSSIBLE', direction: state.direction, price: sidePrice });
+        }
+      }
+
+      if (state.entered && state.direction && !state.sold) {
+        const sidePrice = state.direction === 'yes' ? yesPrice : noPrice;
+        if (sidePrice >= SELL_AT) {
+          state.sold = true;
+          logLine(`window=${windowUnix} | asset=${asset} | event=60_POSSIBLE | direction=${state.direction} | price=${sidePrice.toFixed(3)}`);
+          await logB4Paper({ window_unix: windowUnix, asset, event: '60_POSSIBLE', direction: state.direction, price: sidePrice });
+        }
+      }
       return;
     }
 
-    const rawPrices = market?.outcomePrices;
-    if (!Array.isArray(rawPrices) || rawPrices.length === 0) return;
+    // ---------- After first 3 min: NO_ENTRY once if never entered; every 30s check for 60 if entered ----------
+    if (minutesLeft <= 0) return; // past window end, nothing to do
 
-    // Use full array: any outcome can hit 54+. Coerce to number. Gamma may return 0-1 (0.54) or 0-100 (54).
-    let prices = rawPrices.map((p) => Number(p));
-  if (prices.length === 0) return;
-  const rawMax = Math.max(...prices);
-  if (rawMax > 1.5) prices = prices.map((p) => p / 100);
-  const maxPrice = Math.max(...prices);
-  const maxIdx = prices.indexOf(maxPrice);
-  const p0 = prices[0] ?? 0;
-  const p1 = prices[1] ?? 0;
-  const yesPrice = p0;
-  const noPrice = p1;
-
-  const state = getState(asset, windowUnix);
-  const sec = secondsIntoWindow(now, windowUnix);
-
-  // Once per asset per window: log raw API view so we can see exact format/order
-  if (!state.loggedCheck) {
-    state.loggedCheck = true;
-    logLine(`B4 check asset=${asset} slug=${slug} rawPrices=[${prices.map((p) => p.toFixed(3)).join(',')}] outcomes=${JSON.stringify(market.outcomes ?? [])} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
-  }
-
-  // Every 10 seconds: sample so we see we're sampling the whole 3 min
-  const bucket = Math.floor(sec / 10) * 10;
-  if (sec >= 0 && sec <= 179 && bucket >= 0 && state.lastSampleSec !== bucket) {
-    (state as State).lastSampleSec = bucket;
-    logLine(`B4 sample sec=${bucket} asset=${asset} max=${maxPrice.toFixed(3)} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
-  }
-
-  // Trigger when ANY outcome is >= 0.54 (54¢ or above). Use max so we don't rely on order.
-  if (!state.entered) {
-    if (maxPrice >= BUY_THRESHOLD) {
-      state.entered = true;
-      state.direction = maxIdx === 0 ? 'yes' : 'no';
-      const sidePrice = maxIdx === 0 ? yesPrice : noPrice;
-      logLine(`window=${windowUnix} | asset=${asset} | event=BUY_56_POSSIBLE | direction=${state.direction} | price=${sidePrice.toFixed(3)} (maxIdx=${maxIdx})`);
-      await logB4Paper({ window_unix: windowUnix, asset, event: 'BUY_56_POSSIBLE', direction: state.direction, price: sidePrice });
+    if (!state.entered) {
+      if (!state.loggedNoEntry) {
+        (state as State).loggedNoEntry = true;
+        logLine(`window=${windowUnix} | asset=${asset} | event=NO_ENTRY (never hit 54 in first 3 min)`);
+        await logB4Paper({ window_unix: windowUnix, asset, event: 'NO_ENTRY', direction: null, price: null });
+      }
+      return;
     }
-  }
 
-  if (state.entered && state.direction && !state.sold) {
-    const sidePrice = state.direction === 'yes' ? yesPrice : noPrice;
+    if (!state.direction || state.sold) return;
+
+    // Every 30 seconds from 3 min (sec 180, 210, 240, ...) check if our side hit 60
+    if (sec < 180) return;
+    const bucket60 = Math.floor((sec - 180) / 30);
+    if (state.last60Bucket !== undefined && state.last60Bucket >= bucket60) return;
+    (state as State).last60Bucket = bucket60;
+
+    const prices = await fetchPrices(asset, now);
+    if (!prices) return;
+    const sidePrice = state.direction === 'yes' ? prices.yesPrice : prices.noPrice;
     if (sidePrice >= SELL_AT) {
       state.sold = true;
-      logLine(`window=${windowUnix} | asset=${asset} | event=SELL_60_POSSIBLE | direction=${state.direction} | price=${sidePrice.toFixed(3)}`);
-      await logB4Paper({ window_unix: windowUnix, asset, event: 'SELL_60_POSSIBLE', direction: state.direction, price: sidePrice });
+      logLine(`window=${windowUnix} | asset=${asset} | event=60_POSSIBLE | direction=${state.direction} | price=${sidePrice.toFixed(3)}`);
+      await logB4Paper({ window_unix: windowUnix, asset, event: '60_POSSIBLE', direction: state.direction, price: sidePrice });
     }
-  }
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     logLine(`B4 tickAsset failed asset=${asset} err=${errMsg}`);
@@ -133,10 +171,6 @@ async function tickAsset(asset: Asset, now: Date): Promise<void> {
 
 async function tick(now: Date): Promise<void> {
   try {
-    const minutesLeft = minutesLeftInWindow(now);
-    if (!isB4Window(minutesLeft)) return;
-
-    // Check all three assets in parallel; one failure must not kill the process
     await Promise.all(B4_ASSETS.map((asset) => tickAsset(asset, now)));
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
@@ -145,8 +179,8 @@ async function tick(now: Date): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  logLine('B4 paper started (BTC, ETH, SOL)');
-  console.log('B4 paper trader running (BTC/ETH/SOL, first 3 min, 54->56 buy / 60 sell). Log:', LOG_PATH);
+  logLine('B4 paper started (BTC, ETH, SOL): first 3 min entry at 54¢, then every 30s check 60¢; NO_ENTRY / LOSS / 60_POSSIBLE');
+  console.log('B4 paper trader running. Log:', LOG_PATH);
   while (true) {
     await tick(new Date());
     await new Promise((r) => setTimeout(r, 1000));
