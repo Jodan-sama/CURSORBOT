@@ -1,12 +1,18 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+let supabaseInstance: SupabaseClient | null = null;
+function getSupabase(): SupabaseClient {
+  if (!supabaseInstance) {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) throw new Error('NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY are required');
+    supabaseInstance = createClient(url, key);
+  }
+  return supabaseInstance;
+}
 
 const BOTS = ['B1', 'B2', 'B3'] as const;
 const ASSETS = ['BTC', 'ETH', 'SOL'] as const;
@@ -53,16 +59,16 @@ export default function Dashboard() {
   const [csvLoading, setCsvLoading] = useState(false);
 
   async function load() {
-    const spreadPromise = supabase.from('spread_thresholds').select('bot, asset, threshold_pct');
+    const spreadPromise = getSupabase().from('spread_thresholds').select('bot, asset, threshold_pct');
     const [
       { data: configData },
       { data: posData },
       { data: errData },
       spreadResult,
     ] = await Promise.all([
-      supabase.from('bot_config').select('*').eq('id', 'default').single(),
-      supabase.from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
-      supabase.from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
+      getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
+      getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
+      getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
       Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
     ]);
     setConfig(configData ?? null);
@@ -92,7 +98,7 @@ export default function Dashboard() {
 
   async function setEmergencyOff(off: boolean) {
     setSaving(true);
-    await supabase.from('bot_config').update({ emergency_off: off }).eq('id', 'default');
+    await getSupabase().from('bot_config').update({ emergency_off: off }).eq('id', 'default');
     await load();
     setSaving(false);
   }
@@ -119,7 +125,7 @@ export default function Dashboard() {
         const key = `${bot}-${asset}`;
         const val = parseFloat(spreadEdits[key] ?? '');
         if (!Number.isNaN(val)) {
-          await supabase.from('spread_thresholds').upsert(
+          await getSupabase().from('spread_thresholds').upsert(
             { bot, asset, threshold_pct: val },
             { onConflict: 'bot,asset' }
           );
