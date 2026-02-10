@@ -18,7 +18,7 @@ import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import { createPolyClobClient, getPolyClobConfigFromEnv, createAndPostPolyOrder, orderParamsFromParsedMarket } from '../polymarket/clob.js';
 import { getCurrentKalshiTicker } from '../kalshi/market.js';
 import { getKalshiMarket } from '../kalshi/market.js';
-import { parseKalshiTicker } from '../kalshi/ticker.js';
+import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
 import { fetchBinancePrice } from '../kalshi/spread.js';
 import { strikeSpreadPctSigned } from '../kalshi/spread.js';
 
@@ -41,7 +41,10 @@ async function main() {
   }
   const km = await getKalshiMarket(ticker);
   const parsedK = parseKalshiTicker(ticker);
-  const strike = (parsedK?.strikeFromTicker != null ? parsedK.strikeFromTicker : null) ?? km.floor_strike ?? null;
+  const tickerStrike = parsedK?.strikeFromTicker;
+  const useTickerStrike =
+    tickerStrike != null && isReasonableStrike(ASSET, tickerStrike);
+  const strike = (useTickerStrike ? tickerStrike : null) ?? km.floor_strike ?? null;
   if (strike == null) {
     console.error('No strike; cannot determine winning side.');
     process.exit(1);

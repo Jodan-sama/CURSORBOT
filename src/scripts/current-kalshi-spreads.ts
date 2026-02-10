@@ -2,13 +2,17 @@
  * Live comparison: Binance vs CoinGecko prices and signed spread % for BTC, ETH, SOL.
  * Refreshes every 5 seconds. Run: npx tsx src/scripts/current-kalshi-spreads.ts
  */
-import { getCurrentKalshiTicker } from '../kalshi/market.js';
-import { getKalshiMarket } from '../kalshi/market.js';
-import { fetchBinancePriceOnly, fetchCoinGeckoPrice } from '../kalshi/spread.js';
+import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
+import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
+import { fetchBinancePriceOnly, fetchCoinGeckoPricesAll } from '../kalshi/spread.js';
 import { strikeSpreadPctSigned } from '../kalshi/spread.js';
 
 const ASSETS = ['BTC', 'ETH', 'SOL'] as const;
 const REFRESH_MS = 5_000;
+/** Cache CoinGecko for 60s so we don't get rate limited (free tier ~1 req/min). */
+const COINGECKO_CACHE_MS = 60_000;
+
+let coingeckoCache: { prices: Record<(typeof ASSETS)[number], number>; at: number } | null = null;
 
 function fmtPrice(n: number): string {
   return n.toFixed(2).padStart(10);
@@ -19,14 +23,25 @@ function fmtSpread(n: number): string {
   return s.padStart(9);
 }
 
-async function fetchPriceOrNull(
-  asset: (typeof ASSETS)[number],
-  fetch: (a: (typeof ASSETS)[number]) => Promise<number>
-): Promise<number | null> {
+async function fetchBinanceOrNull(asset: (typeof ASSETS)[number]): Promise<number | null> {
   try {
-    return await fetch(asset);
+    return await fetchBinancePriceOnly(asset);
   } catch {
     return null;
+  }
+}
+
+async function getCoinGeckoPrices(): Promise<Record<(typeof ASSETS)[number], number> | null> {
+  const now = Date.now();
+  if (coingeckoCache && now - coingeckoCache.at < COINGECKO_CACHE_MS) {
+    return coingeckoCache.prices;
+  }
+  try {
+    const prices = await fetchCoinGeckoPricesAll();
+    coingeckoCache = { prices, at: now };
+    return prices;
+  } catch {
+    return coingeckoCache?.prices ?? null;
   }
 }
 
@@ -39,6 +54,8 @@ async function runOne(): Promise<void> {
     '------|-------------|------------|------------|------------|------------'
   );
 
+  const coingeckoPrices = await getCoinGeckoPrices();
+
   for (const asset of ASSETS) {
     const ticker = await getCurrentKalshiTicker(asset);
     if (!ticker) {
@@ -46,16 +63,20 @@ async function runOne(): Promise<void> {
       continue;
     }
     const market = await getKalshiMarket(ticker);
-    const strike = market.floor_strike;
+    const parsed = parseKalshiTicker(ticker);
+    const tickerStrike = parsed?.strikeFromTicker;
+    const useTickerStrike =
+      tickerStrike != null && isReasonableStrike(asset, tickerStrike);
+    const strike = (useTickerStrike ? tickerStrike : null) ?? market.floor_strike ?? null;
     if (strike == null) {
       console.log(`${asset}   | (no strike)`);
       continue;
     }
 
-    const [binancePrice, coingeckoPrice] = await Promise.all([
-      fetchPriceOrNull(asset, fetchBinancePriceOnly),
-      fetchPriceOrNull(asset, fetchCoinGeckoPrice),
-    ]);
+    const binancePrice = await fetchBinanceOrNull(asset);
+    const rawCg = coingeckoPrices?.[asset];
+    const coingeckoPrice =
+      rawCg != null && !Number.isNaN(rawCg) ? rawCg : null;
 
     const binanceStr =
       binancePrice != null ? fmtPrice(binancePrice) : '        N/A';

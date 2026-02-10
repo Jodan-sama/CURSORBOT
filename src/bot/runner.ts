@@ -12,7 +12,7 @@ import {
   getCurrentPolySlug,
 } from '../clock.js';
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
-import { parseKalshiTicker } from '../kalshi/ticker.js';
+import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
 import { createKalshiOrder } from '../kalshi/orders.js';
 import { fetchBinancePrice, strikeSpreadPctSigned, isOutsideSpreadThreshold } from '../kalshi/spread.js';
 import { kalshiYesBidAsPercent } from '../kalshi/market.js';
@@ -128,10 +128,10 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       if (kalshiTicker) {
         const km = await getKalshiMarket(kalshiTicker);
         const parsed = parseKalshiTicker(kalshiTicker);
-        kalshiStrike =
-          (parsed?.strikeFromTicker != null ? parsed.strikeFromTicker : null) ??
-          km.floor_strike ??
-          null;
+        const tickerStrike = parsed?.strikeFromTicker;
+        const useTickerStrike =
+          tickerStrike != null && isReasonableStrike(asset, tickerStrike);
+        kalshiStrike = (useTickerStrike ? tickerStrike : null) ?? km.floor_strike ?? null;
         kalshiBid = km.yes_bid ?? null;
         if (kalshiStrike != null && currentPrice != null) {
           signedSpreadPct = strikeSpreadPctSigned(currentPrice, kalshiStrike);

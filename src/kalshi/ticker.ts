@@ -67,6 +67,16 @@ export function getAssetFromSeries(series: string): Asset | null {
   return SERIES_ASSET[series] ?? null;
 }
 
+/** Plausible strike range per asset (avoids using bogus ticker suffix e.g. 30 for BTC). */
+const STRIKE_MIN: Record<Asset, number> = { BTC: 1000, ETH: 100, SOL: 1 };
+const STRIKE_MAX: Record<Asset, number> = { BTC: 500_000, ETH: 100_000, SOL: 10_000 };
+
+export function isReasonableStrike(asset: Asset, strike: number): boolean {
+  const min = STRIKE_MIN[asset];
+  const max = STRIKE_MAX[asset];
+  return strike >= min && strike <= max;
+}
+
 export function getBinanceSymbol(asset: Asset): string {
   return `${asset}USDT`;
 }
