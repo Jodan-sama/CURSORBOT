@@ -9,6 +9,8 @@
     "bot": "node dist/bot/run.js",
     "test-order": "node dist/scripts/place-test-order.js",
     "test-order-poly": "node dist/scripts/place-test-order-polymarket.js",
+    "spreads": "node dist/scripts/current-kalshi-spreads.js",
+"spreads:dev": "npx tsx src/scripts/current-kalshi-spreads.ts",
     "dev": "tsx watch src/index.ts",
     "test": "node --test dist/**/*.test.js"
   },
