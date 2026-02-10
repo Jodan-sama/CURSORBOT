@@ -1,9 +1,11 @@
 /**
  * Polymarket CLOB order placement via @polymarket/clob-client.
- * Set HTTP_PROXY and HTTPS_PROXY for all CLOB requests (e.g. global-agent or process env).
+ * Polygon RPC (signer/nonce) uses POLYGON_RPC_URL (e.g. Alchemy) to avoid rate limits.
+ * Order HTTP requests use HTTP_PROXY/HTTPS_PROXY only when placing the order.
  */
 
 import { Wallet } from '@ethersproject/wallet';
+import { JsonRpcProvider } from '@ethersproject/providers';
 import {
   ClobClient,
   Side,
@@ -16,6 +18,9 @@ import { SignatureType } from '@polymarket/order-utils';
 import type { ParsedPolyMarket } from './types.js';
 
 const CLOB_HOST = 'https://clob.polymarket.com';
+
+/** Default Alchemy Polygon RPC; set POLYGON_RPC_URL in .env to use your key (reduces rate limits). */
+const DEFAULT_POLYGON_RPC = 'https://polygon-mainnet.g.alchemy.com/v2/J6wjUKfJUdYzPD5QNDd-i';
 
 const VALID_TICK_SIZES = ['0.1', '0.01', '0.001', '0.0001'] as const;
 type TickSize = (typeof VALID_TICK_SIZES)[number];
@@ -84,10 +89,12 @@ export function getPolyClobConfigFromEnv(): PolyClobConfig {
 }
 
 /**
- * Create a CLOB client. Set HTTP_PROXY/HTTPS_PROXY before calling if using a proxy.
+ * Create a CLOB client. Signer uses POLYGON_RPC_URL (e.g. Alchemy) for RPC. Set proxy before placing order.
  */
 export function createPolyClobClient(config: PolyClobConfig): ClobClient {
-  const signer = new Wallet(config.privateKey);
+  const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || DEFAULT_POLYGON_RPC;
+  const provider = new JsonRpcProvider(rpcUrl);
+  const signer = new Wallet(config.privateKey, provider);
   const creds: ApiKeyCreds = {
     key: config.apiKey,
     secret: config.apiSecret,

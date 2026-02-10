@@ -128,7 +128,10 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
   const spreadThresholds = await getSpreadThresholds();
 
   for (const asset of ASSETS) {
-    if (await isAssetBlocked(asset)) continue;
+    if (await isAssetBlocked(asset)) {
+      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skipped (B3 cooldown, blocked ~30 min)`);
+      continue;
+    }
 
     let kalshiTicker: string | null = null;
     let kalshiStrike: number | null = null;
