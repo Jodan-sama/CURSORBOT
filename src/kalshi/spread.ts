@@ -32,7 +32,7 @@ export async function fetchBinancePriceOnly(asset: Asset): Promise<number> {
   return price;
 }
 
-/** CoinGecko spot price only. */
+/** CoinGecko spot price only (one asset, one request). */
 export async function fetchCoinGeckoPrice(asset: Asset): Promise<number> {
   const id = COINGECKO_IDS[asset];
   const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
@@ -42,6 +42,20 @@ export async function fetchCoinGeckoPrice(asset: Asset): Promise<number> {
   const price = data[id]?.usd;
   if (price == null || Number.isNaN(price)) throw new Error(`Invalid CoinGecko price for ${asset}`);
   return price;
+}
+
+/** CoinGecko prices for BTC, ETH, SOL in one request (avoids rate limit in scripts). */
+export async function fetchCoinGeckoPricesAll(): Promise<Record<Asset, number>> {
+  const ids = ['bitcoin', 'ethereum', 'solana'].join(',');
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`CoinGecko price failed: ${res.status}`);
+  const data = (await res.json()) as { bitcoin?: { usd: number }; ethereum?: { usd: number }; solana?: { usd: number } };
+  return {
+    BTC: data.bitcoin?.usd ?? NaN,
+    ETH: data.ethereum?.usd ?? NaN,
+    SOL: data.solana?.usd ?? NaN,
+  };
 }
 
 /** Fetches current spot price. Tries Binance first; on 451 or failure, uses CoinGecko. */
