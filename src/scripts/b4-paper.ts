@@ -11,8 +11,9 @@ import type { Asset } from '../kalshi/ticker.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 
 const LOG_PATH = 'b4-paper.log';
-const BUY_THRESHOLD = 0.54;
-const SELL_AT = 0.6;
+/** Any price >= this counts as 54¢ (use epsilon so 0.54 or float 0.5399... both count). */
+const BUY_THRESHOLD = 0.54 - 1e-6;
+const SELL_AT = 0.6 - 1e-6;
 
 const B4_ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
 
@@ -73,37 +74,42 @@ async function tickAsset(asset: Asset, now: Date): Promise<void> {
     return;
   }
 
-  const [yesPrice, noPrice] = market.outcomePrices;
-  if (yesPrice == null || noPrice == null) return;
+  // Use full array: any outcome can hit 54+. Coerce to number. Gamma may return 0-1 (0.54) or 0-100 (54).
+  let prices = market.outcomePrices.map((p) => Number(p));
+  if (prices.length === 0) return;
+  const rawMax = Math.max(...prices);
+  if (rawMax > 1.5) prices = prices.map((p) => p / 100);
+  const maxPrice = Math.max(...prices);
+  const maxIdx = prices.indexOf(maxPrice);
+  const p0 = prices[0] ?? 0;
+  const p1 = prices[1] ?? 0;
+  const yesPrice = p0;
+  const noPrice = p1;
 
   const state = getState(asset, windowUnix);
   const sec = secondsIntoWindow(now, windowUnix);
 
-  // Once per asset per window: log that we're checking and current prices
+  // Once per asset per window: log raw API view so we can see exact format/order
   if (!state.loggedCheck) {
     state.loggedCheck = true;
-    logLine(`B4 check asset=${asset} slug=${slug} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
+    logLine(`B4 check asset=${asset} slug=${slug} rawPrices=[${prices.map((p) => p.toFixed(3)).join(',')}] outcomes=${JSON.stringify(market.outcomes ?? [])} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
   }
 
-  // Every 10 seconds during the window: log max price once per bucket so we see we're sampling the whole 3 min
+  // Every 10 seconds: sample so we see we're sampling the whole 3 min
   const bucket = Math.floor(sec / 10) * 10;
   if (sec >= 0 && sec <= 179 && bucket >= 0 && state.lastSampleSec !== bucket) {
     (state as State).lastSampleSec = bucket;
-    const maxP = Math.max(yesPrice, noPrice);
-    logLine(`B4 sample sec=${bucket} asset=${asset} max=${maxP.toFixed(3)} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
+    logLine(`B4 sample sec=${bucket} asset=${asset} max=${maxPrice.toFixed(3)} yes=${yesPrice.toFixed(3)} no=${noPrice.toFixed(3)}`);
   }
 
+  // Trigger when ANY outcome is >= 0.54 (54¢ or above). Use max so we don't rely on order.
   if (!state.entered) {
-    if (yesPrice >= BUY_THRESHOLD) {
+    if (maxPrice >= BUY_THRESHOLD) {
       state.entered = true;
-      state.direction = 'yes';
-      logLine(`window=${windowUnix} | asset=${asset} | event=BUY_56_POSSIBLE | direction=yes | price=${yesPrice.toFixed(3)}`);
-      await logB4Paper({ window_unix: windowUnix, asset, event: 'BUY_56_POSSIBLE', direction: 'yes', price: yesPrice });
-    } else if (noPrice >= BUY_THRESHOLD) {
-      state.entered = true;
-      state.direction = 'no';
-      logLine(`window=${windowUnix} | asset=${asset} | event=BUY_56_POSSIBLE | direction=no | price=${noPrice.toFixed(3)}`);
-      await logB4Paper({ window_unix: windowUnix, asset, event: 'BUY_56_POSSIBLE', direction: 'no', price: noPrice });
+      state.direction = maxIdx === 0 ? 'yes' : 'no';
+      const sidePrice = maxIdx === 0 ? yesPrice : noPrice;
+      logLine(`window=${windowUnix} | asset=${asset} | event=BUY_56_POSSIBLE | direction=${state.direction} | price=${sidePrice.toFixed(3)} (maxIdx=${maxIdx})`);
+      await logB4Paper({ window_unix: windowUnix, asset, event: 'BUY_56_POSSIBLE', direction: state.direction, price: sidePrice });
     }
   }
 
