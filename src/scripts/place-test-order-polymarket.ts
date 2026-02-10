@@ -52,18 +52,24 @@ async function main() {
   const side = signedSpread >= 0 ? 'yes' : 'no';
   console.log('Strike:', strike, '| Price:', price, '| Signed spread:', signedSpread.toFixed(3), '% | Winning side:', side);
 
-  // Only CLOB (order) goes through proxy; Binance/Kalshi/Gamma above used direct.
-  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
-  if (proxy) {
-    const { ProxyAgent, setGlobalDispatcher } = await import('undici');
-    setGlobalDispatcher(new ProxyAgent(proxy));
-  }
   const config = getPolyClobConfigFromEnv();
   const client = createPolyClobClient(config);
   const params = orderParamsFromParsedMarket(parsed, PRICE, TEST_SIZE, side);
-  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, ' (through proxy)...');
+  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, ' (only this request uses proxy)...');
 
-  const result = await createAndPostPolyOrder(client, params);
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  const result = proxy
+    ? await (async () => {
+        const { ProxyAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
+        const prev = getGlobalDispatcher();
+        try {
+          setGlobalDispatcher(new ProxyAgent(proxy));
+          return await createAndPostPolyOrder(client, params);
+        } finally {
+          setGlobalDispatcher(prev);
+        }
+      })()
+    : await createAndPostPolyOrder(client, params);
   console.log('Result:', result);
   if (result.orderID) {
     console.log('Test order placed: orderID=', result.orderID, '| status=', result.status);

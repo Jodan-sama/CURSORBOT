@@ -114,13 +114,10 @@ async function tryPlacePolymarket(
   size: number,
   side: 'yes' | 'no'
 ): Promise<{ orderId?: string }> {
-  return withPolyProxy(async () => {
-    const parsed = await getPolyMarketBySlug(slug);
-    const client = createPolyClobClient(getPolyClobConfigFromEnv());
-    const params = orderParamsFromParsedMarket(parsed, price, size, side);
-    const result = await createAndPostPolyOrder(client, params);
-    return { orderId: result.orderID };
-  });
+  const parsed = await getPolyMarketBySlug(slug);
+  const client = createPolyClobClient(getPolyClobConfigFromEnv());
+  const params = orderParamsFromParsedMarket(parsed, price, size, side);
+  return withPolyProxy(() => createAndPostPolyOrder(client, params).then((r) => ({ orderId: r.orderID })));
 }
 
 export async function runOneTick(now: Date, tickCount: number = 0): Promise<void> {
@@ -138,7 +135,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     let kalshiBid: number | null = null;
     let polySlug: string | null = null;
     let currentPrice: number | null = null;
-    /** Signed spread %: + = above strike (Yes), - = below strike (No). */
+    /** Signed spread % from Kalshi strike + Binance price. One spread for both Kalshi and Poly (Poly mirrors Kalshi; we do not compute a separate Polymarket spread). */
     let signedSpreadPct: number | null = null;
 
     try {
