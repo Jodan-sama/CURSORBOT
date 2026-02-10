@@ -175,7 +175,7 @@ export default function Dashboard() {
 
   function downloadCsv() {
     setCsvLoading(true);
-    const headers = ['entered_at', 'bot', 'asset', 'venue', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id'];
+    const headers = ['entered_at', 'bot', 'asset', 'exchange', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id'];
     const rows = positions.map((p) =>
       [
         escapeCsv(p.entered_at),
@@ -340,6 +340,9 @@ export default function Dashboard() {
           <button type="button" onClick={downloadCsv} disabled={csvLoading} style={csvLoading ? buttonDisabledStyle : buttonStyle}>
             {csvLoading ? 'Preparing…' : 'Download CSV (last 200 trades)'}
           </button>
+          <span style={{ display: 'block', fontSize: 13, color: '#555', marginTop: 6 }}>
+            CSV includes an <strong>exchange</strong> column: <code>kalshi</code> or <code>polymarket</code>.
+          </span>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
