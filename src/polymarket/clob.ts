@@ -66,8 +66,8 @@ export function useDerivedPolyKey(): boolean {
 /**
  * Build CLOB client from env or explicit config.
  * Requires: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER.
- * Either: POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE (static key)
- * Or: POLYMARKET_DERIVE_KEY=true (derive key from wallet via createOrDeriveApiKey; call getOrCreateDerivedPolyClient inside proxy).
+ * Prefer static L2 keys when set: POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE.
+ * If those three are present we use them (no derive). If omitted and POLYMARKET_DERIVE_KEY=true we derive.
  */
 export function getPolyClobConfigFromEnv(): PolyClobConfig | null {
   const privateKey = process.env.POLYMARKET_PRIVATE_KEY?.trim();
@@ -75,22 +75,16 @@ export function getPolyClobConfigFromEnv(): PolyClobConfig | null {
   if (!privateKey || !funder) {
     throw new Error('Missing Polymarket env: POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER');
   }
-  if (useDerivedPolyKey()) return null;
   const apiKey = process.env.POLYMARKET_API_KEY?.trim();
   const apiSecret = process.env.POLYMARKET_API_SECRET?.trim();
   const apiPassphrase = process.env.POLYMARKET_API_PASSPHRASE?.trim();
-  if (!apiKey || !apiSecret || !apiPassphrase) {
-    throw new Error(
-      'Missing Polymarket env: set POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE or POLYMARKET_DERIVE_KEY=true to derive from wallet'
-    );
+  if (apiKey && apiSecret && apiPassphrase) {
+    return { privateKey: privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`, funder, apiKey, apiSecret, apiPassphrase };
   }
-  return {
-    privateKey: privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`,
-    funder,
-    apiKey,
-    apiSecret,
-    apiPassphrase,
-  };
+  if (useDerivedPolyKey()) return null;
+  throw new Error(
+    'Missing Polymarket env: set POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE (static L2 keys from Builder UI), or POLYMARKET_DERIVE_KEY=true to derive from wallet'
+  );
 }
 
 let cachedDerivedClient: ClobClient | null = null;
@@ -126,24 +120,22 @@ export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
     if (key && secret && passphrase) return { key, secret, passphrase };
     return null;
   };
+  // Try derive first (get existing key); if empty or fails, try create (generate new key). Call inside withPolyProxy.
   let creds: { key: string; secret: string; passphrase: string } | null = null;
   try {
-    const raw = await clientNoCreds.createApiKey();
-    creds = normalizeCreds(raw as unknown as Record<string, unknown>);
-  } catch (e: unknown) {
-    const status = (e as { response?: { status?: number } })?.response?.status;
-    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? '';
-    if (status === 400 || /create api key|could not create/i.test(String(msg))) {
-      try {
-        const raw = await clientNoCreds.deriveApiKey();
-        creds = normalizeCreds(raw as unknown as Record<string, unknown>);
-      } catch (deriveErr: unknown) {
-        const deriveMsg = deriveErr instanceof Error ? deriveErr.message : String(deriveErr);
-        const deriveStatus = (deriveErr as { response?: { status?: number } })?.response?.status;
-        throw new Error(`createApiKey failed (400), then deriveApiKey failed: status=${deriveStatus} ${deriveMsg}`);
-      }
-    } else {
-      throw e;
+    const rawDerive = await clientNoCreds.deriveApiKey();
+    creds = normalizeCreds(rawDerive as unknown as Record<string, unknown>);
+  } catch {
+    // derive failed (e.g. no key yet); try create
+  }
+  if (!creds?.key || !creds?.secret || !creds?.passphrase) {
+    try {
+      const rawCreate = await clientNoCreds.createApiKey();
+      creds = normalizeCreds(rawCreate as unknown as Record<string, unknown>);
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? '';
+      throw new Error(`derive returned no creds and createApiKey failed: status=${status} ${msg}`);
     }
   }
   if (!creds?.key || !creds?.secret || !creds?.passphrase) {

@@ -61,9 +61,9 @@ const enteredThisWindow = new Set<string>();
 /** In-memory: timestamp (ms) when B2 last placed for each asset. B1 skips that asset for 15 min after. */
 const lastB2OrderByAsset = new Map<Asset, number>();
 
-/** When B2 runs and spread > 0.5%, B1 is delayed this long for that asset. */
+/** When B2 runs and spread > 0.55%, B1 is delayed this long for that asset. */
 const B1_DELAY_AFTER_B2_HIGH_SPREAD_MS = 15 * 60 * 1000;
-/** In-memory: timestamp (ms) when B2 last saw spread > 0.5% for each asset. B1 skips for 15 min after. */
+/** In-memory: timestamp (ms) when B2 last saw spread > 0.55% for each asset. B1 skips for 15 min after. */
 const lastB2HighSpreadByAsset = new Map<Asset, number>();
 
 function windowKey(bot: string, asset: Asset, windowEndMs: number): string {
@@ -236,7 +236,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       if (tHigh != null && now.getTime() - tHigh < B1_DELAY_AFTER_B2_HIGH_SPREAD_MS) {
         if (tickCount % 6 === 0) {
           const minLeft = Math.ceil((B1_DELAY_AFTER_B2_HIGH_SPREAD_MS - (now.getTime() - tHigh)) / 60000);
-          console.log(`[tick] B1 ${asset} skip: 15 min delay after B2 saw spread >0.5% (${minLeft} min left)`);
+          console.log(`[tick] B1 ${asset} skip: 15 min delay after B2 saw spread >0.55% (${minLeft} min left)`);
         }
         continue;
       }
@@ -295,7 +295,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
     // --- B2: last 5 min, check every 30s, place 97% limit ---
     if (isB2Window(minutesLeft)) {
-      if (spreadMagnitude > 0.5) lastB2HighSpreadByAsset.set(asset, now.getTime());
+      if (spreadMagnitude > 0.55) lastB2HighSpreadByAsset.set(asset, now.getTime());
       const key = windowKey('B2', asset, windowEndMs);
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;

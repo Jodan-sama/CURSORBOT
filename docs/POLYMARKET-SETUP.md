@@ -15,17 +15,14 @@ You can get the private key from the wallet you use with Polymarket (e.g. MetaMa
 
 ## 2. Polymarket CLOB API credentials
 
-**Recommended:** Set **POLYMARKET_DERIVE_KEY=true** and do not set the three API_ vars below. The bot will derive the API key from your wallet (createOrDeriveApiKey), which avoids 401 Invalid api key.
-
-**Otherwise** the CLOB needs API key auth. You need to create these in Polymarket’s UI:
+You need to create these in the Polymarket UI and set them on the bot:
 
 - **POLYMARKET_API_KEY**
 - **POLYMARKET_API_SECRET**
 - **POLYMARKET_API_PASSPHRASE**
 
-**Where to get them:** Log in at [polymarket.com](https://polymarket.com) → **Profile/Settings** → look for **API** or **Developer** or **Trading API**. Create a new API key; Polymarket will show the key, secret, and passphrase once. Store them in `.env` on the droplet and keep them secret.
+**Where to get them:** Log in at [polymarket.com](https://polymarket.com) → **Profile** → **Builder Codes** (or Settings → Builder). Under **Builder Keys**, click **+ Create New**. Polymarket shows the **key**, **secret**, and **passphrase only once** — copy and save them immediately, then put them in `.env` on the droplet. Do **not** set `POLYMARKET_DERIVE_KEY` (or set it to `false`); the bot uses these static credentials.
 
-If you can’t find the API section, check Polymarket’s help or docs; the exact menu name can change.
 
 **401 Unauthorized / Invalid api key:** The key must be for **production** (not test) and **tied to the same wallet** as `POLYMARKET_FUNDER`. Ensure `.env` has only **one** set of `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE` (no duplicate lines). The bot trims whitespace and uses Polymarket server time for L2 signing to avoid clock skew.
 
@@ -45,7 +42,7 @@ If this is missing or not `true`, the bot trades **Kalshi only**.
 
 ## 4. Proxy (only if needed)
 
-**All Polymarket HTTP runs through the proxy when set:** Gamma API (market data) and CLOB (getTickSize + place order) both use the proxy when `HTTP_PROXY`/`HTTPS_PROXY` are set. Polygon RPC (signing) uses **Alchemy** via `POLYGON_RPC_URL` (no proxy, avoids timeouts).
+**All Polymarket HTTP runs through the proxy when set:** Gamma API (market data) and CLOB (getTickSize + place order) both use the proxy when `HTTP_PROXY`/`HTTPS_PROXY` are set. Key derive/create calls also go through the proxy when it is set. Polygon RPC (signing) uses **Alchemy** via `POLYGON_RPC_URL` (no proxy, avoids timeouts). **For reliable key setup, prefer manually generated static L2 keys** from the Builder UI; derive can fail if the proxy does not support L1 signing for key endpoints.
 
 - If the droplet is in a **non‑restricted region** (e.g. Amsterdam), **omit** `HTTP_PROXY` and `HTTPS_PROXY`; the bot will call Gamma and CLOB directly.
 - If you see redirect/geo errors, set **HTTP_PROXY** and **HTTPS_PROXY**; then every Polymarket HTTP call (Gamma + CLOB) goes through the proxy.
