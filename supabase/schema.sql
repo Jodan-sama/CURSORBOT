@@ -53,6 +53,18 @@ create table if not exists error_log (
 
 create index if not exists error_log_created_at on error_log (created_at desc);
 
+-- B4 paper trader log (last 20 shown on dashboard)
+create table if not exists b4_paper_log (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  window_unix bigint not null,
+  event text not null,
+  direction text,
+  price numeric
+);
+
+create index if not exists b4_paper_log_created_at on b4_paper_log (created_at desc);
+
 -- Spread thresholds (pct) per bot per asset. Bot enters when spread > threshold. Defaults seeded below.
 create table if not exists spread_thresholds (
   bot text not null,

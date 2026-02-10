@@ -70,10 +70,20 @@ type ErrorLog = {
   stack: string | null;
 };
 
+type B4Log = {
+  id: string;
+  created_at: string;
+  window_unix: number;
+  event: string;
+  direction: string | null;
+  price: number | null;
+};
+
 export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
+  const [b4Logs, setB4Logs] = useState<B4Log[]>([]);
   const [spreadRows, setSpreadRows] = useState<SpreadRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -96,16 +106,19 @@ export default function Dashboard() {
         { data: errData },
         spreadResult,
         { data: botSizesData },
+        { data: b4Data },
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
-        getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
+        getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
+        getSupabase().from('b4_paper_log').select('*').order('created_at', { ascending: false }).limit(20),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setErrors((errData ?? []) as ErrorLog[]);
+      setB4Logs((b4Data ?? []) as B4Log[]);
       const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
       setSpreadRows(rows);
       const defaults: Record<string, string> = {
@@ -405,6 +418,35 @@ export default function Dashboard() {
             ))}
           </tbody>
         </table>
+      </section>
+
+      <section style={{ marginTop: 24 }}>
+        <h2 style={headingStyle}>B4 paper (last 20)</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>BTC 54→56 buy / 60 sell, first 3 min of each 15m window.</p>
+        {b4Logs.length === 0 ? (
+          <p style={{ color: '#666' }}>No B4 events yet.</p>
+        ) : (
+          <table style={{ width: '100%', maxWidth: 520, borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Event</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Dir</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b4Logs.map((r) => (
+                <tr key={r.id}>
+                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(r.created_at, true)}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{r.event}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{r.direction ?? '—'}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{r.price != null ? Number(r.price).toFixed(3) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
     </div>
   );

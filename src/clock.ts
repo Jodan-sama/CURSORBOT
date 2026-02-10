@@ -15,9 +15,14 @@ export function getCurrentWindowEnd(now: Date = new Date()): Date {
   return windowEnd;
 }
 
-/** Unix seconds for the current window end (for Polymarket slug). */
+/** Unix seconds for the current window end. */
 export function getCurrentWindowEndUnix(now: Date = new Date()): number {
   return Math.floor(getCurrentWindowEnd(now).getTime() / 1000);
+}
+
+/** Unix seconds for the current window start (Polymarket slugs use start, not end). */
+export function getCurrentWindowStartUnix(now: Date = new Date()): number {
+  return getCurrentWindowEndUnix(now) - 15 * 60;
 }
 
 /** Milliseconds remaining until the current window ends. */
@@ -32,10 +37,10 @@ export function minutesLeftInWindow(now: Date = new Date()): number {
   return Math.max(0, left);
 }
 
-/** Polymarket slug for the current 15m window for the given asset. */
+/** Polymarket slug for the current 15m window for the given asset. Uses window start unix (Polymarket convention). */
 export function getCurrentPolySlug(asset: Asset, now: Date = new Date()): string {
   const prefix = POLY_15M_SLUG_PREFIX[asset];
-  const unix = getCurrentWindowEndUnix(now);
+  const unix = getCurrentWindowStartUnix(now);
   return `${prefix}${unix}`;
 }
 
