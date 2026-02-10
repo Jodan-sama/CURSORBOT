@@ -1,6 +1,7 @@
 /**
  * Strike spread: |current - strike| / current * 100
  * Used for bot entry thresholds (B1/B2/B3).
+ * Current price: Binance first; if Binance returns 451 (geo-block) or fails, fall back to CoinGecko.
  */
 
 import type { Asset } from './ticker.js';
@@ -13,7 +14,14 @@ const BINANCE_SYMBOL: Record<Asset, string> = {
   SOL: 'SOLUSDT',
 };
 
-export async function fetchBinancePrice(asset: Asset): Promise<number> {
+const COINGECKO_IDS: Record<Asset, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+};
+
+/** Binance spot price only; throws on 451/geo-block or other errors. */
+export async function fetchBinancePriceOnly(asset: Asset): Promise<number> {
   const symbol = BINANCE_SYMBOL[asset];
   const url = `${BINANCE_PRICE_URL}?symbol=${symbol}`;
   const res = await fetch(url);
@@ -22,6 +30,35 @@ export async function fetchBinancePrice(asset: Asset): Promise<number> {
   const price = parseFloat(data.price);
   if (Number.isNaN(price)) throw new Error(`Invalid Binance price: ${data.price}`);
   return price;
+}
+
+/** CoinGecko spot price only. */
+export async function fetchCoinGeckoPrice(asset: Asset): Promise<number> {
+  const id = COINGECKO_IDS[asset];
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`CoinGecko price failed: ${res.status}`);
+  const data = (await res.json()) as { [id: string]: { usd: number } };
+  const price = data[id]?.usd;
+  if (price == null || Number.isNaN(price)) throw new Error(`Invalid CoinGecko price for ${asset}`);
+  return price;
+}
+
+/** Fetches current spot price. Tries Binance first; on 451 or failure, uses CoinGecko. */
+export async function fetchBinancePrice(asset: Asset): Promise<number> {
+  try {
+    return await fetchBinancePriceOnly(asset);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('451') || msg.includes('Binance')) {
+      try {
+        return await fetchCoinGeckoPrice(asset);
+      } catch (e2) {
+        throw new Error(`Price fetch failed (Binance: ${msg}; CoinGecko: ${e2 instanceof Error ? e2.message : e2})`);
+      }
+    }
+    throw e;
+  }
 }
 
 /**
