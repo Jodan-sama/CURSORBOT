@@ -12,6 +12,7 @@ import {
   getCurrentPolySlug,
 } from '../clock.js';
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
+import { parseKalshiTicker } from '../kalshi/ticker.js';
 import { createKalshiOrder } from '../kalshi/orders.js';
 import { fetchBinancePrice, strikeSpreadPctSigned, isOutsideSpreadThreshold } from '../kalshi/spread.js';
 import { kalshiYesBidAsPercent } from '../kalshi/market.js';
@@ -36,7 +37,7 @@ const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
 
 /** When false or unset, only trade on Kalshi (skip Polymarket). Set ENABLE_POLYMARKET=true to enable Poly. */
 function isPolymarketEnabled(): boolean {
-  const v = process.env.ENABLE_POLYMARKET;
+  const v = process.env.ENABLE_POLYMARKET?.trim().toLowerCase();
   return v === 'true' || v === '1';
 }
 
@@ -126,7 +127,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
       if (kalshiTicker) {
         const km = await getKalshiMarket(kalshiTicker);
-        kalshiStrike = km.floor_strike ?? null;
+        const parsed = parseKalshiTicker(kalshiTicker);
+        kalshiStrike =
+          (parsed?.strikeFromTicker != null ? parsed.strikeFromTicker : null) ??
+          km.floor_strike ??
+          null;
         kalshiBid = km.yes_bid ?? null;
         if (kalshiStrike != null && currentPrice != null) {
           signedSpreadPct = strikeSpreadPctSigned(currentPrice, kalshiStrike);
@@ -324,7 +329,8 @@ export function startBotLoop(): void {
     const now = new Date();
     // Heartbeat every 60s so logs show the process is alive
     if (tickCount % 12 === 0) {
-      console.log(`[cursorbot] alive | UTC ${now.toISOString()} | Kalshi only`);
+      const venue = isPolymarketEnabled() ? 'Kalshi + Polymarket' : 'Kalshi only';
+      console.log(`[cursorbot] alive | UTC ${now.toISOString()} | ${venue}`);
     }
     const shouldB1 = true;
     const shouldB2 = tickCount % 6 === 0;
