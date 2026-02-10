@@ -60,13 +60,21 @@ async function main() {
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
   const result = proxy
     ? await (async () => {
-        const { ProxyAgent, getGlobalDispatcher, setGlobalDispatcher } = await import('undici');
-        const prev = getGlobalDispatcher();
+        const axios = (await import('axios')).default;
+        const { HttpsProxyAgent } = await import('https-proxy-agent');
+        const undici = await import('undici');
+        const prevUndici = undici.getGlobalDispatcher();
+        const prevAxiosAgent = axios.defaults.httpsAgent;
+        const prevAxiosProxy = axios.defaults.proxy;
         try {
-          setGlobalDispatcher(new ProxyAgent(proxy));
+          undici.setGlobalDispatcher(new undici.ProxyAgent(proxy));
+          axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
+          axios.defaults.proxy = false;
           return await createAndPostPolyOrder(client, params);
         } finally {
-          setGlobalDispatcher(prev);
+          undici.setGlobalDispatcher(prevUndici);
+          axios.defaults.httpsAgent = prevAxiosAgent;
+          axios.defaults.proxy = prevAxiosProxy;
         }
       })()
     : await createAndPostPolyOrder(client, params);
