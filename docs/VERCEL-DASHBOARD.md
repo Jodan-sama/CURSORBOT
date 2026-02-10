@@ -36,6 +36,7 @@ In Supabase:
    - **SELECT:** `true` (or `id = 'default'`).
    - **UPDATE:** `id = 'default'`.
 4. For **positions**: anon key needs **SELECT** only (e.g. `true`).
+5. For **spread_thresholds**: create the table and seed if needed (see `supabase/schema.sql`). Anon key needs **SELECT** and **UPDATE** (or **INSERT** for upsert) on `spread_thresholds`.
 
 If you prefer to keep RLS off for a private project, you can leave policies permissive for anon; the anon key is “public” but only allows what your app does (read config/positions, update config).
 
@@ -89,3 +90,9 @@ In the Vercel project: **Settings** → **Domains** → add your domain and foll
 - **Supabase:** anon key can read `bot_config` and `positions`, and update `bot_config`.
 
 No other secrets or proxy info are needed for the dashboard; it only talks to Supabase.
+
+---
+
+## Future: Deploy & restart button
+
+A “Deploy & restart” control on the dashboard could: pull latest from GitHub on the droplet, run `npm run build`, and restart `cursorbot.service`. That would require either a small HTTP endpoint on the droplet (with auth) that runs the deploy script, or the dashboard triggering a GitHub Action / webhook that the droplet listens for. Document the chosen approach here when you add it.

@@ -13,7 +13,7 @@ import {
 } from '../clock.js';
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
 import { createKalshiOrder } from '../kalshi/orders.js';
-import { fetchBinancePrice, strikeSpreadPct, isOutsideSpreadThreshold } from '../kalshi/spread.js';
+import { fetchBinancePrice, strikeSpreadPctSigned, isOutsideSpreadThreshold } from '../kalshi/spread.js';
 import { kalshiYesBidAsPercent } from '../kalshi/market.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
@@ -25,6 +25,7 @@ import {
 import {
   isEmergencyOff,
   getPositionSize,
+  getSpreadThresholds,
   logPosition,
   setAssetBlock,
   isAssetBlocked,
@@ -57,24 +58,30 @@ function getCurrentWindowEndMs(): number {
   return now - remainder + WINDOW_MS;
 }
 
+/** Side from signed spread: positive → Yes, negative → No. We only place when |spread| > threshold. */
+function sideFromSignedSpread(signedSpreadPct: number): 'yes' | 'no' {
+  return signedSpreadPct >= 0 ? 'yes' : 'no';
+}
+
 async function tryPlaceKalshi(
   ticker: string,
   asset: Asset,
   bot: 'B1' | 'B2' | 'B3',
   isMarket: boolean,
   limitPercent: number,
-  size: number
+  size: number,
+  side: 'yes' | 'no'
 ): Promise<{ orderId?: string; filled?: boolean }> {
   const type = isMarket ? 'market' : 'limit';
-  const yesPrice = isMarket ? undefined : Math.round(limitPercent);
+  const priceCents = isMarket ? undefined : Math.round(limitPercent);
   const res = await createKalshiOrder({
     ticker,
-    side: 'yes',
+    side,
     action: 'buy',
     count: Math.max(1, Math.floor(size)),
     type: type as 'limit' | 'market',
-    yes_price: yesPrice ?? 50,
-    no_price: yesPrice != null ? 100 - yesPrice : 50,
+    yes_price: side === 'yes' ? priceCents ?? 50 : undefined,
+    no_price: side === 'no' ? priceCents ?? 50 : undefined,
   });
   const orderId = res.order?.order_id;
   return { orderId, filled: res.order?.status === 'filled' };
@@ -98,6 +105,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
   const minutesLeft = minutesLeftInWindow(now);
   const windowEndMs = getCurrentWindowEndMs();
+  const spreadThresholds = await getSpreadThresholds();
 
   for (const asset of ASSETS) {
     if (await isAssetBlocked(asset)) continue;
@@ -107,7 +115,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     let kalshiBid: number | null = null;
     let polySlug: string | null = null;
     let currentPrice: number | null = null;
-    let spreadPct: number | null = null;
+    /** Signed spread %: + = above strike (Yes), - = below strike (No). */
+    let signedSpreadPct: number | null = null;
 
     try {
       kalshiTicker = await getCurrentKalshiTicker(asset, undefined, now);
@@ -119,7 +128,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         kalshiStrike = km.floor_strike ?? null;
         kalshiBid = km.yes_bid ?? null;
         if (kalshiStrike != null && currentPrice != null) {
-          spreadPct = strikeSpreadPct(currentPrice, kalshiStrike);
+          signedSpreadPct = strikeSpreadPctSigned(currentPrice, kalshiStrike);
         }
       }
     } catch (e) {
@@ -127,7 +136,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       continue;
     }
 
-    if (spreadPct == null) continue;
+    if (signedSpreadPct == null) continue;
+    const spreadMagnitude = Math.abs(signedSpreadPct);
+    const side = sideFromSignedSpread(signedSpreadPct);
 
     const sizeKalshiB1 = await getPositionSize('kalshi', 'B1', asset);
     const sizePolyB1 = await getPositionSize('polymarket', 'B1', asset);
@@ -139,12 +150,12 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // --- B1: last 2.5 min, check every 5s, bid 90–96%, place 96% limit (or market in last 1 min) ---
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
-      const outsideB1 = isOutsideSpreadThreshold('B1', asset, spreadPct);
+      const outsideB1 = isOutsideSpreadThreshold('B1', asset, spreadMagnitude, spreadThresholds);
       const bidPct = kalshiBid != null ? kalshiYesBidAsPercent(kalshiBid) : 0;
       const bidOk = bidPct >= 90 && bidPct <= 96;
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB1) {
-        if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: spread ${spreadPct.toFixed(2)}% inside threshold`);
+        if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
         continue;
       }
       if (!bidOk) {
@@ -155,18 +166,18 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       const useMarket = isB1MarketOrderWindow(minutesLeft);
       if (kalshiTicker) {
         try {
-          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B1', useMarket, 96, sizeKalshiB1);
+          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B1', useMarket, 96, sizeKalshiB1, side);
           enteredThisWindow.add(key);
           await logPosition({
             bot: 'B1',
             asset,
             venue: 'kalshi',
-            strike_spread_pct: spreadPct,
+            strike_spread_pct: signedSpreadPct,
             position_size: sizeKalshiB1,
             ticker_or_slug: kalshiTicker,
             order_id: orderId ?? undefined,
           });
-          console.log(`B1 Kalshi ${asset} ${useMarket ? 'market' : '96% limit'} orderId=${orderId}`);
+          console.log(`B1 Kalshi ${asset} ${side} ${useMarket ? 'market' : '96% limit'} orderId=${orderId}`);
         } catch (e) {
           await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
         }
@@ -179,7 +190,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
             bot: 'B1',
             asset,
             venue: 'polymarket',
-            strike_spread_pct: spreadPct,
+            strike_spread_pct: signedSpreadPct,
             position_size: sizePolyB1,
             ticker_or_slug: polySlug,
             order_id: orderId,
@@ -194,27 +205,27 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // --- B2: last 5 min, check every 30s, place 97% limit ---
     if (isB2Window(minutesLeft)) {
       const key = windowKey('B2', asset, windowEndMs);
-      const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadPct);
+      const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB2) {
-        if (tickCount % 6 === 0) console.log(`[tick] B2 ${asset} skip: spread ${spreadPct.toFixed(2)}% inside threshold`);
+        if (tickCount % 6 === 0) console.log(`[tick] B2 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
         continue;
       }
 
       if (kalshiTicker) {
         try {
-          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2);
+          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2, side);
           enteredThisWindow.add(key);
           await logPosition({
             bot: 'B2',
             asset,
             venue: 'kalshi',
-            strike_spread_pct: spreadPct,
+            strike_spread_pct: signedSpreadPct,
             position_size: sizeKalshiB2,
             ticker_or_slug: kalshiTicker,
             order_id: orderId ?? undefined,
           });
-          console.log(`B2 Kalshi ${asset} 97% orderId=${orderId}`);
+          console.log(`B2 Kalshi ${asset} ${side} 97% orderId=${orderId}`);
         } catch (e) {
           await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
         }
@@ -227,7 +238,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
             bot: 'B2',
             asset,
             venue: 'polymarket',
-            strike_spread_pct: spreadPct,
+            strike_spread_pct: signedSpreadPct,
             position_size: sizePolyB2,
             ticker_or_slug: polySlug,
             order_id: orderId,
@@ -242,29 +253,29 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // --- B3: last 8 min, check every 1 min, place 97% limit; on place set block B2 15min, B1 30min ---
     if (isB3Window(minutesLeft)) {
       const key = windowKey('B3', asset, windowEndMs);
-      const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadPct);
+      const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB3) {
-        if (tickCount % 12 === 0) console.log(`[tick] B3 ${asset} skip: spread ${spreadPct.toFixed(2)}% inside threshold`);
+        if (tickCount % 12 === 0) console.log(`[tick] B3 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
         continue;
       }
 
       let placed = false;
       if (kalshiTicker) {
         try {
-          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B3', false, 97, sizeKalshiB3);
+          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B3', false, 97, sizeKalshiB3, side);
           placed = true;
           enteredThisWindow.add(key);
           await logPosition({
             bot: 'B3',
             asset,
             venue: 'kalshi',
-            strike_spread_pct: spreadPct,
+            strike_spread_pct: signedSpreadPct,
             position_size: sizeKalshiB3,
             ticker_or_slug: kalshiTicker,
             order_id: orderId ?? undefined,
           });
-          console.log(`B3 Kalshi ${asset} 97% orderId=${orderId}`);
+          console.log(`B3 Kalshi ${asset} ${side} 97% orderId=${orderId}`);
         } catch (e) {
           await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
         }
@@ -278,7 +289,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
             bot: 'B3',
             asset,
             venue: 'polymarket',
-            strike_spread_pct: spreadPct,
+            strike_spread_pct: signedSpreadPct,
             position_size: sizePolyB3,
             ticker_or_slug: polySlug,
             order_id: orderId,

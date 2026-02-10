@@ -25,11 +25,21 @@ export async function fetchBinancePrice(asset: Asset): Promise<number> {
 }
 
 /**
- * Strike spread as a percentage: |current - strike| / current * 100
+ * Strike spread as a percentage (magnitude): |current - strike| / current * 100
  */
 export function strikeSpreadPct(currentPrice: number, strike: number): number {
   if (currentPrice <= 0) return NaN;
   return (Math.abs(currentPrice - strike) / currentPrice) * 100;
+}
+
+/**
+ * Signed spread %: (current - strike) / current * 100.
+ * Positive = price above strike (Yes side). Negative = price below strike (No side).
+ * We only place when |signedSpread| > threshold; side = sign(signedSpread).
+ */
+export function strikeSpreadPctSigned(currentPrice: number, strike: number): number {
+  if (currentPrice <= 0) return NaN;
+  return ((currentPrice - strike) / currentPrice) * 100;
 }
 
 /**
@@ -42,12 +52,16 @@ export const BOT_SPREAD_THRESHOLD_PCT: Record<'B1' | 'B2' | 'B3', Record<Asset, 
   B3: { BTC: 1.0, ETH: 1.0, SOL: 1.0 },
 };
 
+/** Matrix of spread thresholds (pct) per bot per asset. Used by runner when reading from DB. */
+export type SpreadThresholdsMatrix = Record<'B1' | 'B2' | 'B3', Record<Asset, number>>;
+
 /** True when spread is outside the bot’s threshold (i.e. market is outside the range → allow entry). */
 export function isOutsideSpreadThreshold(
   bot: 'B1' | 'B2' | 'B3',
   asset: Asset,
-  spreadPct: number
+  spreadPct: number,
+  thresholds?: SpreadThresholdsMatrix
 ): boolean {
-  const threshold = BOT_SPREAD_THRESHOLD_PCT[bot][asset];
+  const threshold = thresholds ? thresholds[bot][asset] : BOT_SPREAD_THRESHOLD_PCT[bot][asset];
   return spreadPct > threshold;
 }

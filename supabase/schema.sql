@@ -53,6 +53,21 @@ create table if not exists error_log (
 
 create index if not exists error_log_created_at on error_log (created_at desc);
 
+-- Spread thresholds (pct) per bot per asset. Bot enters when spread > threshold. Defaults seeded below.
+create table if not exists spread_thresholds (
+  bot text not null,
+  asset text not null,
+  threshold_pct numeric not null,
+  primary key (bot, asset)
+);
+
 -- Seed config
 insert into bot_config (id, emergency_off) values ('default', false)
 on conflict (id) do nothing;
+
+-- Seed spread thresholds (B1/B2/B3 x BTC/ETH/SOL)
+insert into spread_thresholds (bot, asset, threshold_pct) values
+  ('B1', 'BTC', 0.21), ('B1', 'ETH', 0.23), ('B1', 'SOL', 0.27),
+  ('B2', 'BTC', 0.57), ('B2', 'ETH', 0.57), ('B2', 'SOL', 0.62),
+  ('B3', 'BTC', 1.0),  ('B3', 'ETH', 1.0),  ('B3', 'SOL', 1.0)
+on conflict (bot, asset) do nothing;

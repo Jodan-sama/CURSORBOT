@@ -51,7 +51,7 @@ export function isB2Window(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 5;
 }
 
-/** B3: last 8 min → true when minutesLeft in (0, 8]. */
+/** B3: last 8 min → true when minutesLeft in (0, 8]. B2 and B3 both run when minutesLeft in (0, 5]. */
 export function isB3Window(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 8;
 }

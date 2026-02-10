@@ -1,8 +1,9 @@
 /**
- * Supabase client and helpers for bot config, positions log, and B3 blocks.
+ * Supabase client and helpers for bot config, positions log, spread thresholds, and B3 blocks.
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { BOT_SPREAD_THRESHOLD_PCT, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 
 export type Asset = 'BTC' | 'ETH' | 'SOL';
 export type BotId = 'B1' | 'B2' | 'B3';
@@ -118,6 +119,21 @@ export async function setAssetBlock(asset: Asset, blockUntil: Date): Promise<voi
     .from('asset_blocks')
     .upsert({ asset, block_until: blockUntil.toISOString() }, { onConflict: 'asset' });
   if (error) throw new Error(`setAssetBlock: ${error.message}`);
+}
+
+/** Spread thresholds (pct) per bot per asset. Merges DB with defaults. */
+export async function getSpreadThresholds(): Promise<SpreadThresholdsMatrix> {
+  const { data, error } = await getDb().from('spread_thresholds').select('bot, asset, threshold_pct');
+  if (error) return BOT_SPREAD_THRESHOLD_PCT;
+  const matrix: SpreadThresholdsMatrix = {
+    B1: { ...BOT_SPREAD_THRESHOLD_PCT.B1 },
+    B2: { ...BOT_SPREAD_THRESHOLD_PCT.B2 },
+    B3: { ...BOT_SPREAD_THRESHOLD_PCT.B3 },
+  };
+  for (const row of data as { bot: BotId; asset: Asset; threshold_pct: number }[]) {
+    matrix[row.bot][row.asset] = Number(row.threshold_pct);
+  }
+  return matrix;
 }
 
 /** True if this asset is currently blocked (B3 filled recently). */
