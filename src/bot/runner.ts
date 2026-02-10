@@ -28,9 +28,16 @@ import {
   logPosition,
   setAssetBlock,
   isAssetBlocked,
+  logError,
 } from '../db/supabase.js';
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
+
+/** When false or unset, only trade on Kalshi (skip Polymarket). Set ENABLE_POLYMARKET=true to enable Poly. */
+function isPolymarketEnabled(): boolean {
+  const v = process.env.ENABLE_POLYMARKET;
+  return v === 'true' || v === '1';
+}
 
 const B1_CHECK_INTERVAL_MS = 5_000;
 const B2_CHECK_INTERVAL_MS = 30_000;
@@ -116,7 +123,7 @@ export async function runOneTick(now: Date): Promise<void> {
         }
       }
     } catch (e) {
-      console.error(`[${asset}] market data error:`, e);
+      await logError(e, { asset, stage: 'market_data' });
       continue;
     }
 
@@ -153,10 +160,10 @@ export async function runOneTick(now: Date): Promise<void> {
           });
           console.log(`B1 Kalshi ${asset} ${useMarket ? 'market' : '96% limit'} orderId=${orderId}`);
         } catch (e) {
-          console.error(`B1 Kalshi ${asset} error:`, e);
+          await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
         }
       }
-      if (polySlug) {
+      if (isPolymarketEnabled() && polySlug) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, useMarket ? 0.99 : 0.96, sizePolyB1);
           enteredThisWindow.add(key);
@@ -171,7 +178,7 @@ export async function runOneTick(now: Date): Promise<void> {
           });
           console.log(`B1 Poly ${asset} orderId=${orderId}`);
         } catch (e) {
-          console.error(`B1 Poly ${asset} error:`, e);
+          await logError(e, { bot: 'B1', asset, venue: 'polymarket' });
         }
       }
     }
@@ -197,10 +204,10 @@ export async function runOneTick(now: Date): Promise<void> {
           });
           console.log(`B2 Kalshi ${asset} 97% orderId=${orderId}`);
         } catch (e) {
-          console.error(`B2 Kalshi ${asset} error:`, e);
+          await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
         }
       }
-      if (polySlug) {
+      if (isPolymarketEnabled() && polySlug) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB2);
           enteredThisWindow.add(key);
@@ -215,7 +222,7 @@ export async function runOneTick(now: Date): Promise<void> {
           });
           console.log(`B2 Poly ${asset} orderId=${orderId}`);
         } catch (e) {
-          console.error(`B2 Poly ${asset} error:`, e);
+          await logError(e, { bot: 'B2', asset, venue: 'polymarket' });
         }
       }
     }
@@ -243,10 +250,10 @@ export async function runOneTick(now: Date): Promise<void> {
           });
           console.log(`B3 Kalshi ${asset} 97% orderId=${orderId}`);
         } catch (e) {
-          console.error(`B3 Kalshi ${asset} error:`, e);
+          await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
         }
       }
-      if (polySlug) {
+      if (isPolymarketEnabled() && polySlug) {
         try {
           const { orderId } = await tryPlacePolymarket(polySlug, asset, 0.97, sizePolyB3);
           placed = true;
@@ -262,7 +269,7 @@ export async function runOneTick(now: Date): Promise<void> {
           });
           console.log(`B3 Poly ${asset} orderId=${orderId}`);
         } catch (e) {
-          console.error(`B3 Poly ${asset} error:`, e);
+          await logError(e, { bot: 'B3', asset, venue: 'polymarket' });
         }
       }
       if (placed) {
@@ -291,7 +298,11 @@ export function startBotLoop(): void {
     const shouldB2 = tickCount % 6 === 0;
     const shouldB3 = tickCount % 12 === 0;
     if (shouldB1 || shouldB2 || shouldB3) {
-      await runOneTick(now);
+      try {
+        await runOneTick(now);
+      } catch (e) {
+        await logError(e, { stage: 'runOneTick' });
+      }
     }
   }, B1_CHECK_INTERVAL_MS);
 

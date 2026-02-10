@@ -42,6 +42,17 @@ create table if not exists asset_blocks (
   created_at timestamptz not null default now()
 );
 
+-- Error log (for dashboard and debugging)
+create table if not exists error_log (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  message text not null,
+  context jsonb,
+  stack text
+);
+
+create index if not exists error_log_created_at on error_log (created_at desc);
+
 -- Seed config
 insert into bot_config (id, emergency_off) values ('default', false)
 on conflict (id) do nothing;

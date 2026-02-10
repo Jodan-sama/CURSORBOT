@@ -132,3 +132,22 @@ export async function isAssetBlocked(asset: Asset): Promise<boolean> {
   if (error) throw new Error(`isAssetBlocked: ${error.message}`);
   return data != null;
 }
+
+/** Log an error to Supabase (and optionally console). Does not throw. */
+export async function logError(
+  err: unknown,
+  context?: Record<string, unknown>
+): Promise<void> {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack ?? null : null;
+  try {
+    await getDb().from('error_log').insert({
+      message,
+      context: context ?? null,
+      stack,
+    });
+  } catch (e) {
+    console.error('[logError] failed to write to Supabase:', e);
+  }
+  console.error('[error]', message, context ?? '', stack ?? '');
+}

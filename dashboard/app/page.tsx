@@ -26,21 +26,36 @@ type Position = {
   ticker_or_slug: string | null;
 };
 
+type ErrorLog = {
+  id: string;
+  created_at: string;
+  message: string;
+  context: Record<string, unknown> | null;
+  stack: string | null;
+};
+
 export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [kalshiSize, setKalshiSize] = useState('');
   const [polySize, setPolySize] = useState('');
 
   async function load() {
-    const [{ data: configData }, { data: posData }] = await Promise.all([
+    const [
+      { data: configData },
+      { data: posData },
+      { data: errData },
+    ] = await Promise.all([
       supabase.from('bot_config').select('*').eq('id', 'default').single(),
       supabase.from('positions').select('*').order('entered_at', { ascending: false }).limit(50),
+      supabase.from('error_log').select('*').order('created_at', { ascending: false }).limit(50),
     ]);
     setConfig(configData ?? null);
     setPositions((posData ?? []) as Position[]);
+    setErrors((errData ?? []) as ErrorLog[]);
     if (configData) {
       setKalshiSize(String(configData.position_size_kalshi));
       setPolySize(String(configData.position_size_polymarket));
@@ -112,6 +127,32 @@ export default function Dashboard() {
           </label>
           <button type="submit" disabled={saving} style={{ padding: '8px 16px' }}>Save</button>
         </form>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2>Recent errors</h2>
+        {errors.length === 0 ? (
+          <p style={{ color: '#666' }}>No errors logged.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Message</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Context</th>
+              </tr>
+            </thead>
+            <tbody>
+              {errors.map((e) => (
+                <tr key={e.id}>
+                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{new Date(e.created_at).toISOString()}</td>
+                  <td style={{ borderBottom: '1px solid #eee', maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.message}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{e.context ? JSON.stringify(e.context) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section>
