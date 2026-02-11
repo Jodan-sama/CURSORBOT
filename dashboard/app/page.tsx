@@ -45,6 +45,9 @@ type Config = {
   emergency_off: boolean;
   position_size_kalshi: number;
   position_size_polymarket: number;
+  b3_block_min: number;
+  b2_order_block_min: number;
+  b2_high_spread_block_min: number;
   updated_at: string;
 };
 
@@ -111,6 +114,11 @@ export default function Dashboard() {
     B3: { kalshi: '', poly: '' },
   });
   const [spreadEdits, setSpreadEdits] = useState<Record<string, string>>({});
+  const [delayEdits, setDelayEdits] = useState<{ b3: string; b2Order: string; b2HighSpread: string }>({
+    b3: '',
+    b2Order: '',
+    b2HighSpread: '',
+  });
   const [csvLoading, setCsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -185,6 +193,12 @@ export default function Dashboard() {
         }
       }
       setBotSizes(nextBotSizes);
+      const cfg = configData as Config | null;
+      setDelayEdits({
+        b3: cfg?.b3_block_min != null ? String(cfg.b3_block_min) : '60',
+        b2Order: cfg?.b2_order_block_min != null ? String(cfg.b2_order_block_min) : '15',
+        b2HighSpread: cfg?.b2_high_spread_block_min != null ? String(cfg.b2_high_spread_block_min) : '15',
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -216,6 +230,23 @@ export default function Dashboard() {
           { onConflict: 'bot,asset' }
         );
       }
+    }
+    await load();
+    setSaving(false);
+  }
+
+  async function saveDelays(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    const b3 = parseInt(delayEdits.b3, 10);
+    const b2Order = parseInt(delayEdits.b2Order, 10);
+    const b2HighSpread = parseInt(delayEdits.b2HighSpread, 10);
+    if (!Number.isNaN(b3) && !Number.isNaN(b2Order) && !Number.isNaN(b2HighSpread) && b3 > 0 && b2Order > 0 && b2HighSpread > 0) {
+      await getSupabase().from('bot_config').update({
+        b3_block_min: b3,
+        b2_order_block_min: b2Order,
+        b2_high_spread_block_min: b2HighSpread,
+      }).eq('id', 'default');
     }
     await load();
     setSaving(false);
@@ -358,6 +389,62 @@ export default function Dashboard() {
             </tbody>
           </table>
           <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save position sizes</button>
+        </form>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>Delays (minutes)</h2>
+        <p style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>
+          B3 placed → blocks B1/B2 for <strong>b3_block_min</strong>. B2 placed → blocks B1 for <strong>b2_order_block_min</strong>. B2 sees spread &gt;0.55% → blocks B1 for <strong>b2_high_spread_block_min</strong>.
+        </p>
+        <form onSubmit={saveDelays}>
+          <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Delay</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Minutes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B3 blocks B1/B2</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    value={delayEdits.b3}
+                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b3: e.target.value }))}
+                    style={{ width: 72, padding: '4px 6px' }}
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B2 order → block B1</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    value={delayEdits.b2Order}
+                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b2Order: e.target.value }))}
+                    style={{ width: 72, padding: '4px 6px' }}
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B2 spread &gt;0.55% → block B1</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    value={delayEdits.b2HighSpread}
+                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b2HighSpread: e.target.value }))}
+                    style={{ width: 72, padding: '4px 6px' }}
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save delays</button>
         </form>
       </section>
 

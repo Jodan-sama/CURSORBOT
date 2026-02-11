@@ -31,6 +31,7 @@ import {
   isEmergencyOff,
   getPositionSize,
   getSpreadThresholds,
+  getBotDelays,
   logPosition,
   setAssetBlock,
   isAssetBlocked,
@@ -53,18 +54,13 @@ const B3_CHECK_INTERVAL_MS = 60_000;
 /** Failsafe: never enter if |spread| > this (e.g. bad data). Also never enter when spread is 0. */
 const MAX_SPREAD_PCT = 2;
 
-/** After B2 places for an asset, B1 is delayed for this long (same asset). */
-const B1_DELAY_AFTER_B2_MS = 15 * 60 * 1000;
-
 /** In-memory: already placed an order this window for (bot, asset). Cleared when window changes. */
 const enteredThisWindow = new Set<string>();
 
-/** In-memory: timestamp (ms) when B2 last placed for each asset. B1 skips that asset for 15 min after. */
+/** In-memory: timestamp (ms) when B2 last placed for each asset. B1 skips that asset for b2OrderBlockMin. */
 const lastB2OrderByAsset = new Map<Asset, number>();
 
-/** When B2 runs and spread > 0.55%, B1 is delayed this long for that asset. */
-const B1_DELAY_AFTER_B2_HIGH_SPREAD_MS = 15 * 60 * 1000;
-/** In-memory: timestamp (ms) when B2 last saw spread > 0.55% for each asset. B1 skips for 15 min after. */
+/** In-memory: timestamp (ms) when B2 last saw spread > 0.55% for each asset. B1 skips for b2HighSpreadBlockMin. */
 const lastB2HighSpreadByAsset = new Map<Asset, number>();
 
 function windowKey(bot: string, asset: Asset, windowEndMs: number): string {
@@ -81,6 +77,11 @@ function getCurrentWindowEndMs(): number {
 /** Side from signed spread: positive → Yes, negative → No. We only place when |spread| > threshold. */
 function sideFromSignedSpread(signedSpreadPct: number): 'yes' | 'no' {
   return signedSpreadPct >= 0 ? 'yes' : 'no';
+}
+
+function polyErrorReason(polyError: unknown): string {
+  const msg = polyError instanceof Error ? polyError.message : String(polyError);
+  return msg.length > 100 ? `${msg.slice(0, 100)}…` : msg;
 }
 
 async function tryPlaceKalshi(
@@ -158,7 +159,10 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
   const minutesLeft = minutesLeftInWindow(now);
   const windowEndMs = getCurrentWindowEndMs();
-  const spreadThresholds = await getSpreadThresholds();
+  const [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
+  const b2OrderBlockMs = delays.b2OrderBlockMin * 60 * 1000;
+  const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60 * 1000;
+  const b3BlockMs = delays.b3BlockMin * 60 * 1000;
 
   for (const asset of ASSETS) {
     if (await isAssetBlocked(asset)) {
@@ -226,18 +230,18 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
       const t = lastB2OrderByAsset.get(asset);
-      if (t != null && now.getTime() - t < B1_DELAY_AFTER_B2_MS) {
+      if (t != null && now.getTime() - t < b2OrderBlockMs) {
         if (tickCount % 6 === 0) {
-          const minLeft = Math.ceil((B1_DELAY_AFTER_B2_MS - (now.getTime() - t)) / 60000);
-          console.log(`[tick] B1 ${asset} skip: 15 min delay after B2 order (${minLeft} min left)`);
+          const minLeft = Math.ceil((b2OrderBlockMs - (now.getTime() - t)) / 60000);
+          console.log(`[tick] B1 ${asset} skip: ${delays.b2OrderBlockMin} min delay after B2 order (${minLeft} min left)`);
         }
         continue;
       }
       const tHigh = lastB2HighSpreadByAsset.get(asset);
-      if (tHigh != null && now.getTime() - tHigh < B1_DELAY_AFTER_B2_HIGH_SPREAD_MS) {
+      if (tHigh != null && now.getTime() - tHigh < b2HighSpreadBlockMs) {
         if (tickCount % 6 === 0) {
-          const minLeft = Math.ceil((B1_DELAY_AFTER_B2_HIGH_SPREAD_MS - (now.getTime() - tHigh)) / 60000);
-          console.log(`[tick] B1 ${asset} skip: 15 min delay after B2 saw spread >0.55% (${minLeft} min left)`);
+          const minLeft = Math.ceil((b2HighSpreadBlockMs - (now.getTime() - tHigh)) / 60000);
+          console.log(`[tick] B1 ${asset} skip: ${delays.b2HighSpreadBlockMin} min delay after B2 saw spread >0.55% (${minLeft} min left)`);
         }
         continue;
       }
@@ -272,17 +276,16 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         return { orderId: r.orderId };
       };
 
-      const [kalshiResult, polyResult] = await Promise.all([
-        placeB1Kalshi().catch(async (e) => {
-          await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
-          return { orderId: undefined as string | undefined };
-        }),
-        placeB1Poly().catch(async (e) => {
-          console.error(`B1 Poly ${asset} failed:`, e);
-          await logError(e, { bot: 'B1', asset, venue: 'polymarket', slug: polySlug ?? undefined });
-          return { orderId: undefined as string | undefined };
-        }),
-      ]);
+      // Run Kalshi first, then Poly. Poly's withPolyProxy sets global undici/axios—running in parallel would proxy Kalshi's fetch and can break it.
+      const kalshiResult = await placeB1Kalshi().catch(async (e) => {
+        await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
+        return { orderId: undefined as string | undefined };
+      });
+      const polyResult = await placeB1Poly().catch(async (e) => {
+        console.error(`B1 Poly ${asset} failed:`, e);
+        await logError(e, { bot: 'B1', asset, venue: 'polymarket', slug: polySlug ?? undefined });
+        return { orderId: undefined as string | undefined, polyError: e };
+      });
 
       if (kalshiResult.orderId) {
         enteredThisWindow.add(key);
@@ -319,24 +322,23 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
               ? 'no poly slug'
               : !isPolymarketEnabled()
                 ? 'ENABLE_POLYMARKET not true'
-                : 'no orderId or error (check Recent errors)';
+                : 'polyError' in polyResult && polyResult.polyError != null
+                  ? polyErrorReason(polyResult.polyError)
+                  : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B1', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B1 Poly ${asset} skip: ${reason}`);
       }
     }
 
     // --- B2: last 5 min, check every 30s, place 97% limit. Fire Kalshi + Poly in parallel like B1. ---
+    // B2 having already placed must NOT prevent B3 from running (B3 needs >1% spread). We skip B2 placement
+    // but fall through so B3 can still place.
     if (isB2Window(minutesLeft)) {
       if (spreadMagnitude > 0.55) lastB2HighSpreadByAsset.set(asset, now.getTime());
-      const key = windowKey('B2', asset, windowEndMs);
+      const keyB2 = windowKey('B2', asset, windowEndMs);
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
-      if (enteredThisWindow.has(key)) continue;
-      if (!outsideB2) {
-        if (tickCount % 6 === 0) console.log(`[tick] B2 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
-        continue;
-      }
-
-      const priceB2 = 0.97;
+      if (!enteredThisWindow.has(keyB2) && outsideB2) {
+        const priceB2 = 0.97;
       const placeB2Kalshi = async () => {
         if (!kalshiTicker || sizeKalshiB2 <= 0) return { orderId: undefined as string | undefined };
         const r = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2, side);
@@ -351,20 +353,19 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         return { orderId: r.orderId };
       };
 
-      const [kalshiResult, polyResult] = await Promise.all([
-        placeB2Kalshi().catch(async (e) => {
-          await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
-          return { orderId: undefined as string | undefined };
-        }),
-        placeB2Poly().catch(async (e) => {
-          console.error(`B2 Poly ${asset} failed:`, e);
-          await logError(e, { bot: 'B2', asset, venue: 'polymarket', slug: polySlug ?? undefined });
-          return { orderId: undefined as string | undefined };
-        }),
-      ]);
+      // Run Kalshi first, then Poly—avoid Poly proxy affecting Kalshi's fetch (see B1 comment).
+      const kalshiResult = await placeB2Kalshi().catch(async (e) => {
+        await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
+        return { orderId: undefined as string | undefined };
+      });
+      const polyResult = await placeB2Poly().catch(async (e) => {
+        console.error(`B2 Poly ${asset} failed:`, e);
+        await logError(e, { bot: 'B2', asset, venue: 'polymarket', slug: polySlug ?? undefined });
+        return { orderId: undefined as string | undefined, polyError: e };
+      });
 
       if (kalshiResult.orderId) {
-        enteredThisWindow.add(key);
+        enteredThisWindow.add(keyB2);
         lastB2OrderByAsset.set(asset, now.getTime());
         await logPosition({
           bot: 'B2',
@@ -378,7 +379,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         console.log(`B2 Kalshi ${asset} ${side} 97% orderId=${kalshiResult.orderId}`);
       }
       if (polyResult.orderId) {
-        enteredThisWindow.add(key);
+        enteredThisWindow.add(keyB2);
         lastB2OrderByAsset.set(asset, now.getTime());
         const minNotionalSize = Math.ceil(1 / priceB2);
         const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
@@ -401,9 +402,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
               ? 'no poly slug'
               : !isPolymarketEnabled()
                 ? 'ENABLE_POLYMARKET not true'
-                : 'no orderId or error (check Recent errors)';
+                : 'polyError' in polyResult && polyResult.polyError != null
+                  ? polyErrorReason(polyResult.polyError)
+                  : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B2', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B2 Poly ${asset} skip: ${reason}`);
+      }
+      } else if (!outsideB2 && tickCount % 6 === 0) {
+        console.log(`[tick] B2 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
       }
     }
 
@@ -432,17 +438,16 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         return { orderId: r.orderId };
       };
 
-      const [kalshiResult, polyResult] = await Promise.all([
-        placeB3Kalshi().catch(async (e) => {
-          await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
-          return { orderId: undefined as string | undefined };
-        }),
-        placeB3Poly().catch(async (e) => {
-          console.error(`B3 Poly ${asset} failed:`, e);
-          await logError(e, { bot: 'B3', asset, venue: 'polymarket', slug: polySlug ?? undefined });
-          return { orderId: undefined as string | undefined };
-        }),
-      ]);
+      // Run Kalshi first, then Poly—avoid Poly proxy affecting Kalshi's fetch (see B1 comment).
+      const kalshiResult = await placeB3Kalshi().catch(async (e) => {
+        await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
+        return { orderId: undefined as string | undefined };
+      });
+      const polyResult = await placeB3Poly().catch(async (e) => {
+        console.error(`B3 Poly ${asset} failed:`, e);
+        await logError(e, { bot: 'B3', asset, venue: 'polymarket', slug: polySlug ?? undefined });
+        return { orderId: undefined as string | undefined, polyError: e };
+      });
 
       const placed = !!(kalshiResult.orderId || polyResult.orderId);
 
@@ -482,14 +487,16 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
               ? 'no poly slug'
               : !isPolymarketEnabled()
                 ? 'ENABLE_POLYMARKET not true'
-                : 'no orderId or error (check Recent errors)';
+                : 'polyError' in polyResult && polyResult.polyError != null
+                  ? polyErrorReason(polyResult.polyError)
+                  : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B3', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B3 Poly ${asset} skip: ${reason}`);
       }
       if (placed) {
-        const blockUntil = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
+        const blockUntil = new Date(now.getTime() + b3BlockMs);
         await setAssetBlock(asset, blockUntil);
-        console.log(`B3 placed for ${asset}: block B1/B2 1h until ${blockUntil.toISOString()}`);
+        console.log(`B3 placed for ${asset}: block B1/B2 ${delays.b3BlockMin}min until ${blockUntil.toISOString()}`);
       }
     }
   }

@@ -1,11 +1,14 @@
 -- Cursorbot: config, positions log, and B3→B2/B1 block state
 
--- Single row: emergency off + position sizes (JSON or columns)
+-- Single row: emergency off + position sizes + delay config
 create table if not exists bot_config (
   id text primary key default 'default',
   emergency_off boolean not null default false,
   position_size_kalshi numeric not null default 1,
   position_size_polymarket numeric not null default 5,
+  b3_block_min integer not null default 60,
+  b2_order_block_min integer not null default 15,
+  b2_high_spread_block_min integer not null default 15,
   updated_at timestamptz not null default now()
 );
 
@@ -95,6 +98,11 @@ create table if not exists spread_thresholds (
   threshold_pct numeric not null,
   primary key (bot, asset)
 );
+
+-- For existing deployments: add delay columns if missing
+alter table bot_config add column if not exists b3_block_min integer not null default 60;
+alter table bot_config add column if not exists b2_order_block_min integer not null default 15;
+alter table bot_config add column if not exists b2_high_spread_block_min integer not null default 15;
 
 -- Seed config
 insert into bot_config (id, emergency_off) values ('default', false)

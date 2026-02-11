@@ -14,6 +14,9 @@ export interface BotConfigRow {
   emergency_off: boolean;
   position_size_kalshi: number;
   position_size_polymarket: number;
+  b3_block_min: number;
+  b2_order_block_min: number;
+  b2_high_spread_block_min: number;
   updated_at: string;
 }
 
@@ -66,6 +69,20 @@ export async function getBotConfig(): Promise<BotConfigRow> {
 export async function isEmergencyOff(): Promise<boolean> {
   const c = await getBotConfig();
   return c.emergency_off;
+}
+
+/** B3 block duration (min), B2 order→B1 delay (min), B2 high-spread→B1 delay (min). */
+export async function getBotDelays(): Promise<{
+  b3BlockMin: number;
+  b2OrderBlockMin: number;
+  b2HighSpreadBlockMin: number;
+}> {
+  const c = await getBotConfig();
+  return {
+    b3BlockMin: Number(c.b3_block_min) || 60,
+    b2OrderBlockMin: Number(c.b2_order_block_min) || 15,
+    b2HighSpreadBlockMin: Number(c.b2_high_spread_block_min) || 15,
+  };
 }
 
 /** Get position size for a venue (with optional per-bot/asset override). */
