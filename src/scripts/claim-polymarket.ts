@@ -26,22 +26,48 @@ function getConditionIdsFromEnvOrArgs(): string[] {
   return args.filter((a) => /^0x[a-fA-F0-9]{64}$/.test(a) || /^[a-fA-F0-9]{64}$/.test(a));
 }
 
-/** Fetch redeemable position condition IDs for a user from Polymarket Data API. Uses HTTP_PROXY/HTTPS_PROXY if set. */
-async function fetchRedeemableConditionIds(funder: string): Promise<string[]> {
-  const url = `${DATA_API_BASE}/positions?user=${encodeURIComponent(funder)}&redeemable=true&limit=500`;
+type PositionRow = { conditionId?: string; redeemable?: boolean; proxyWallet?: string };
+
+/** Fetch positions from Data API (optionally with redeemable filter). Uses HTTP_PROXY/HTTPS_PROXY if set. */
+async function fetchPositions(user: string, redeemableOnly: boolean): Promise<PositionRow[]> {
+  const params = new URLSearchParams({ user, limit: '500' });
+  if (redeemableOnly) params.set('redeemable', 'true');
+  const url = `${DATA_API_BASE}/positions?${params.toString()}`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Data API positions ${res.status}: ${await res.text()}`);
   }
-  const data = (await res.json()) as { conditionId?: string }[];
+  return (await res.json()) as PositionRow[];
+}
+
+/** Collect condition IDs from position rows (optionally only redeemable). */
+function conditionIdsFromRows(rows: PositionRow[], requireRedeemable: boolean): string[] {
   const ids = new Set<string>();
-  for (const row of data) {
+  for (const row of rows) {
+    if (requireRedeemable && !row.redeemable) continue;
     const c = row.conditionId?.trim();
     if (!c) continue;
     const normalized = c.startsWith('0x') ? c : `0x${c}`;
     if (/^0x[a-fA-F0-9]{64}$/.test(normalized)) ids.add(normalized);
   }
   return [...ids];
+}
+
+/** Fetch redeemable condition IDs: try API redeemable filter first, then fallback to all positions + client-side filter. */
+async function fetchRedeemableConditionIds(funder: string): Promise<string[]> {
+  // 1) Try with redeemable=true
+  const withFilter = await fetchPositions(funder, true);
+  let ids = conditionIdsFromRows(withFilter, true);
+  if (ids.length > 0) return ids;
+
+  // 2) Fallback: fetch all positions and filter for redeemable (Data API sometimes returns empty for redeemable=true)
+  const all = await fetchPositions(funder, false);
+  const redeemableCount = all.filter((r) => r.redeemable).length;
+  if (redeemableCount > 0) {
+    console.log(`Found ${redeemableCount} redeemable position(s) via fallback (all positions).`);
+    ids = conditionIdsFromRows(all, true);
+  }
+  return ids;
 }
 
 async function main() {
@@ -56,9 +82,17 @@ async function main() {
   let conditionIds = getConditionIdsFromEnvOrArgs();
   if (conditionIds.length === 0 && funder) {
     try {
-      console.log('Discovering redeemable positions for', funder, '...');
-      conditionIds = await fetchRedeemableConditionIds(funder);
-      if (conditionIds.length > 0) console.log('Found', conditionIds.length, 'redeemable condition(s)');
+      const proxy = process.env.POLYMARKET_PROXY_WALLET?.trim();
+      const addressesToTry = proxy ? [funder, proxy] : [funder];
+      for (const addr of addressesToTry) {
+        console.log('Discovering redeemable positions for', addr, '...');
+        const ids = await fetchRedeemableConditionIds(addr);
+        if (ids.length > 0) {
+          conditionIds = ids;
+          console.log('Found', conditionIds.length, 'redeemable condition(s)');
+          break;
+        }
+      }
     } catch (e) {
       console.error('Discovery failed:', e);
       process.exit(1);

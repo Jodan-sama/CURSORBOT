@@ -47,6 +47,7 @@ Add one line per variable. **No spaces around the `=`**. Replace the placeholder
 | `POLYMARKET_PRIVATE_KEY` | Your wallet’s private key (hex, with or without `0x`) | `POLYMARKET_PRIVATE_KEY=0xabc123...` or `POLYMARKET_PRIVATE_KEY=abc123...` |
 | `POLYMARKET_FUNDER` | The **same wallet’s address** (0x...) — used to find redeemable positions | `POLYMARKET_FUNDER=0x1234567890abcdef...` |
 | `POLYGON_RPC_URL` | A Polygon RPC URL (for sending the claim tx). Free option: [Alchemy](https://www.alchemy.com/) → create app → Polygon Mainnet → copy HTTPS URL | `POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY` |
+| `POLYMARKET_PROXY_WALLET` | **(Optional)** If positions don’t show up, your app (e.g. PolyGun) may hold them in a **proxy wallet**. Set this to that proxy address (0x...) so the script also looks up positions for it. You still need the **private key for the wallet that holds the tokens** (proxy or EOA) to redeem. | `POLYMARKET_PROXY_WALLET=0x...` |
 
 **Example block to paste (then replace the values):**
 
@@ -104,3 +105,13 @@ You should see either “Discovering redeemable positions…” and then “Rede
 The script uses `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, and `POLYGON_RPC_URL` from `.env`. With no arguments and no `CONDITION_IDS`, it **automatically discovers redeemable positions** for that wallet via the Polymarket Data API and redeems each one.
 
 **Optional:** To redeem only specific markets, set `CONDITION_IDS=id1,id2` in `.env` or pass condition IDs as arguments. **Manual:** Claim from the Polymarket UI (portfolio → resolved positions → Claim).
+
+---
+
+## Troubleshooting: “No redeemable positions” but I have claimable positions
+
+- **Not an Alchemy issue.** Discovery uses the Polymarket Data API (REST), not Alchemy. Alchemy is only used when sending the redeem transaction.
+
+- **Fallback in script:** The script now tries two ways to find redeemable positions: (1) API with `redeemable=true`, then (2) fetch all positions for your address and filter for `redeemable` in code. Redeploy and run again; you may see “Found N redeemable position(s) via fallback.”
+
+- **Proxy wallet (e.g. PolyGun):** If you trade via PolyGun or another app, your positions may be under a **proxy wallet** address, not your main wallet. Add `POLYMARKET_PROXY_WALLET=0xYourProxyAddress` to `.env`. Find the proxy in your app (e.g. profile, settings, or “wallet” / “proxy” in the UI). The script will look up positions for both your main address and the proxy. **Redeeming** still requires the private key for whichever wallet actually holds the tokens (that wallet signs the redeem tx).
