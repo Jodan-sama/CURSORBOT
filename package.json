@@ -11,6 +11,8 @@
     "test-order": "node dist/scripts/place-test-order.js",
     "test-order-poly": "node dist/scripts/place-test-order-polymarket.js",
     "claim-poly": "node dist/scripts/claim-polymarket.js",
+    "check-safe-balance": "node dist/scripts/check-safe-balance.js",
+    "transfer-safe-usdc": "node dist/scripts/transfer-safe-usdc.js",
     "b4-paper": "node dist/scripts/b4-paper.js",
     "b4-kalshi-46-50": "node dist/scripts/b4-kalshi-46-50.js",
     "spreads": "node dist/scripts/current-kalshi-spreads.js",

@@ -138,6 +138,16 @@ cd /root/cursorbot && npm run check-safe-balance
 
 Prints the Safe's USDC balance in human form (e.g. `0.265537`).
 
+### 9. Transfer USDC out of PolyGun Safe
+
+If USDC is stuck in the PolyGun Safe (e.g. after claiming, or leftover balance), transfer it to `POLYGON_WALLET`:
+
+```bash
+cd /root/cursorbot && npm run transfer-safe-usdc
+```
+
+Requires `POLYGUN_CLAIM_FUNDER` (or `POLYMARKET_SAFE_ADDRESS`) = the Safe address, `POLYGON_WALLET` = where to send, and `POLYGUN_CLAIM_PRIVATE_KEY` (or `POLYMARKET_PRIVATE_KEY`) = signer/owner. Set `POLYGON_WALLET` to your desired destination (e.g. your MetaMask or Polymarket proxy) before running.
+
 ---
 
 ## In-repo claim script (auto-discovery)
