@@ -1,13 +1,13 @@
 /**
- * Live comparison: Binance vs CoinGecko prices and signed spread % for BTC, ETH, SOL.
- * Refreshes every 5 seconds. Run: npx tsx src/scripts/current-kalshi-spreads.ts
+ * Live comparison: Binance vs CoinGecko prices and signed spread % for BTC, ETH, SOL, XRP.
+ * Refreshes every 5 seconds. Run: npm run spreads  or  npx tsx src/scripts/current-kalshi-spreads.ts
  */
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
 import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
 import { fetchBinancePriceOnly, fetchCoinGeckoPricesAll } from '../kalshi/spread.js';
 import { strikeSpreadPctSigned } from '../kalshi/spread.js';
 
-const ASSETS = ['BTC', 'ETH', 'SOL'] as const;
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'] as const;
 const REFRESH_MS = 5_000;
 /** Cache CoinGecko for 60s so we don't get rate limited (free tier ~1 req/min). */
 const COINGECKO_CACHE_MS = 60_000;
@@ -110,7 +110,7 @@ async function runOne(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  console.log('Kalshi 15m spread comparison — Binance vs CoinGecko (refresh every 5s). Ctrl+C to exit.');
+  console.log('Kalshi 15m spreads — BTC, ETH, SOL, XRP (refresh every 5s). Ctrl+C to exit.');
   for (;;) {
     await runOne();
     await new Promise((r) => setTimeout(r, REFRESH_MS));
