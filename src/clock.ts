@@ -61,7 +61,12 @@ export function isB3Window(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 8;
 }
 
-/** B1: use market order in the final 1 minute. */
+/** B1: first 1.5 min of B1 window (2.5→1 min left). Place 96 limit if bid ≥90%. */
+export function isB1LimitOrderWindow(minutesLeft: number): boolean {
+  return minutesLeft > 1 && minutesLeft <= 2.5;
+}
+
+/** B1: final 1 minute. Place market order only if bid 90–96% and we didn't already place a limit earlier. */
 export function isB1MarketOrderWindow(minutesLeft: number): boolean {
   return minutesLeft > 0 && minutesLeft <= 1;
 }

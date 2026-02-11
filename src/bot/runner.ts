@@ -10,6 +10,7 @@ import {
   isB1Window,
   isB2Window,
   isB3Window,
+  isB1LimitOrderWindow,
   isB1MarketOrderWindow,
   getCurrentPolySlug,
   isBlackoutWindow,
@@ -259,7 +260,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     const sizeKalshiB3 = await getPositionSize('kalshi', 'B3', asset);
     const sizePolyB3 = await getPositionSize('polymarket', 'B3', asset);
 
-    // --- B1: last 2.5 min, check every 5s, bid 90–96%, place 96% limit (or market in last 1 min) ---
+    // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). ---
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
       const tHigh = lastB2HighSpreadByAsset.get(asset);
@@ -272,18 +273,28 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       const outsideB1 = isOutsideSpreadThreshold('B1', asset, spreadMagnitude, spreadThresholds);
       const bidPct = kalshiBid != null ? kalshiYesBidAsPercent(kalshiBid) : 0;
-      const bidOk = bidPct >= 90 && bidPct <= 96;
+      const inLimitWindow = isB1LimitOrderWindow(minutesLeft);
+      const inMarketWindow = isB1MarketOrderWindow(minutesLeft);
+      const bidOk =
+        inLimitWindow
+          ? bidPct >= 90
+          : inMarketWindow
+            ? bidPct >= 90 && bidPct <= 96
+            : false;
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB1) {
         if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
         continue;
       }
       if (!bidOk) {
-        if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% not in 90-96`);
+        if (tickCount % 6 === 0) {
+          const want = inLimitWindow ? 'bid ≥90%' : 'bid 90–96%';
+          console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% (${want})`);
+        }
         continue;
       }
 
-      const useMarket = isB1MarketOrderWindow(minutesLeft);
+      const useMarket = inMarketWindow;
       // Poly mirrors Kalshi: 99% limit in last 1 min (matches Kalshi market), 96% otherwise. Fire both in parallel when both have size.
       const priceB1 = useMarket ? 0.99 : 0.96;
 
