@@ -1,0 +1,14 @@
+[Unit]
+Description=B4 Kalshi 46/50 (BTC only, place 46 yes+no, on fill cancel other and sell at 50)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/cursorbot
+ExecStart=/usr/bin/node dist/scripts/b4-kalshi-46-50.js
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/cursorbot/.env
+
+[Install]
+WantedBy=multi-user.target
