@@ -35,10 +35,17 @@ sudo journalctl -u cursorbot -n 100
 3. **Dashboard** – **Recent positions** should sometimes show **exchange: polymarket**. **Recent errors** will show Poly-related failures (e.g. CLOB auth, proxy, or “missing env”).
 4. **Poly env** – On the droplet, for **derive mode** (recommended): `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, `POLYMARKET_DERIVE_KEY=true`, `ENABLE_POLYMARKET=true`. For static keys use the three `POLYMARKET_API_*` vars instead of `DERIVE_KEY`. Restart after any change: `systemctl restart cursorbot`.
 5. **Trading enabled** – In the **dashboard**, ensure **Emergency** is **Resume** (not OFF). Set **position sizes** > 0 for Kalshi and Polymarket so the bots place orders; 0 size is skipped.
+6. **B2/B3 Polymarket size** – Polymarket CLOB requires min **$1 notional**. At 97¢, that means min 2 contracts. If you set B2/B3 Poly to 1, the bot uses 2 and logs `size 1 → 2 (min $1 notional)`.
 
 ## Errors in the dashboard
 
 Errors are written to Supabase **error_log** and shown in the **dashboard** under “Recent errors”.
+
+### Common error types
+
+- **Kalshi POST 400** – Order rejected (market closed, invalid price/size, balance). Check full message in dashboard.
+- **bot_config: fetch failed** – Supabase network issue. Usually transient.
+- **market_data fetch failed** – Binance/Kalshi unreachable (often geo-block).
 
 **One-time setup in Supabase:** In SQL Editor, run:
 

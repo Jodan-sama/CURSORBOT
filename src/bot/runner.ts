@@ -264,7 +264,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       };
       const placeB1Poly = async () => {
         if (!kalshiTicker || !polySlug || sizePolyB1 <= 0 || !isPolymarketEnabled()) return { orderId: undefined as string | undefined };
-        const sizeB1 = sizePolyB1 * priceB1 >= 1 ? sizePolyB1 : Math.max(sizePolyB1, Math.ceil(1 / priceB1));
+        const minNotionalSize = Math.ceil(1 / priceB1);
+        const sizeB1 = sizePolyB1 * priceB1 >= 1 ? sizePolyB1 : Math.max(sizePolyB1, minNotionalSize);
+        if (sizeB1 !== sizePolyB1) console.log(`B1 Poly ${asset} size ${sizePolyB1} → ${sizeB1} (min $1 notional)`);
         const r = await tryPlacePolymarket(polySlug, asset, priceB1, sizeB1, side);
         return { orderId: r.orderId };
       };
@@ -351,7 +353,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         } else {
           try {
             const priceB2 = 0.97;
-            const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, Math.ceil(1 / priceB2));
+            const minNotionalSize = Math.ceil(1 / priceB2);
+            const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
+            if (sizeB2 !== sizePolyB2) console.log(`B2 Poly ${asset} size ${sizePolyB2} → ${sizeB2} (min $1 notional)`);
             console.log(`B2 Poly ${asset} attempt slug=${polySlug}`);
             const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB2, sizeB2, side);
             if (orderId) {
@@ -417,7 +421,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         } else {
           try {
             const priceB3 = 0.97;
-            const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, Math.ceil(1 / priceB3));
+            const minNotionalSize = Math.ceil(1 / priceB3); // Polymarket CLOB min $1 notional
+            const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
+            if (sizeB3 !== sizePolyB3) {
+              console.log(`B3 Poly ${asset} size ${sizePolyB3} → ${sizeB3} (min $1 notional at 97¢)`);
+            }
             console.log(`B3 Poly ${asset} attempt slug=${polySlug}`);
             const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB3, sizeB3, side);
             if (orderId) {
