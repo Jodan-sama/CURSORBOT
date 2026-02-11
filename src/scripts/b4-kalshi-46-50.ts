@@ -1,5 +1,5 @@
 /**
- * B4 Kalshi 46/50: BTC and ETH, Kalshi only. Position size $1 (1 contract) per asset.
+ * B4 Kalshi 46/50: BTC, ETH, SOL. Kalshi only. Position size $1 (1 contract) per asset.
  * At the start of each 15m window: place two resting limit buys at 46¢ (one YES, one NO) per asset.
  * As soon as one fills: cancel the other, place a resting limit sell at 50¢ for the filled side (min 4¢ spread).
  * Polls every 1s. Respects dashboard emergency off (stops placing/cancelling when on).
@@ -26,7 +26,7 @@ const SELL_PRICE = 50;  // 50¢ limit sell
 /** Position size $1 = 1 contract per side per asset */
 const COUNT = 1;
 
-const ASSETS: Asset[] = ['BTC', 'ETH'];
+const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
 
 type WindowState = {
   windowUnix: number;
@@ -215,7 +215,7 @@ async function runOne(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  console.log('[B4 46/50] BTC + ETH, Kalshi, $1 per asset. Place 46 yes+no; on first fill cancel other, place 50 sell. Emergency off respected. Poll every', POLL_MS, 'ms');
+  console.log('[B4 46/50] BTC + ETH + SOL, Kalshi, $1 per asset. Place 46 yes+no; on first fill cancel other, place 50 sell. Emergency off respected. Poll every', POLL_MS, 'ms');
   while (true) {
     try {
       await runOne();

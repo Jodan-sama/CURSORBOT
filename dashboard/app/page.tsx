@@ -78,11 +78,12 @@ type B4LogRow = {
   event: string;
   price: number | null;
 };
-/** One 15m cycle: window_unix → BTC and ETH result (dollars or null = no fill) */
+/** One 15m cycle: window_unix → BTC, ETH, SOL result (dollars or null = no fill) */
 type B4Cycle = {
   window_unix: number;
   btc: number | null;
   eth: number | null;
+  sol: number | null;
 };
 
 export default function Dashboard() {
@@ -119,25 +120,26 @@ export default function Dashboard() {
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
-        getSupabase().from('b4_paper_log').select('window_unix, asset, event, price').in('event', ['profit', 'loss', 'no_fill']).order('window_unix', { ascending: false }).limit(80),
+        getSupabase().from('b4_paper_log').select('window_unix, asset, event, price').in('event', ['profit', 'loss', 'no_fill']).order('window_unix', { ascending: false }).limit(120),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setErrors((errData ?? []) as ErrorLog[]);
       const b4Rows = (b4Data ?? []) as B4LogRow[];
-      const cycleMap = new Map<number, { btc: number | null; eth: number | null }>();
+      const cycleMap = new Map<number, { btc: number | null; eth: number | null; sol: number | null }>();
       for (const r of b4Rows) {
         const w = Number(r.window_unix);
-        if (!cycleMap.has(w)) cycleMap.set(w, { btc: null, eth: null });
+        if (!cycleMap.has(w)) cycleMap.set(w, { btc: null, eth: null, sol: null });
         const row = cycleMap.get(w)!;
         const val = r.event === 'no_fill' ? null : (r.price ?? null);
         if (r.asset === 'BTC') row.btc = val;
         else if (r.asset === 'ETH') row.eth = val;
+        else if (r.asset === 'SOL') row.sol = val;
       }
       const cycles: B4Cycle[] = Array.from(cycleMap.entries())
         .sort((a, b) => b[0] - a[0])
         .slice(0, 20)
-        .map(([window_unix, { btc, eth }]) => ({ window_unix, btc, eth }));
+        .map(([window_unix, { btc, eth, sol }]) => ({ window_unix, btc, eth, sol }));
       setB4Cycles(cycles);
       const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
       setSpreadRows(rows);
@@ -451,6 +453,7 @@ export default function Dashboard() {
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Cycle (window end)</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>BTC</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>ETH</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>SOL</th>
               </tr>
             </thead>
             <tbody>
@@ -462,6 +465,9 @@ export default function Dashboard() {
                   </td>
                   <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.eth != null ? (c.eth >= 0 ? 'green' : 'red') : undefined }}>
                     {c.eth != null ? (c.eth >= 0 ? `+$${c.eth.toFixed(2)}` : `-$${Math.abs(c.eth).toFixed(2)}`) : '—'}
+                  </td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.sol != null ? (c.sol >= 0 ? 'green' : 'red') : undefined }}>
+                    {c.sol != null ? (c.sol >= 0 ? `+$${c.sol.toFixed(2)}` : `-$${Math.abs(c.sol).toFixed(2)}`) : '—'}
                   </td>
                 </tr>
               ))}
