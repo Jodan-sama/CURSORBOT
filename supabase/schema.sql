@@ -66,6 +66,28 @@ create table if not exists b4_paper_log (
 
 create index if not exists b4_paper_log_created_at on b4_paper_log (created_at desc);
 
+-- Polymarket claim status (ALL ITEMS CLAIMED | NEED MORE POL | CLAIM INCOMPLETE). One row per run.
+-- Claim script inserts; dashboard reads. If RLS is on, allow anon: INSERT, SELECT.
+create table if not exists polymarket_claim_log (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  message text not null
+);
+
+create index if not exists polymarket_claim_log_created_at on polymarket_claim_log (created_at desc);
+
+-- Polymarket skip reasons (why Poly order was not placed). Dashboard shows last 50.
+create table if not exists poly_skip_log (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  bot text not null,
+  asset text not null,
+  reason text not null,
+  kalshi_placed boolean not null default false
+);
+
+create index if not exists poly_skip_log_created_at on poly_skip_log (created_at desc);
+
 -- Spread thresholds (pct) per bot per asset. Bot enters when spread > threshold. Defaults seeded below.
 create table if not exists spread_thresholds (
   bot text not null,

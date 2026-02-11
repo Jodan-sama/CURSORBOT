@@ -35,6 +35,7 @@ import {
   setAssetBlock,
   isAssetBlocked,
   logError,
+  logPolySkip,
 } from '../db/supabase.js';
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
@@ -310,9 +311,17 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         });
         console.log(`B1 Poly ${asset} ${priceB1 * 100}% orderId=${polyResult.orderId}`);
       }
-      if (!kalshiResult.orderId && !polyResult.orderId && kalshiTicker) {
-        if (sizePolyB1 === 0) console.log(`B1 Poly ${asset} skip: position size 0 (set Poly size in dashboard to mirror)`);
-        else if (!polySlug) console.log(`B1 Poly ${asset} skip: no poly slug`);
+      if (!polyResult.orderId && kalshiTicker) {
+        const reason =
+          sizePolyB1 === 0
+            ? 'position size 0 (set Poly size in dashboard)'
+            : !polySlug
+              ? 'no poly slug'
+              : !isPolymarketEnabled()
+                ? 'ENABLE_POLYMARKET not true'
+                : 'no orderId or error (check Recent errors)';
+        await logPolySkip({ bot: 'B1', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
+        console.log(`B1 Poly ${asset} skip: ${reason}`);
       }
     }
 
@@ -384,14 +393,21 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         });
         console.log(`B2 Poly ${asset} orderId=${polyResult.orderId}`);
       }
-      if (!kalshiResult.orderId && !polyResult.orderId && kalshiTicker) {
-        if (sizePolyB2 === 0) console.log(`B2 Poly ${asset} skip: position size 0 (set Poly size in dashboard to mirror)`);
-        else if (!polySlug) console.log(`B2 Poly ${asset} skip: no poly slug`);
-        else if (polySlug && sizePolyB2 > 0) console.log(`B2 Poly ${asset} no orderId returned (check errors)`);
+      if (!polyResult.orderId && kalshiTicker) {
+        const reason =
+          sizePolyB2 === 0
+            ? 'position size 0 (set Poly size in dashboard)'
+            : !polySlug
+              ? 'no poly slug'
+              : !isPolymarketEnabled()
+                ? 'ENABLE_POLYMARKET not true'
+                : 'no orderId or error (check Recent errors)';
+        await logPolySkip({ bot: 'B2', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
+        console.log(`B2 Poly ${asset} skip: ${reason}`);
       }
     }
 
-    // --- B3: last 8 min, check every 1 min, place 97% limit; on place set block B2 15min, B1 30min ---
+    // --- B3: last 8 min, check every 1 min, place 97% limit. Fire Kalshi + Poly in parallel like B1/B2. ---
     if (isB3Window(minutesLeft)) {
       const key = windowKey('B3', asset, windowEndMs);
       const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
@@ -401,65 +417,75 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         continue;
       }
 
-      let placed = false;
-      if (kalshiTicker && sizeKalshiB3 > 0) {
-        try {
-          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B3', false, 97, sizeKalshiB3, side);
-          placed = true;
-          enteredThisWindow.add(key);
-          await logPosition({
-            bot: 'B3',
-            asset,
-            venue: 'kalshi',
-            strike_spread_pct: signedSpreadPct,
-            position_size: sizeKalshiB3,
-            ticker_or_slug: kalshiTicker,
-            order_id: orderId ?? undefined,
-          });
-          console.log(`B3 Kalshi ${asset} ${side} 97% orderId=${orderId}`);
-        } catch (e) {
+      const priceB3 = 0.97;
+      const placeB3Kalshi = async () => {
+        if (!kalshiTicker || sizeKalshiB3 <= 0) return { orderId: undefined as string | undefined };
+        const r = await tryPlaceKalshi(kalshiTicker, asset, 'B3', false, 97, sizeKalshiB3, side);
+        return { orderId: r.orderId };
+      };
+      const placeB3Poly = async () => {
+        if (!kalshiTicker || !polySlug || sizePolyB3 <= 0 || !isPolymarketEnabled()) return { orderId: undefined as string | undefined };
+        const minNotionalSize = Math.ceil(1 / priceB3);
+        const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
+        if (sizeB3 !== sizePolyB3) console.log(`B3 Poly ${asset} size ${sizePolyB3} → ${sizeB3} (min $1 notional)`);
+        const r = await tryPlacePolymarket(polySlug, asset, priceB3, sizeB3, side);
+        return { orderId: r.orderId };
+      };
+
+      const [kalshiResult, polyResult] = await Promise.all([
+        placeB3Kalshi().catch(async (e) => {
           await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
-        }
+          return { orderId: undefined as string | undefined };
+        }),
+        placeB3Poly().catch(async (e) => {
+          console.error(`B3 Poly ${asset} failed:`, e);
+          await logError(e, { bot: 'B3', asset, venue: 'polymarket', slug: polySlug ?? undefined });
+          return { orderId: undefined as string | undefined };
+        }),
+      ]);
+
+      const placed = !!(kalshiResult.orderId || polyResult.orderId);
+
+      if (kalshiResult.orderId) {
+        enteredThisWindow.add(key);
+        await logPosition({
+          bot: 'B3',
+          asset,
+          venue: 'kalshi',
+          strike_spread_pct: signedSpreadPct,
+          position_size: sizeKalshiB3,
+          ticker_or_slug: kalshiTicker ?? undefined,
+          order_id: kalshiResult.orderId,
+        });
+        console.log(`B3 Kalshi ${asset} ${side} 97% orderId=${kalshiResult.orderId}`);
       }
-      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0. CLOB min notional $1.
-      if (kalshiTicker && polySlug && sizePolyB3 > 0) {
-        if (!isPolymarketEnabled()) {
-          console.log(`B3 Poly ${asset} skip: ENABLE_POLYMARKET not true`);
-        } else {
-          try {
-            const priceB3 = 0.97;
-            const minNotionalSize = Math.ceil(1 / priceB3); // Polymarket CLOB min $1 notional
-            const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
-            if (sizeB3 !== sizePolyB3) {
-              console.log(`B3 Poly ${asset} size ${sizePolyB3} → ${sizeB3} (min $1 notional at 97¢)`);
-            }
-            console.log(`B3 Poly ${asset} attempt slug=${polySlug}`);
-            const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB3, sizeB3, side);
-            if (orderId) {
-              placed = true;
-              enteredThisWindow.add(key);
-              await logPosition({
-                bot: 'B3',
-                asset,
-                venue: 'polymarket',
-                strike_spread_pct: signedSpreadPct,
-                position_size: sizeB3,
-                ticker_or_slug: polySlug,
-                order_id: orderId,
-              });
-              console.log(`B3 Poly ${asset} orderId=${orderId}`);
-            }
-          } catch (e) {
-            console.error(`B3 Poly ${asset} failed:`, e);
-            await logError(e, { bot: 'B3', asset, venue: 'polymarket', slug: polySlug });
-          }
-        }
-      } else if (kalshiTicker && sizePolyB3 === 0) {
-        console.log(`B3 Poly ${asset} skip: position size 0 (set Poly size in dashboard to mirror)`);
-      } else if (kalshiTicker && !polySlug) {
-        console.log(`B3 Poly ${asset} skip: no poly slug`);
+      if (polyResult.orderId) {
+        enteredThisWindow.add(key);
+        const minNotionalSize = Math.ceil(1 / priceB3);
+        const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
+        await logPosition({
+          bot: 'B3',
+          asset,
+          venue: 'polymarket',
+          strike_spread_pct: signedSpreadPct,
+          position_size: sizeB3,
+          ticker_or_slug: polySlug ?? undefined,
+          order_id: polyResult.orderId,
+        });
+        console.log(`B3 Poly ${asset} orderId=${polyResult.orderId}`);
       }
-      // Block on order placement (resting limit counts even if it never fills)
+      if (!polyResult.orderId && kalshiTicker) {
+        const reason =
+          sizePolyB3 === 0
+            ? 'position size 0 (set Poly size in dashboard)'
+            : !polySlug
+              ? 'no poly slug'
+              : !isPolymarketEnabled()
+                ? 'ENABLE_POLYMARKET not true'
+                : 'no orderId or error (check Recent errors)';
+        await logPolySkip({ bot: 'B3', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
+        console.log(`B3 Poly ${asset} skip: ${reason}`);
+      }
       if (placed) {
         const blockUntil = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
         await setAssetBlock(asset, blockUntil);

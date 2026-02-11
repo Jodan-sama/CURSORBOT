@@ -170,6 +170,25 @@ export async function logB4Paper(entry: {
   }
 }
 
+/** Log when Polymarket order was skipped (for dashboard visibility). Does not throw. */
+export async function logPolySkip(entry: {
+  bot: BotId;
+  asset: Asset;
+  reason: string;
+  kalshiPlaced: boolean;
+}): Promise<void> {
+  try {
+    await getDb().from('poly_skip_log').insert({
+      bot: entry.bot,
+      asset: entry.asset,
+      reason: entry.reason,
+      kalshi_placed: entry.kalshiPlaced,
+    });
+  } catch (e) {
+    console.error('[logPolySkip] failed:', e);
+  }
+}
+
 /** Log an error to Supabase (and optionally console). Does not throw. */
 export async function logError(
   err: unknown,

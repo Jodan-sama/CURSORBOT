@@ -70,6 +70,15 @@ type ErrorLog = {
   stack: string | null;
 };
 
+type PolySkipRow = {
+  id: string;
+  created_at: string;
+  bot: string;
+  asset: string;
+  reason: string;
+  kalshi_placed: boolean;
+};
+
 /** Raw row from b4_paper_log (B4 46/50: profit / loss / no_fill per asset per cycle) */
 type B4LogRow = {
   id: string;
@@ -90,7 +99,9 @@ export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
+  const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [b4Cycles, setB4Cycles] = useState<B4Cycle[]>([]);
+  const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
   const [spreadRows, setSpreadRows] = useState<SpreadRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -111,20 +122,25 @@ export default function Dashboard() {
         { data: configData },
         { data: posData },
         { data: errData },
+        { data: polySkipData },
         spreadResult,
         { data: botSizesData },
         { data: b4Data },
+        { data: claimLogData },
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
+        getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
         getSupabase().from('b4_paper_log').select('window_unix, asset, event, price').in('event', ['profit', 'loss', 'no_fill']).order('window_unix', { ascending: false }).limit(120),
+        getSupabase().from('polymarket_claim_log').select('message, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setErrors((errData ?? []) as ErrorLog[]);
+      setPolySkips((polySkipData ?? []) as PolySkipRow[]);
       const b4Rows = (b4Data ?? []) as B4LogRow[];
       const cycleMap = new Map<number, { btc: number | null; eth: number | null; sol: number | null }>();
       for (const r of b4Rows) {
@@ -136,6 +152,8 @@ export default function Dashboard() {
         else if (r.asset === 'ETH') row.eth = val;
         else if (r.asset === 'SOL') row.sol = val;
       }
+      const claimRow = claimLogData as { message: string; created_at: string } | null;
+      setClaimStatus(claimRow ? { message: claimRow.message, created_at: claimRow.created_at } : null);
       const cycles: B4Cycle[] = Array.from(cycleMap.entries())
         .sort((a, b) => b[0] - a[0])
         .slice(0, 20)
@@ -406,6 +424,39 @@ export default function Dashboard() {
         )}
       </section>
 
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>Polymarket skips (last 50)</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+          When Polymarket did not place an order. <code>Kalshi placed</code> = yes if Kalshi placed for same bot/asset.
+        </p>
+        {polySkips.length === 0 ? (
+          <p style={{ color: '#666' }}>No Polymarket skips logged.</p>
+        ) : (
+          <table style={{ width: '100%', maxWidth: 720, borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', width: 120 }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', width: 48 }}>Bot</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', width: 56 }}>Asset</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', width: 80 }}>Kalshi placed</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {polySkips.map((s) => (
+                <tr key={s.id}>
+                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(s.created_at, true)}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{s.bot}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{s.asset}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{s.kalshi_placed ? 'yes' : 'no'}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{s.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
       <section>
         <h2 style={headingStyle}>Recent positions (last 200)</h2>
         <p style={{ marginBottom: 8 }}>
@@ -439,6 +490,24 @@ export default function Dashboard() {
             ))}
           </tbody>
         </table>
+      </section>
+
+      <section style={{ marginTop: 24 }}>
+        <h2 style={headingStyle}>Polymarket claim</h2>
+        <p style={{ fontSize: 14, color: claimStatus?.message === 'NEED MORE POL' ? '#b91c1c' : '#666' }}>
+          {claimStatus ? (
+            claimStatus.message === 'NEED MORE POL' ? (
+              <strong>NEED MORE POL</strong>
+            ) : (
+              <>
+                {claimStatus.message}
+                <span style={{ marginLeft: 8, fontSize: 12 }}>({formatMst(claimStatus.created_at, true)})</span>
+              </>
+            )
+          ) : (
+            'No claim runs yet.'
+          )}
+        </p>
       </section>
 
       <section style={{ marginTop: 24 }}>
