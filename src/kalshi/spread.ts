@@ -83,6 +83,40 @@ export async function fetchBinancePrice(asset: Asset): Promise<number> {
   }
 }
 
+const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
+
+/**
+ * Fetches prices for all assets in one tick. Uses Binance sequentially (avoids burst);
+ * each gets one retry. On any failure, falls back to single CoinGecko batch (avoids 429).
+ */
+export async function fetchAllPricesOnce(): Promise<Record<Asset, number>> {
+  const byAsset: Partial<Record<Asset, number>> = {};
+  for (const a of ASSETS) {
+    try {
+      const price = await fetchBinancePriceOnly(a);
+      if (!Number.isNaN(price)) byAsset[a] = price;
+    } catch {
+      try {
+        await new Promise((r) => setTimeout(r, PRICE_RETRY_DELAY_MS));
+        const price = await fetchBinancePriceOnly(a);
+        if (!Number.isNaN(price)) byAsset[a] = price;
+      } catch {
+        /* fall through to CoinGecko batch */
+      }
+    }
+  }
+  if (Object.keys(byAsset).length === ASSETS.length) {
+    return byAsset as Record<Asset, number>;
+  }
+  const cg = await fetchCoinGeckoPricesAll();
+  return {
+    BTC: byAsset.BTC ?? cg.BTC,
+    ETH: byAsset.ETH ?? cg.ETH,
+    SOL: byAsset.SOL ?? cg.SOL,
+    XRP: byAsset.XRP ?? cg.XRP,
+  };
+}
+
 /**
  * Strike spread as a percentage (magnitude): |current - strike| / current * 100
  */

@@ -21,6 +21,9 @@ const CLOB_HOST = 'https://clob.polymarket.com';
 /** Default Alchemy Polygon RPC; set POLYGON_RPC_URL in .env to use your key (reduces rate limits). */
 const DEFAULT_POLYGON_RPC = 'https://polygon-mainnet.g.alchemy.com/v2/J6wjUKfJUdYzPD5QNDd-i';
 
+/** Polymarket min notional (price × size) in USD. Our floor; Kalshi has no such minimum. */
+const MIN_NOTIONAL_USD = 5;
+
 const VALID_TICK_SIZES = ['0.1', '0.01', '0.001', '0.0001'] as const;
 type TickSize = (typeof VALID_TICK_SIZES)[number];
 
@@ -28,6 +31,20 @@ function toTickSize(value?: number): CreateOrderOptions['tickSize'] {
   if (value == null) return '0.001';
   const s = String(value);
   return (VALID_TICK_SIZES.includes(s as TickSize) ? s : '0.001') as CreateOrderOptions['tickSize'];
+}
+
+/** Decimal places for a tick size (0.001 → 3). Rounds price to avoid INVALID_ORDER_MIN_TICK_SIZE. */
+function tickDecimals(tick: CreateOrderOptions['tickSize']): number {
+  const s = String(tick);
+  const dot = s.indexOf('.');
+  return dot >= 0 ? s.length - dot - 1 : 3;
+}
+
+/** Round price to tick to avoid floating-point and INVALID_ORDER_MIN_TICK_SIZE. */
+function roundPriceToTick(price: number, tick: CreateOrderOptions['tickSize']): number {
+  const decimals = tickDecimals(tick);
+  const factor = 10 ** decimals;
+  return Math.round(price * factor) / factor;
 }
 const CHAIN_ID = 137; // Polygon
 const SIGNATURE_TYPE = 2; // API key auth
@@ -192,6 +209,7 @@ type PolyOrderResponse = {
  * Place a GTC limit order on Polymarket (BUY YES at given price).
  * Size is in number (e.g. 5); CLOB accepts number, min often 5.
  * Throws if success=false or errorMsg is set; handles both orderId/orderID casing.
+ * Logs request/response for debugging when placement fails.
  */
 export async function createAndPostPolyOrder(
   client: ClobClient,
@@ -209,25 +227,65 @@ export async function createAndPostPolyOrder(
     size: params.size,
     side: Side.BUY,
   };
-  const result = (await client.createAndPostOrder(
-    userOrder,
-    options,
-    OrderType.GTC
-  )) as PolyOrderResponse;
+
+  // Log request for debugging (shows in bot stdout; helps trace failures).
+  console.log(`[Poly] placing order price=${params.price} size=${params.size} tickSize=${tickSize} tokenId=${(params.tokenId ?? '').slice(0, 24)}…`);
+
+  let result: PolyOrderResponse & { error?: unknown; status?: number };
+  try {
+    result = (await client.createAndPostOrder(
+      userOrder,
+      options,
+      OrderType.GTC
+    )) as PolyOrderResponse & { error?: unknown; status?: number };
+  } catch (e) {
+    // clob-client sometimes throws; log and rethrow with context.
+    const raw = (e as { response?: { status?: number; data?: unknown } })?.response?.data;
+    console.error(`[Poly] createAndPostOrder threw:`, String(e), raw != null ? `| response.data=${JSON.stringify(raw)}` : '');
+    throw e;
+  }
+
+  // clob-client returns { error, status } on HTTP 4xx/5xx (does not throw).
+  const httpError = result?.error;
+  if (httpError != null) {
+    const msg = typeof httpError === 'string' ? httpError : JSON.stringify(httpError);
+    console.error(`[Poly] CLOB HTTP error status=${(result as { status?: number }).status} error=${msg}`);
+    const err = new Error(`Polymarket CLOB HTTP error: ${msg}`) as Error & { polyRequest?: CreatePolyOrderParams; polyResponse?: unknown };
+    (err as Error & { polyRequest?: CreatePolyOrderParams }).polyRequest = params;
+    (err as Error & { polyResponse?: unknown }).polyResponse = result;
+    throw err;
+  }
 
   const orderId = result.orderID ?? result.orderId;
   const success = result.success;
   const errorMsg = result.errorMsg;
 
+  const reqCtx = `price=${params.price} size=${params.size} tickSize=${params.tickSize ?? '0.001'} tokenId=${(params.tokenId ?? '').slice(0, 20)}…`;
+  const respCtx = `success=${success} errorMsg=${String(errorMsg ?? '')} orderId=${orderId ?? 'null'}`;
+
   if (success === false || (typeof errorMsg === 'string' && errorMsg.length > 0)) {
-    throw new Error(
-      `Polymarket order rejected: success=${success} errorMsg=${errorMsg ?? 'none'}`
-    );
+    console.error(`[Poly] order rejected: ${respCtx} | ${reqCtx}`);
+    const err = new Error(
+      `Polymarket order rejected: ${respCtx} | request: ${reqCtx}`
+    ) as Error & { polyRequest?: CreatePolyOrderParams; polyResponse?: PolyOrderResponse };
+    (err as Error & { polyRequest?: CreatePolyOrderParams }).polyRequest = params;
+    (err as Error & { polyResponse?: PolyOrderResponse }).polyResponse = result;
+    throw err;
   }
   if (!orderId) {
-    throw new Error(
-      `Polymarket order: no orderId in response (success=${success} errorMsg=${errorMsg ?? ''})`
-    );
+    const rawStr = JSON.stringify(result);
+    console.error(`[Poly] no orderId in response: ${respCtx} | ${reqCtx} | raw=${rawStr}`);
+    // Empty {} or unexpected shape often means market not ready or rate limit; surface for debugging.
+    const hint =
+      !rawStr || rawStr === '{}'
+        ? ' (empty response — market may not be ready for XRP, or rate limited)'
+        : '';
+    const err = new Error(
+      `Polymarket order: no orderId in response (${respCtx}) | request: ${reqCtx}${hint}`
+    ) as Error & { polyRequest?: CreatePolyOrderParams };
+    (err as Error & { polyRequest?: CreatePolyOrderParams }).polyRequest = params;
+    (err as Error & { polyResponse?: PolyOrderResponse }).polyResponse = result;
+    throw err;
   }
   return { ...result, orderID: orderId };
 }
@@ -235,7 +293,7 @@ export async function createAndPostPolyOrder(
 /**
  * Build order params from a parsed Gamma market.
  * side: 'yes' = first outcome (Up), 'no' = second outcome (Down). We only buy the winning side.
- * Enforces orderMinSize from market (CLOB rejects INVALID_ORDER_MIN_SIZE if below).
+ * Enforces: orderMinSize, $5 min notional, price rounded to tick (avoids INVALID_ORDER_MIN_TICK_SIZE).
  */
 export function orderParamsFromParsedMarket(
   parsed: ParsedPolyMarket,
@@ -245,16 +303,19 @@ export function orderParamsFromParsedMarket(
 ): CreatePolyOrderParams {
   const tokenId = side === 'yes' ? parsed.clobTokenIds[0] : parsed.clobTokenIds[1];
   if (!tokenId) throw new Error(`Market has no ${side.toUpperCase()} token`);
-  const minSize = parsed.orderMinSize ?? 1;
-  const effectiveSize = Math.max(size, minSize);
-  if (effectiveSize !== size) {
-    console.log(`[Poly] size ${size} → ${effectiveSize} (market orderMinSize=${minSize})`);
+  const tickSize = toTickSize(parsed.orderPriceMinTickSize);
+  const roundedPrice = roundPriceToTick(price, tickSize);
+  const minSizeByMarket = parsed.orderMinSize ?? 1;
+  const minSizeByNotional = Math.ceil(MIN_NOTIONAL_USD / roundedPrice);
+  const effectiveSize = Math.max(1, Math.floor(size), minSizeByMarket, minSizeByNotional);
+  if (effectiveSize !== size || roundedPrice !== price) {
+    console.log(`[Poly] price ${price} → ${roundedPrice} size ${size} → ${effectiveSize} (min $${MIN_NOTIONAL_USD} notional, orderMinSize=${minSizeByMarket})`);
   }
   return {
     tokenId,
-    price,
+    price: roundedPrice,
     size: effectiveSize,
-    tickSize: toTickSize(parsed.orderPriceMinTickSize),
+    tickSize,
     negRisk: parsed.negRisk,
   };
 }

@@ -1,14 +1,22 @@
 /**
- * One-off: place a small test order on Polymarket (current BTC 15m, winning side).
- * Uses HTTP_PROXY/HTTPS_PROXY from .env if set. Run from repo root after build:
- *   node dist/scripts/place-test-order-polymarket.js
- * Or: npx tsx src/scripts/place-test-order-polymarket.ts
+ * One-off: place a test order on Polymarket (current BTC 15m, winning side).
+ * Diagnose placement: logs full request params and raw API response.
+ * Uses HTTP_PROXY/HTTPS_PROXY from .env if set. Run from repo root:
+ *   npx tsx src/scripts/place-test-order-polymarket.ts
+ * Or after build: node dist/scripts/place-test-order-polymarket.js
  */
 import 'dotenv/config';
 
 import { getCurrentPolySlug } from '../clock.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
-import { createPolyClobClient, getPolyClobConfigFromEnv, getOrCreateDerivedPolyClient, createAndPostPolyOrder, orderParamsFromParsedMarket } from '../polymarket/clob.js';
+import {
+  createPolyClobClient,
+  getPolyClobConfigFromEnv,
+  getOrCreateDerivedPolyClient,
+  createAndPostPolyOrder,
+  orderParamsFromParsedMarket,
+  useDerivedPolyKey,
+} from '../polymarket/clob.js';
 import { getCurrentKalshiTicker } from '../kalshi/market.js';
 import { getKalshiMarket } from '../kalshi/market.js';
 import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
@@ -16,8 +24,7 @@ import { fetchBinancePrice } from '../kalshi/spread.js';
 import { strikeSpreadPctSigned } from '../kalshi/spread.js';
 
 const ASSET = 'BTC';
-const TEST_SIZE = 2; // size * price must be >= $1; price in [0.01, 0.99]
-const PRICE = 0.99;
+const PRICE = 0.97; // orderParamsFromParsedMarket enforces $5 min notional
 
 async function main() {
   const now = new Date();
@@ -50,15 +57,19 @@ async function main() {
   console.log('Strike:', strike, '| Price:', price, '| Signed spread:', signedSpread.toFixed(3), '% | Winning side:', side);
 
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
-  console.log('Placing', side, 'order: size=', TEST_SIZE, 'price=', PRICE, proxy ? ' (Gamma + CLOB via proxy)' : ' (no proxy)...');
+  const config = useDerivedPolyKey() ? null : getPolyClobConfigFromEnv();
+  console.log('Placing', side, 'order: price=', PRICE, '| auth:', config ? 'static API keys' : 'derive from wallet', proxy ? '| via proxy' : '| no proxy');
 
   const runPolyGammaAndOrder = async (): Promise<{ orderID?: string; status?: string }> => {
     const parsed = await getPolyMarketBySlug(slug);
-    console.log('Market:', parsed.conditionId, '| outcomePrices:', parsed.outcomePrices);
-    const config = getPolyClobConfigFromEnv();
+    console.log('Gamma market:', parsed.conditionId, '| orderMinSize:', parsed.orderMinSize, '| tickSize:', parsed.orderPriceMinTickSize);
     const client = config ? createPolyClobClient(config) : await getOrCreateDerivedPolyClient();
-    const params = orderParamsFromParsedMarket(parsed, PRICE, TEST_SIZE, side);
-    return await createAndPostPolyOrder(client, params);
+    const rawSize = 6; // will be bumped to meet $5 min; orderParamsFromParsedMarket handles it
+    const params = orderParamsFromParsedMarket(parsed, PRICE, rawSize, side);
+    console.log('Order params (after min notional):', JSON.stringify({ ...params, tokenId: params.tokenId?.slice(0, 24) + '…' }));
+    const result = await createAndPostPolyOrder(client, params);
+    console.log('Raw result:', JSON.stringify(result));
+    return result;
   };
 
   const result = proxy

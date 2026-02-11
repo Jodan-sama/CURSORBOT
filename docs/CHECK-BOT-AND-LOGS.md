@@ -35,7 +35,7 @@ sudo journalctl -u cursorbot -n 100
 3. **Dashboard** – **Recent positions** should sometimes show **exchange: polymarket**. **Recent errors** will show Poly-related failures (e.g. CLOB auth, proxy, or “missing env”).
 4. **Poly env** – On the droplet, for **derive mode** (recommended): `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, `POLYMARKET_DERIVE_KEY=true`, `ENABLE_POLYMARKET=true`. For static keys use the three `POLYMARKET_API_*` vars instead of `DERIVE_KEY`. Restart after any change: `systemctl restart cursorbot`.
 5. **Trading enabled** – In the **dashboard**, ensure **Emergency** is **Resume** (not OFF). Set **position sizes** > 0 for Kalshi and Polymarket so the bots place orders; 0 size is skipped.
-6. **B2/B3 Polymarket size** – Polymarket CLOB requires min **$1 notional**. At 97¢, that means min 2 contracts. If you set B2/B3 Poly to 1, the bot uses 2 and logs `size 1 → 2 (min $1 notional)`.
+6. **B1/B2/B3 Polymarket size** – Polymarket has a **$5 min notional** (our floor). At 97¢, that means min 6 contracts. If the dashboard Poly size yields less, the bot bumps it. **Increasing the Poly size on the dashboard increases orders** (e.g. 10 → 10, 20 → 20). **Kalshi has no $5 floor**; Kalshi size is used as-is from the dashboard.
 
 ## Errors in the dashboard
 
@@ -46,6 +46,7 @@ Errors are written to Supabase **error_log** and shown in the **dashboard** unde
 - **Kalshi POST 400** – Order rejected (market closed, invalid price/size, balance). Check full message in dashboard.
 - **bot_config: fetch failed** – Supabase network issue. Usually transient.
 - **market_data fetch failed** – Binance/Kalshi unreachable (often geo-block).
+- **Polymarket order rejected / no orderId** – See “Debugging Polymarket” below.
 
 **One-time setup in Supabase:** In SQL Editor, run:
 
@@ -61,6 +62,18 @@ create index if not exists error_log_created_at on error_log (created_at desc);
 ```
 
 Allow the anon key to `SELECT` from `error_log` (same as for `positions`) so the dashboard can read them.
+
+## Debugging Polymarket placement
+
+When Polymarket skips show “no orderId or error” but no Poly error appears in Recent errors:
+
+1. **Check bot stdout** – The bot logs `[Poly] placing order...` and `[Poly] order rejected` or `[Poly] CLOB HTTP error` on failure. On the droplet: `journalctl -u cursorbot -f`.
+2. **Run the test script** – From the repo with `.env` and proxy set:
+   ```bash
+   npx tsx src/scripts/place-test-order-polymarket.ts
+   ```
+   This places a single test order and prints the full request params and raw API response. Use it to reproduce the failure locally.
+3. **Polymarket skips** – The skip reason now includes up to 400 chars of the actual error when available. Check the “Polymarket skips” table in the dashboard for the real API message.
 
 ## Kalshi only (no Polymarket)
 

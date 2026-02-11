@@ -17,7 +17,7 @@ import {
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
 import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
 import { createKalshiOrder } from '../kalshi/orders.js';
-import { fetchBinancePrice, strikeSpreadPctSigned, isOutsideSpreadThreshold } from '../kalshi/spread.js';
+import { fetchAllPricesOnce, strikeSpreadPctSigned, isOutsideSpreadThreshold } from '../kalshi/spread.js';
 import { kalshiYesBidAsPercent } from '../kalshi/market.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
@@ -76,9 +76,10 @@ function sideFromSignedSpread(signedSpreadPct: number): 'yes' | 'no' {
   return signedSpreadPct >= 0 ? 'yes' : 'no';
 }
 
-function polyErrorReason(polyError: unknown): string {
+/** Extract readable reason from Poly error for skip log (use longer limit so dashboard shows actual API error). */
+function polyErrorReason(polyError: unknown, maxLen = 400): string {
   const msg = polyError instanceof Error ? polyError.message : String(polyError);
-  return msg.length > 100 ? `${msg.slice(0, 100)}…` : msg;
+  return msg.length > maxLen ? `${msg.slice(0, maxLen)}…` : msg;
 }
 
 /** Extract Kalshi error body from "Kalshi POST ...: 400 {...}" for richer context. */
@@ -93,6 +94,15 @@ function kalshiErrorContext(err: unknown): Record<string, unknown> {
     /* ignore parse errors */
   }
   return {};
+}
+
+/** Extract Polymarket request/response from Error for richer error logging. */
+function polyErrorContext(err: unknown): Record<string, unknown> {
+  const e = err as Error & { polyRequest?: unknown; polyResponse?: unknown };
+  const out: Record<string, unknown> = {};
+  if (e?.polyRequest != null) out.polyRequest = e.polyRequest;
+  if (e?.polyResponse != null) out.polyResponse = e.polyResponse;
+  return out;
 }
 
 async function tryPlaceKalshi(
@@ -148,7 +158,7 @@ async function tryPlacePolymarket(
   price: number,
   size: number,
   side: 'yes' | 'no'
-): Promise<{ orderId?: string }> {
+): Promise<{ orderId?: string; skipReason?: string }> {
   return withPolyProxy(async () => {
     const parsed = await getPolyMarketBySlug(slug);
     const config = getPolyClobConfigFromEnv();
@@ -176,6 +186,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
   const ASSET_DELAY_MS = 400; // Space out Kalshi+Poly calls across assets to reduce burst rate limits
 
+  let prices: Record<Asset, number>;
+  try {
+    prices = await fetchAllPricesOnce();
+  } catch (e) {
+    await logError(e, { stage: 'market_data' });
+    return;
+  }
+
   for (const asset of ASSETS) {
     if (asset !== ASSETS[0]) await new Promise((r) => setTimeout(r, ASSET_DELAY_MS));
     if (await isAssetBlocked(asset)) {
@@ -187,14 +205,13 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     let kalshiStrike: number | null = null;
     let kalshiBid: number | null = null;
     let polySlug: string | null = null;
-    let currentPrice: number | null = null;
-    /** Signed spread % from Kalshi strike + Binance price. One spread for both Kalshi and Poly (Poly mirrors Kalshi; we do not compute a separate Polymarket spread). */
+    const currentPrice = prices[asset];
+    /** Signed spread % from Kalshi strike + price. One spread for both Kalshi and Poly (Poly mirrors Kalshi). */
     let signedSpreadPct: number | null = null;
 
     try {
       kalshiTicker = await getCurrentKalshiTicker(asset, undefined, now);
       polySlug = getCurrentPolySlug(asset, now);
-      currentPrice = await fetchBinancePrice(asset);
 
       if (kalshiTicker) {
         const km = await getKalshiMarket(kalshiTicker);
@@ -210,7 +227,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
           isReasonableStrike(asset, floorStrike);
         kalshiStrike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
         kalshiBid = km.yes_bid ?? null;
-        if (kalshiStrike != null && currentPrice != null) {
+        if (kalshiStrike != null && !Number.isNaN(currentPrice) && currentPrice > 0) {
           signedSpreadPct = strikeSpreadPctSigned(currentPrice, kalshiStrike);
         }
       }
@@ -274,11 +291,12 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       };
       const placeB1Poly = async () => {
         if (!kalshiTicker || !polySlug || sizePolyB1 <= 0 || !isPolymarketEnabled()) return { orderId: undefined as string | undefined };
-        const minNotionalSize = Math.ceil(1 / priceB1);
-        const sizeB1 = sizePolyB1 * priceB1 >= 1 ? sizePolyB1 : Math.max(sizePolyB1, minNotionalSize);
-        if (sizeB1 !== sizePolyB1) console.log(`B1 Poly ${asset} size ${sizePolyB1} → ${sizeB1} (min $1 notional)`);
+        // $5 min notional applies only to Polymarket; Kalshi uses sizeKalshiB1 as-is.
+        const minNotionalSize = Math.ceil(5 / priceB1);
+        const sizeB1 = sizePolyB1 * priceB1 >= 5 ? sizePolyB1 : Math.max(sizePolyB1, minNotionalSize);
+        if (sizeB1 !== sizePolyB1) console.log(`B1 Poly ${asset} size ${sizePolyB1} → ${sizeB1} (min $5 notional)`);
         const r = await tryPlacePolymarket(polySlug, asset, priceB1, sizeB1, side);
-        return { orderId: r.orderId };
+        return { orderId: r.orderId, skipReason: r.skipReason };
       };
 
       // Run Kalshi first, then Poly. Poly's withPolyProxy sets global undici/axios—running in parallel would proxy Kalshi's fetch and can break it.
@@ -288,8 +306,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       });
       const polyResult = await placeB1Poly().catch(async (e) => {
         console.error(`B1 Poly ${asset} failed:`, e);
-        await logError(e, { bot: 'B1', asset, venue: 'polymarket', slug: polySlug ?? undefined });
-        return { orderId: undefined as string | undefined, polyError: e };
+        await logError(e, { bot: 'B1', asset, venue: 'polymarket', slug: polySlug ?? undefined, ...polyErrorContext(e) });
+        return { orderId: undefined as string | undefined, skipReason: undefined as string | undefined, polyError: e };
       });
 
       if (kalshiResult.orderId) {
@@ -307,7 +325,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (polyResult.orderId) {
         enteredThisWindow.add(key);
-        const sizeB1 = sizePolyB1 * priceB1 >= 1 ? sizePolyB1 : Math.max(sizePolyB1, Math.ceil(1 / priceB1));
+        const sizeB1 = sizePolyB1 * priceB1 >= 5 ? sizePolyB1 : Math.max(sizePolyB1, Math.ceil(5 / priceB1));
         await logPosition({
           bot: 'B1',
           asset,
@@ -327,9 +345,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
               ? 'no poly slug'
               : !isPolymarketEnabled()
                 ? 'ENABLE_POLYMARKET not true'
-                : 'polyError' in polyResult && polyResult.polyError != null
-                  ? polyErrorReason(polyResult.polyError)
-                  : 'no orderId or error (check Recent errors)';
+                : polyResult.skipReason
+                  ? polyResult.skipReason
+                  : 'polyError' in polyResult && polyResult.polyError != null
+                    ? polyErrorReason(polyResult.polyError)
+                    : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B1', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B1 Poly ${asset} skip: ${reason}`);
       }
@@ -351,11 +371,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       };
       const placeB2Poly = async () => {
         if (!kalshiTicker || !polySlug || sizePolyB2 <= 0 || !isPolymarketEnabled()) return { orderId: undefined as string | undefined };
-        const minNotionalSize = Math.ceil(1 / priceB2);
-        const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
-        if (sizeB2 !== sizePolyB2) console.log(`B2 Poly ${asset} size ${sizePolyB2} → ${sizeB2} (min $1 notional)`);
+        const minNotionalSize = Math.ceil(5 / priceB2);
+        const sizeB2 = sizePolyB2 * priceB2 >= 5 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
+        if (sizeB2 !== sizePolyB2) console.log(`B2 Poly ${asset} size ${sizePolyB2} → ${sizeB2} (min $5 notional)`);
         const r = await tryPlacePolymarket(polySlug, asset, priceB2, sizeB2, side);
-        return { orderId: r.orderId };
+        return { orderId: r.orderId, skipReason: r.skipReason };
       };
 
       // Run Kalshi first, then Poly—avoid Poly proxy affecting Kalshi's fetch (see B1 comment).
@@ -365,8 +385,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       });
       const polyResult = await placeB2Poly().catch(async (e) => {
         console.error(`B2 Poly ${asset} failed:`, e);
-        await logError(e, { bot: 'B2', asset, venue: 'polymarket', slug: polySlug ?? undefined });
-        return { orderId: undefined as string | undefined, polyError: e };
+        await logError(e, { bot: 'B2', asset, venue: 'polymarket', slug: polySlug ?? undefined, ...polyErrorContext(e) });
+        return { orderId: undefined as string | undefined, skipReason: undefined as string | undefined, polyError: e };
       });
 
       if (kalshiResult.orderId) {
@@ -384,8 +404,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (polyResult.orderId) {
         enteredThisWindow.add(keyB2);
-        const minNotionalSize = Math.ceil(1 / priceB2);
-        const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
+        const minNotionalSize = Math.ceil(5 / priceB2);
+        const sizeB2 = sizePolyB2 * priceB2 >= 5 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
         await logPosition({
           bot: 'B2',
           asset,
@@ -405,9 +425,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
               ? 'no poly slug'
               : !isPolymarketEnabled()
                 ? 'ENABLE_POLYMARKET not true'
-                : 'polyError' in polyResult && polyResult.polyError != null
-                  ? polyErrorReason(polyResult.polyError)
-                  : 'no orderId or error (check Recent errors)';
+                : polyResult.skipReason
+                  ? polyResult.skipReason
+                  : 'polyError' in polyResult && polyResult.polyError != null
+                    ? polyErrorReason(polyResult.polyError)
+                    : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B2', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B2 Poly ${asset} skip: ${reason}`);
       }
@@ -434,11 +456,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       };
       const placeB3Poly = async () => {
         if (!kalshiTicker || !polySlug || sizePolyB3 <= 0 || !isPolymarketEnabled()) return { orderId: undefined as string | undefined };
-        const minNotionalSize = Math.ceil(1 / priceB3);
-        const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
-        if (sizeB3 !== sizePolyB3) console.log(`B3 Poly ${asset} size ${sizePolyB3} → ${sizeB3} (min $1 notional)`);
+        const minNotionalSize = Math.ceil(5 / priceB3);
+        const sizeB3 = sizePolyB3 * priceB3 >= 5 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
+        if (sizeB3 !== sizePolyB3) console.log(`B3 Poly ${asset} size ${sizePolyB3} → ${sizeB3} (min $5 notional)`);
         const r = await tryPlacePolymarket(polySlug, asset, priceB3, sizeB3, side);
-        return { orderId: r.orderId };
+        return { orderId: r.orderId, skipReason: r.skipReason };
       };
 
       // Run Kalshi first, then Poly—avoid Poly proxy affecting Kalshi's fetch (see B1 comment).
@@ -448,8 +470,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       });
       const polyResult = await placeB3Poly().catch(async (e) => {
         console.error(`B3 Poly ${asset} failed:`, e);
-        await logError(e, { bot: 'B3', asset, venue: 'polymarket', slug: polySlug ?? undefined });
-        return { orderId: undefined as string | undefined, polyError: e };
+        await logError(e, { bot: 'B3', asset, venue: 'polymarket', slug: polySlug ?? undefined, ...polyErrorContext(e) });
+        return { orderId: undefined as string | undefined, skipReason: undefined as string | undefined, polyError: e };
       });
 
       const placed = !!(kalshiResult.orderId || polyResult.orderId);
@@ -469,8 +491,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (polyResult.orderId) {
         enteredThisWindow.add(key);
-        const minNotionalSize = Math.ceil(1 / priceB3);
-        const sizeB3 = sizePolyB3 * priceB3 >= 1 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
+        const minNotionalSize = Math.ceil(5 / priceB3);
+        const sizeB3 = sizePolyB3 * priceB3 >= 5 ? sizePolyB3 : Math.max(sizePolyB3, minNotionalSize);
         await logPosition({
           bot: 'B3',
           asset,
@@ -490,9 +512,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
               ? 'no poly slug'
               : !isPolymarketEnabled()
                 ? 'ENABLE_POLYMARKET not true'
-                : 'polyError' in polyResult && polyResult.polyError != null
-                  ? polyErrorReason(polyResult.polyError)
-                  : 'no orderId or error (check Recent errors)';
+                : polyResult.skipReason
+                  ? polyResult.skipReason
+                  : 'polyError' in polyResult && polyResult.polyError != null
+                    ? polyErrorReason(polyResult.polyError)
+                    : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B3', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B3 Poly ${asset} skip: ${reason}`);
       }
