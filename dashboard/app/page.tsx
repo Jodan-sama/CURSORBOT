@@ -70,21 +70,26 @@ type ErrorLog = {
   stack: string | null;
 };
 
-type B4Log = {
+/** Raw row from b4_paper_log (B4 46/50: profit / loss / no_fill per asset per cycle) */
+type B4LogRow = {
   id: string;
-  created_at: string;
   window_unix: number;
   asset: string | null;
   event: string;
-  direction: string | null;
   price: number | null;
+};
+/** One 15m cycle: window_unix → BTC and ETH result (dollars or null = no fill) */
+type B4Cycle = {
+  window_unix: number;
+  btc: number | null;
+  eth: number | null;
 };
 
 export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
-  const [b4Logs, setB4Logs] = useState<B4Log[]>([]);
+  const [b4Cycles, setB4Cycles] = useState<B4Cycle[]>([]);
   const [spreadRows, setSpreadRows] = useState<SpreadRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -114,12 +119,26 @@ export default function Dashboard() {
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
-        getSupabase().from('b4_paper_log').select('*').order('created_at', { ascending: false }).limit(20),
+        getSupabase().from('b4_paper_log').select('window_unix, asset, event, price').in('event', ['profit', 'loss', 'no_fill']).order('window_unix', { ascending: false }).limit(80),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setErrors((errData ?? []) as ErrorLog[]);
-      setB4Logs((b4Data ?? []) as B4Log[]);
+      const b4Rows = (b4Data ?? []) as B4LogRow[];
+      const cycleMap = new Map<number, { btc: number | null; eth: number | null }>();
+      for (const r of b4Rows) {
+        const w = Number(r.window_unix);
+        if (!cycleMap.has(w)) cycleMap.set(w, { btc: null, eth: null });
+        const row = cycleMap.get(w)!;
+        const val = r.event === 'no_fill' ? null : (r.price ?? null);
+        if (r.asset === 'BTC') row.btc = val;
+        else if (r.asset === 'ETH') row.eth = val;
+      }
+      const cycles: B4Cycle[] = Array.from(cycleMap.entries())
+        .sort((a, b) => b[0] - a[0])
+        .slice(0, 20)
+        .map(([window_unix, { btc, eth }]) => ({ window_unix, btc, eth }));
+      setB4Cycles(cycles);
       const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
       setSpreadRows(rows);
       const defaults: Record<string, string> = {
@@ -421,29 +440,29 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginTop: 24 }}>
-        <h2 style={headingStyle}>B4 paper (last 20)</h2>
-        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>First 3 min: entry at 54¢. Then every 30s check for 60¢. Events: BUY_56_POSSIBLE, 60_POSSIBLE, NO_ENTRY (never hit 54), LOSS (hit 54, never 60).</p>
-        {b4Logs.length === 0 ? (
-          <p style={{ color: '#666' }}>No B4 events yet.</p>
+        <h2 style={headingStyle}>B4 46/50 (last 20 cycles)</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>Per 15m cycle: buy 46¢, sell 50¢. Profit when sold at 50; loss when bought at 46 and never sold.</p>
+        {b4Cycles.length === 0 ? (
+          <p style={{ color: '#666' }}>No B4 cycles yet.</p>
         ) : (
           <table style={{ width: '100%', maxWidth: 560, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Event</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Dir</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Price</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Cycle (window end)</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>BTC</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>ETH</th>
               </tr>
             </thead>
             <tbody>
-              {b4Logs.map((r) => (
-                <tr key={r.id}>
-                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(r.created_at, true)}</td>
-                  <td style={{ borderBottom: '1px solid #eee' }}>{r.asset ?? 'BTC'}</td>
-                  <td style={{ borderBottom: '1px solid #eee' }}>{r.event}</td>
-                  <td style={{ borderBottom: '1px solid #eee' }}>{r.direction ?? '—'}</td>
-                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{r.price != null ? Number(r.price).toFixed(3) : '—'}</td>
+              {b4Cycles.map((c) => (
+                <tr key={c.window_unix}>
+                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(new Date(c.window_unix * 1000).toISOString(), true)}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.btc != null ? (c.btc >= 0 ? 'green' : 'red') : undefined }}>
+                    {c.btc != null ? (c.btc >= 0 ? `+$${c.btc.toFixed(2)}` : `-$${Math.abs(c.btc).toFixed(2)}`) : '—'}
+                  </td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.eth != null ? (c.eth >= 0 ? 'green' : 'red') : undefined }}>
+                    {c.eth != null ? (c.eth >= 0 ? `+$${c.eth.toFixed(2)}` : `-$${Math.abs(c.eth).toFixed(2)}`) : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
