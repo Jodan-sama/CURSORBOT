@@ -13,12 +13,53 @@
  *   Or set CONDITION_IDS=id1,id2 in .env. Or run with no args for auto-discovery.
  *
  * Cron runs at :05, :20, :35, :50 each hour; uses proxy if HTTP_PROXY/HTTPS_PROXY set.
+ *
+ * Logs: date, time, and status (ALL ITEMS CLAIMED | NEED MORE POL | CLAIM INCOMPLETE) to
+ *   logs/claim-polymarket.log and Supabase polymarket_claim_log.
  */
 import 'dotenv/config';
+import { mkdirSync, appendFileSync } from 'fs';
+import { join } from 'path';
 import { ethers } from 'ethers';
+import { createClient } from '@supabase/supabase-js';
 import Safe from '@safe-global/protocol-kit';
 import { MetaTransactionData, OperationType } from '@safe-global/types-kit';
 import { CTF_ADDRESS, USDC_POLYGON, CTF_ABI } from '../polymarket/ctf-constants.js';
+
+export type ClaimResult = 'ALL ITEMS CLAIMED' | 'NEED MORE POL' | 'CLAIM INCOMPLETE';
+
+function isInsufficientGasError(e: unknown): boolean {
+  const s = String(e ?? '');
+  return (
+    /insufficient funds/i.test(s) ||
+    /exceeded the balance/i.test(s) ||
+    /balance 0/i.test(s) ||
+    /gas \* price \+ value/i.test(s)
+  );
+}
+
+async function writeClaimLog(message: ClaimResult): Promise<void> {
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+  const timeStr = now.toTimeString().slice(0, 8);
+  const line = `${dateStr} ${timeStr} ${message}\n`;
+  try {
+    const logsDir = join(process.cwd(), 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(join(logsDir, 'claim-polymarket.log'), line);
+  } catch (err) {
+    console.error('Could not write claim log:', err);
+  }
+  const url = process.env.SUPABASE_URL?.trim();
+  const key = process.env.SUPABASE_ANON_KEY?.trim();
+  if (url && key) {
+    try {
+      await createClient(url, key).from('polymarket_claim_log').insert({ message });
+    } catch (err) {
+      console.error('Could not write to Supabase:', err);
+    }
+  }
+}
 
 const DATA_API_BASE = 'https://data-api.polymarket.com';
 const PARENT_COLLECTION_NULL = '0x' + '0'.repeat(64);
@@ -108,13 +149,16 @@ function encodeTransfer(to: string, amount: bigint): string {
   return iface.encodeFunctionData('transfer', [to, amount]);
 }
 
+type FlowResult = { needMorePol: boolean; redeemSuccess: number; redeemFail: number; transferOk: boolean };
+
 async function runSafeFlow(
   conditionIds: string[],
   rpcUrl: string,
   privateKey: string,
   safeAddress: string,
   polygonWallet: string
-): Promise<void> {
+): Promise<FlowResult> {
+  const result: FlowResult = { needMorePol: false, redeemSuccess: 0, redeemFail: 0, transferOk: false };
   const pk = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const protocolKit = await (Safe as any).init({
@@ -133,6 +177,7 @@ async function runSafeFlow(
   const wallet = new ethers.Wallet(pk, provider);
   const balanceWei = await provider.getBalance(wallet.address);
   if (balanceWei === 0n) {
+    result.needMorePol = true;
     throw new Error(`Signer ${wallet.address} has 0 POL on Polygon. Send POL to this address for gas.`);
   }
 
@@ -154,54 +199,75 @@ async function runSafeFlow(
         transactions: [safeTransactionData],
       });
       safeTransaction = await protocolKit.signTransaction(safeTransaction);
-      const result = await protocolKit.executeTransaction(safeTransaction);
-      console.log('Redeem tx:', conditionId, result.hash);
-      const receipt = await provider.getTransactionReceipt(result.hash);
+      const txResult = await protocolKit.executeTransaction(safeTransaction);
+      console.log('Redeem tx:', conditionId, txResult.hash);
+      const receipt = await provider.getTransactionReceipt(txResult.hash);
       if (receipt && receipt.status === 0) {
         console.error('Redeem tx failed:', conditionId);
+        result.redeemFail++;
         continue;
       }
+      result.redeemSuccess++;
       console.log('Redeemed:', conditionId);
     } catch (e) {
+      if (isInsufficientGasError(e)) result.needMorePol = true;
+      result.redeemFail++;
       console.error('Redeem failed for', conditionId, e);
     }
+    await new Promise((r) => setTimeout(r, 3000));
   }
 
-  // Transfer Safe's USDC balance to PolyGun Polygon wallet
+  await new Promise((r) => setTimeout(r, 3000));
+
   const usdc = new ethers.Contract(USDC_POLYGON, ERC20_ABI, provider);
   const balance = await usdc.balanceOf(safeAddress);
   if (balance === 0n) {
     console.log('No USDC balance in Safe to transfer.');
-    return;
+    return result;
   }
   console.log('Transferring', ethers.formatUnits(balance, 6), 'USDC to', polygonWallet);
-  const transferData: MetaTransactionData = {
-    to: USDC_POLYGON,
-    value: '0',
-    data: encodeTransfer(polygonWallet, balance),
-    operation: OperationType.Call,
-  };
-  let transferTx = await protocolKit.createTransaction({
-    transactions: [transferData],
-  });
-  transferTx = await protocolKit.signTransaction(transferTx);
-  const transferResult = await protocolKit.executeTransaction(transferTx);
-  console.log('Transfer tx:', transferResult.hash);
-  const transferReceipt = await provider.getTransactionReceipt(transferResult.hash);
-  if (transferReceipt && transferReceipt.status === 0) {
-    console.error('Transfer tx failed.');
-    return;
+
+  try {
+    const freshKit = await (Safe as any).init({
+      provider: rpcUrl,
+      signer: pk,
+      safeAddress,
+    });
+    const transferData: MetaTransactionData = {
+      to: USDC_POLYGON,
+      value: '0',
+      data: encodeTransfer(polygonWallet, balance),
+      operation: OperationType.Call,
+    };
+    let transferTx = await freshKit.createTransaction({
+      transactions: [transferData],
+    });
+    transferTx = await freshKit.signTransaction(transferTx);
+    const transferResult = await freshKit.executeTransaction(transferTx);
+    console.log('Transfer tx:', transferResult.hash);
+    const transferReceipt = await provider.getTransactionReceipt(transferResult.hash);
+    if (transferReceipt && transferReceipt.status === 0) {
+      console.error('Transfer tx failed.');
+      return result;
+    }
+    result.transferOk = true;
+    console.log('USDC transferred to', polygonWallet);
+  } catch (e) {
+    if (isInsufficientGasError(e)) result.needMorePol = true;
+    console.error('Transfer failed:', e);
   }
-  console.log('USDC transferred to', polygonWallet);
+  return result;
 }
 
-async function runEoaFlow(conditionIds: string[], rpcUrl: string, privateKey: string): Promise<void> {
+async function runEoaFlow(conditionIds: string[], rpcUrl: string, privateKey: string): Promise<FlowResult> {
+  const result: FlowResult = { needMorePol: false, redeemSuccess: 0, redeemFail: 0, transferOk: true };
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const wallet = new ethers.Wallet(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`, provider);
   const signerAddress = wallet.address;
   console.log('EOA flow: signing with', signerAddress);
   const balanceWei = await provider.getBalance(signerAddress);
   if (balanceWei === 0n) {
+    result.needMorePol = true;
     throw new Error(`Wallet ${signerAddress} has 0 POL on Polygon. Send POL for gas.`);
   }
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
@@ -221,96 +287,158 @@ async function runEoaFlow(conditionIds: string[], rpcUrl: string, privateKey: st
       );
       console.log('Redeem tx sent:', conditionId, tx.hash);
       await tx.wait();
+      result.redeemSuccess++;
       console.log('Redeemed:', conditionId);
     } catch (e) {
+      if (isInsufficientGasError(e)) result.needMorePol = true;
+      result.redeemFail++;
       console.error('Redeem failed for', conditionId, e);
     }
   }
+  return result;
 }
 
 async function main() {
-  // Prefer PolyGun-specific vars so you can have two wallet blocks (Polymarket + PolyGun) in one .env
-  const privateKey =
-    process.env.POLYGUN_CLAIM_PRIVATE_KEY?.trim() ||
-    process.env.POLYMARKET_PRIVATE_KEY?.trim();
-  const funder =
-    process.env.POLYGUN_CLAIM_FUNDER?.trim() ||
-    process.env.POLYMARKET_FUNDER?.trim();
   const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || 'https://polygon-mainnet.g.alchemy.com/v2/J6wjUKfJUdYzPD5QNDd-i';
-  const safeAddressEnv =
-    process.env.POLYGUN_CLAIM_SAFE_ADDRESS?.trim() ||
-    process.env.POLYMARKET_SAFE_ADDRESS?.trim();
   const polygonWallet =
     process.env.POLYGON_WALLET?.trim() ||
     DEFAULT_POLYGON_WALLET;
-  const useSafeFlow = !!safeAddressEnv;
 
-  if (!privateKey) {
-    console.error(
-      'Missing private key: set POLYGUN_CLAIM_PRIVATE_KEY or POLYMARKET_PRIVATE_KEY in .env'
-    );
-    process.exit(1);
-  }
+  // EOA (main Polymarket wallet, e.g. 0xbafbed80...)
+  const eoaFunder = process.env.POLYMARKET_FUNDER?.trim();
+  const eoaKey = process.env.POLYMARKET_PRIVATE_KEY?.trim();
 
-  if (useSafeFlow) {
-    console.log('Using Safe flow: redeem via Polymarket Wallet Safe, then transfer USDC to POLYGON_WALLET.');
-  } else {
-    console.log('Using EOA flow (direct redeem). To use PolyGun Safe and send USDC to your Polygon wallet, set POLYMARKET_SAFE_ADDRESS in .env.');
-  }
-
-  const claimFunderSet = !!(process.env.POLYGUN_CLAIM_FUNDER?.trim());
-  console.log('Discovery address:', funder, claimFunderSet ? '(from POLYGUN_CLAIM_FUNDER)' : '(from POLYMARKET_FUNDER - PolyGun not set)');
+  // PolyGun Safe (0xbdd5ad...)
+  const safeFunder =
+    process.env.POLYGUN_CLAIM_FUNDER?.trim() ||
+    process.env.POLYMARKET_SAFE_ADDRESS?.trim();
+  const safeKey =
+    process.env.POLYGUN_CLAIM_PRIVATE_KEY?.trim() ||
+    process.env.POLYMARKET_PRIVATE_KEY?.trim();
 
   let conditionIds = getConditionIdsFromEnvOrArgs();
-  const discoveryFunder = funder || (useSafeFlow ? safeAddressEnv! : undefined);
-  if (conditionIds.length === 0 && discoveryFunder) {
+
+  // Build discovery list: EOA (0xbafbed80...), Safe (0xbdd5ad...), proxy
+  const discoveryAddresses: { addr: string; isSafe: boolean }[] = [];
+  const safeNorm = safeFunder?.toLowerCase();
+  if (eoaFunder && isValidWalletAddress(eoaFunder) && eoaFunder.toLowerCase() !== safeNorm) {
+    discoveryAddresses.push({ addr: eoaFunder, isSafe: false });
+  }
+  if (safeFunder && isValidWalletAddress(safeFunder)) {
+    discoveryAddresses.push({ addr: safeFunder, isSafe: true });
+  }
+  const proxy = process.env.POLYMARKET_PROXY_WALLET?.trim();
+  if (proxy && isValidWalletAddress(proxy) && !discoveryAddresses.some((d) => d.addr.toLowerCase() === proxy.toLowerCase())) {
+    discoveryAddresses.push({ addr: proxy, isSafe: false });
+  }
+
+  const eoaIds: string[] = [];
+  const safeIds: string[] = [];
+
+  if (conditionIds.length === 0 && discoveryAddresses.length > 0) {
     try {
-      const proxy = process.env.POLYMARKET_PROXY_WALLET?.trim();
-      const addressesToTry: string[] = [discoveryFunder];
-      if (proxy && isValidWalletAddress(proxy)) addressesToTry.push(proxy);
-      else if (proxy) {
-        console.warn('POLYMARKET_PROXY_WALLET ignored: must be a wallet address (0x + 40 hex chars), not a condition ID or key.');
-      }
-      const validAddresses = addressesToTry.filter(isValidWalletAddress);
-      if (validAddresses.length === 0) {
-        console.error('POLYMARKET_FUNDER must be a wallet address (0x + 40 hex chars).');
-        process.exit(1);
-      }
-      for (const addr of validAddresses) {
+      for (const { addr, isSafe } of discoveryAddresses) {
         console.log('Discovering redeemable positions for', addr, '...');
         const ids = await fetchRedeemableConditionIds(addr);
-        if (ids.length > 0) {
-          conditionIds = ids;
-          console.log('Found', conditionIds.length, 'redeemable condition(s)');
-          break;
+        if (ids.length > 0) console.log('Found', ids.length, 'for', addr);
+        for (const id of ids) {
+          if (isSafe) safeIds.push(id);
+          else eoaIds.push(id);
         }
       }
+      conditionIds = [...new Set([...eoaIds, ...safeIds])];
+      if (conditionIds.length > 0) console.log('Total redeemable:', conditionIds.length);
     } catch (e) {
       console.error('Discovery failed:', e);
       process.exit(1);
     }
   }
+
   if (conditionIds.length === 0) {
     console.log('No condition IDs to redeem (no args, no CONDITION_IDS, and no redeemable positions from Data API).');
+    await writeClaimLog('ALL ITEMS CLAIMED');
     process.exit(0);
   }
 
-  if (useSafeFlow) {
-    if (!safeAddressEnv || !isValidWalletAddress(safeAddressEnv)) {
-      console.error('POLYMARKET_SAFE_ADDRESS must be a valid Safe address (0x + 40 hex).');
-      process.exit(1);
+  // If we had explicit CONDITION_IDS/args, we didn't run discovery - assign all to Safe if Safe flow, else EOA
+  if (eoaIds.length === 0 && safeIds.length === 0 && conditionIds.length > 0) {
+    if (safeFunder) {
+      conditionIds.forEach((id) => safeIds.push(id));
+    } else {
+      conditionIds.forEach((id) => eoaIds.push(id));
     }
-    if (!isValidWalletAddress(polygonWallet)) {
-      console.error('POLYGON_WALLET must be a valid address (0x + 40 hex). This is where claimed USDC is sent.');
-      process.exit(1);
-    }
-    await runSafeFlow(conditionIds, rpcUrl, privateKey, safeAddressEnv, polygonWallet);
-  } else {
-    await runEoaFlow(conditionIds, rpcUrl, privateKey);
   }
+
+  let flowResult: FlowResult = { needMorePol: false, redeemSuccess: 0, redeemFail: 0, transferOk: false };
+
+  if (eoaIds.length > 0 && eoaKey) {
+    console.log('EOA flow:', eoaIds.length, 'position(s) from', eoaFunder || 'EOA');
+    const eoaResult = await runEoaFlow(eoaIds, rpcUrl, eoaKey);
+    flowResult.redeemSuccess += eoaResult.redeemSuccess;
+    flowResult.redeemFail += eoaResult.redeemFail;
+    flowResult.needMorePol = flowResult.needMorePol || eoaResult.needMorePol;
+    flowResult.transferOk = eoaResult.transferOk;
+  } else if (eoaIds.length > 0 && !eoaKey) {
+    console.warn('Skipping', eoaIds.length, 'EOA position(s): POLYMARKET_PRIVATE_KEY not set.');
+    flowResult.redeemFail += eoaIds.length;
+  }
+
+  if (eoaIds.length > 0 && safeIds.length > 0) {
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+
+  if (safeIds.length > 0 && safeFunder && isValidWalletAddress(safeFunder)) {
+    if (!safeKey) {
+      console.error('POLYGUN_CLAIM_PRIVATE_KEY or POLYMARKET_PRIVATE_KEY required for Safe flow.');
+      flowResult.redeemFail += safeIds.length;
+    } else if (!isValidWalletAddress(polygonWallet)) {
+      console.error('POLYGON_WALLET must be valid. USDC is sent there from Safe.');
+      flowResult.redeemFail += safeIds.length;
+    } else {
+      console.log('Safe flow:', safeIds.length, 'position(s) from', safeFunder);
+      const safeResult = await runSafeFlow(safeIds, rpcUrl, safeKey, safeFunder, polygonWallet);
+      flowResult.redeemSuccess += safeResult.redeemSuccess;
+      flowResult.redeemFail += safeResult.redeemFail;
+      flowResult.needMorePol = flowResult.needMorePol || safeResult.needMorePol;
+      flowResult.transferOk = safeResult.transferOk;
+    }
+  }
+
+  reportAndLog(flowResult);
 }
 
-main().catch((e) => {
-  console.error(e);
+function reportAndLog(flowResult: FlowResult): void {
+  const message: ClaimResult =
+    flowResult.needMorePol
+      ? 'NEED MORE POL'
+      : flowResult.redeemFail === 0 && flowResult.transferOk
+        ? 'ALL ITEMS CLAIMED'
+        : 'CLAIM INCOMPLETE';
+
+  console.log('\n---');
+  if (message === 'NEED MORE POL') {
+    console.log('NEED MORE POL');
+  } else if (message === 'CLAIM INCOMPLETE') {
+    const parts: string[] = [];
+    if (flowResult.redeemFail > 0) {
+      parts.push(`${flowResult.redeemFail} redeem(s) failed`);
+    }
+    if (!flowResult.transferOk) {
+      parts.push('transfer failed');
+    }
+    const unclaimed = flowResult.redeemFail > 0 ? `${flowResult.redeemFail} UNCLAIMED – ` : '';
+    console.log(`${unclaimed}${parts.join(', ')}. TRY AGAIN.`);
+  } else {
+    console.log(message);
+  }
+  writeClaimLog(message).catch((e) => console.error('Log write failed:', e));
+}
+
+main().catch(async (e) => {
+  const errMsg = e instanceof Error ? e.message : String(e);
+  const short = errMsg.length > 80 ? errMsg.slice(0, 77) + '...' : errMsg;
+  console.error(short);
+  console.log('\n---\nCLAIM INCOMPLETE (error). TRY AGAIN.');
+  await writeClaimLog('CLAIM INCOMPLETE').catch(() => {});
   process.exit(1);
 });
