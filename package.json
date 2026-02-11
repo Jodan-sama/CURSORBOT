@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
+    "@safe-global/protocol-kit": "^6.1.2",
+    "@safe-global/types-kit": "^3.0.0",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.6.1",
     "ethers": "^6.16.0",

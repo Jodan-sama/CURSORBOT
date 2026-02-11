@@ -2,6 +2,9 @@
  * Redeem resolved Polymarket positions (CTF) on Polygon.
  * Uses POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER, and POLYGON_RPC_URL from .env.
  *
+ * When POLYMARKET_SAFE_ADDRESS is set (e.g. PolyGun Polymarket Wallet), redeems via the Safe
+ * and transfers claimed USDC to POLYGON_WALLET. Otherwise redeems from the EOA (legacy).
+ *
  * Auto-discovery: with no args and no CONDITION_IDS, fetches redeemable positions
  * from Polymarket Data API (user=POLYMARKET_FUNDER) and redeems each conditionId.
  *
@@ -13,11 +16,23 @@
  */
 import 'dotenv/config';
 import { ethers } from 'ethers';
+import Safe from '@safe-global/protocol-kit';
+import { MetaTransactionData, OperationType } from '@safe-global/types-kit';
 import { CTF_ADDRESS, USDC_POLYGON, CTF_ABI } from '../polymarket/ctf-constants.js';
 
 const DATA_API_BASE = 'https://data-api.polymarket.com';
 const PARENT_COLLECTION_NULL = '0x' + '0'.repeat(64);
 const INDEX_SETS_BINARY = [1, 2]; // Yes | No
+
+/** PolyGun Polymarket Wallet (Gnosis Safe) – holds positions. Set POLYMARKET_SAFE_ADDRESS to use Safe flow. */
+const DEFAULT_POLYGON_SAFE = '0xBDD5AD35435bAb6b3AdF6A8E7e639D0393263932';
+/** PolyGun Polygon wallet (POL, USDC, USDC.e) – claimed USDC is sent here when using Safe. */
+const DEFAULT_POLYGON_WALLET = '0x6370422C2DA0cb4b0fE095DDC1dc97d87Cd5223b';
+
+const ERC20_ABI = [
+  'function balanceOf(address account) view returns (uint256)',
+  'function transfer(address to, uint256 amount) returns (bool)',
+] as const;
 
 /** Ethereum address: 0x + 40 hex chars (20 bytes). Data API requires this for the user param. */
 function isValidWalletAddress(s: string): boolean {
@@ -76,20 +91,182 @@ async function fetchRedeemableConditionIds(funder: string): Promise<string[]> {
   return ids;
 }
 
+/** Encode CTF.redeemPositions(collateralToken, parentCollectionId, conditionId, indexSets). */
+function encodeRedeemPositions(conditionId: string): string {
+  const iface = new ethers.Interface(CTF_ABI as unknown as string[]);
+  return iface.encodeFunctionData('redeemPositions', [
+    USDC_POLYGON,
+    PARENT_COLLECTION_NULL,
+    conditionId,
+    INDEX_SETS_BINARY,
+  ]);
+}
+
+/** Encode ERC20 transfer(to, amount). */
+function encodeTransfer(to: string, amount: bigint): string {
+  const iface = new ethers.Interface(ERC20_ABI as unknown as string[]);
+  return iface.encodeFunctionData('transfer', [to, amount]);
+}
+
+async function runSafeFlow(
+  conditionIds: string[],
+  rpcUrl: string,
+  privateKey: string,
+  safeAddress: string,
+  polygonWallet: string
+): Promise<void> {
+  const pk = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const protocolKit = await (Safe as any).init({
+    provider: rpcUrl,
+    signer: pk,
+    safeAddress,
+  });
+
+  const signerAddress = await protocolKit.getSafeProvider().getSignerAddress();
+  if (!signerAddress) {
+    throw new Error('Safe init: no signer address. POLYMARKET_PRIVATE_KEY must be an owner of the Safe.');
+  }
+  console.log('Safe flow: Safe', safeAddress, '| signer (owner)', signerAddress, '| USDC →', polygonWallet);
+
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const wallet = new ethers.Wallet(pk, provider);
+  const balanceWei = await provider.getBalance(wallet.address);
+  if (balanceWei === 0n) {
+    throw new Error(`Signer ${wallet.address} has 0 POL on Polygon. Send POL to this address for gas.`);
+  }
+
+  for (const rawId of conditionIds) {
+    const conditionId = rawId.startsWith('0x') ? rawId : `0x${rawId}`;
+    if (conditionId.length !== 66) {
+      console.warn('Skipping invalid conditionId:', rawId);
+      continue;
+    }
+    try {
+      const data = encodeRedeemPositions(conditionId);
+      const safeTransactionData: MetaTransactionData = {
+        to: CTF_ADDRESS,
+        value: '0',
+        data,
+        operation: OperationType.Call,
+      };
+      let safeTransaction = await protocolKit.createTransaction({
+        transactions: [safeTransactionData],
+      });
+      safeTransaction = await protocolKit.signTransaction(safeTransaction);
+      const result = await protocolKit.executeTransaction(safeTransaction);
+      console.log('Redeem tx:', conditionId, result.hash);
+      const receipt = await provider.getTransactionReceipt(result.hash);
+      if (receipt && receipt.status === 0) {
+        console.error('Redeem tx failed:', conditionId);
+        continue;
+      }
+      console.log('Redeemed:', conditionId);
+    } catch (e) {
+      console.error('Redeem failed for', conditionId, e);
+    }
+  }
+
+  // Transfer Safe's USDC balance to PolyGun Polygon wallet
+  const usdc = new ethers.Contract(USDC_POLYGON, ERC20_ABI, provider);
+  const balance = await usdc.balanceOf(safeAddress);
+  if (balance === 0n) {
+    console.log('No USDC balance in Safe to transfer.');
+    return;
+  }
+  console.log('Transferring', ethers.formatUnits(balance, 6), 'USDC to', polygonWallet);
+  const transferData: MetaTransactionData = {
+    to: USDC_POLYGON,
+    value: '0',
+    data: encodeTransfer(polygonWallet, balance),
+    operation: OperationType.Call,
+  };
+  let transferTx = await protocolKit.createTransaction({
+    transactions: [transferData],
+  });
+  transferTx = await protocolKit.signTransaction(transferTx);
+  const transferResult = await protocolKit.executeTransaction(transferTx);
+  console.log('Transfer tx:', transferResult.hash);
+  const transferReceipt = await provider.getTransactionReceipt(transferResult.hash);
+  if (transferReceipt && transferReceipt.status === 0) {
+    console.error('Transfer tx failed.');
+    return;
+  }
+  console.log('USDC transferred to', polygonWallet);
+}
+
+async function runEoaFlow(conditionIds: string[], rpcUrl: string, privateKey: string): Promise<void> {
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const wallet = new ethers.Wallet(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`, provider);
+  const signerAddress = wallet.address;
+  console.log('EOA flow: signing with', signerAddress);
+  const balanceWei = await provider.getBalance(signerAddress);
+  if (balanceWei === 0n) {
+    throw new Error(`Wallet ${signerAddress} has 0 POL on Polygon. Send POL for gas.`);
+  }
+  const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
+
+  for (const rawId of conditionIds) {
+    const conditionId = rawId.startsWith('0x') ? rawId : `0x${rawId}`;
+    if (conditionId.length !== 66) {
+      console.warn('Skipping invalid conditionId:', rawId);
+      continue;
+    }
+    try {
+      const tx = await ctf.redeemPositions(
+        USDC_POLYGON,
+        PARENT_COLLECTION_NULL,
+        conditionId,
+        INDEX_SETS_BINARY
+      );
+      console.log('Redeem tx sent:', conditionId, tx.hash);
+      await tx.wait();
+      console.log('Redeemed:', conditionId);
+    } catch (e) {
+      console.error('Redeem failed for', conditionId, e);
+    }
+  }
+}
+
 async function main() {
-  const privateKey = process.env.POLYMARKET_PRIVATE_KEY?.trim();
-  const funder = process.env.POLYMARKET_FUNDER?.trim();
+  // Prefer PolyGun-specific vars so you can have two wallet blocks (Polymarket + PolyGun) in one .env
+  const privateKey =
+    process.env.POLYGUN_CLAIM_PRIVATE_KEY?.trim() ||
+    process.env.POLYMARKET_PRIVATE_KEY?.trim();
+  const funder =
+    process.env.POLYGUN_CLAIM_FUNDER?.trim() ||
+    process.env.POLYMARKET_FUNDER?.trim();
   const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || 'https://polygon-mainnet.g.alchemy.com/v2/J6wjUKfJUdYzPD5QNDd-i';
+  const safeAddressEnv =
+    process.env.POLYGUN_CLAIM_SAFE_ADDRESS?.trim() ||
+    process.env.POLYMARKET_SAFE_ADDRESS?.trim();
+  const polygonWallet =
+    process.env.POLYGON_WALLET?.trim() ||
+    DEFAULT_POLYGON_WALLET;
+  const useSafeFlow = !!safeAddressEnv;
+
   if (!privateKey) {
-    console.error('Missing POLYMARKET_PRIVATE_KEY in .env');
+    console.error(
+      'Missing private key: set POLYGUN_CLAIM_PRIVATE_KEY or POLYMARKET_PRIVATE_KEY in .env'
+    );
     process.exit(1);
   }
 
+  if (useSafeFlow) {
+    console.log('Using Safe flow: redeem via Polymarket Wallet Safe, then transfer USDC to POLYGON_WALLET.');
+  } else {
+    console.log('Using EOA flow (direct redeem). To use PolyGun Safe and send USDC to your Polygon wallet, set POLYMARKET_SAFE_ADDRESS in .env.');
+  }
+
+  const claimFunderSet = !!(process.env.POLYGUN_CLAIM_FUNDER?.trim());
+  console.log('Discovery address:', funder, claimFunderSet ? '(from POLYGUN_CLAIM_FUNDER)' : '(from POLYMARKET_FUNDER - PolyGun not set)');
+
   let conditionIds = getConditionIdsFromEnvOrArgs();
-  if (conditionIds.length === 0 && funder) {
+  const discoveryFunder = funder || (useSafeFlow ? safeAddressEnv! : undefined);
+  if (conditionIds.length === 0 && discoveryFunder) {
     try {
       const proxy = process.env.POLYMARKET_PROXY_WALLET?.trim();
-      const addressesToTry: string[] = [funder];
+      const addressesToTry: string[] = [discoveryFunder];
       if (proxy && isValidWalletAddress(proxy)) addressesToTry.push(proxy);
       else if (proxy) {
         console.warn('POLYMARKET_PROXY_WALLET ignored: must be a wallet address (0x + 40 hex chars), not a condition ID or key.');
@@ -118,36 +295,18 @@ async function main() {
     process.exit(0);
   }
 
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
-  const wallet = new ethers.Wallet(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`, provider);
-  const signerAddress = wallet.address;
-  console.log('Signing with wallet:', signerAddress, '- this address must have POL on Polygon for gas.');
-  const balanceWei = await provider.getBalance(signerAddress);
-  if (balanceWei === 0n) {
-    console.error('This wallet has 0 POL on Polygon. Send POL to', signerAddress, 'then run again.');
-    process.exit(1);
-  }
-  const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
-
-  for (const rawId of conditionIds) {
-    const conditionId = rawId.startsWith('0x') ? rawId : `0x${rawId}`;
-    if (conditionId.length !== 66) {
-      console.warn('Skipping invalid conditionId:', rawId);
-      continue;
+  if (useSafeFlow) {
+    if (!safeAddressEnv || !isValidWalletAddress(safeAddressEnv)) {
+      console.error('POLYMARKET_SAFE_ADDRESS must be a valid Safe address (0x + 40 hex).');
+      process.exit(1);
     }
-    try {
-      const tx = await ctf.redeemPositions(
-        USDC_POLYGON,
-        PARENT_COLLECTION_NULL,
-        conditionId,
-        INDEX_SETS_BINARY
-      );
-      console.log('Redeem tx sent:', conditionId, tx.hash);
-      await tx.wait();
-      console.log('Redeemed:', conditionId);
-    } catch (e) {
-      console.error('Redeem failed for', conditionId, e);
+    if (!isValidWalletAddress(polygonWallet)) {
+      console.error('POLYGON_WALLET must be a valid address (0x + 40 hex). This is where claimed USDC is sent.');
+      process.exit(1);
     }
+    await runSafeFlow(conditionIds, rpcUrl, privateKey, safeAddressEnv, polygonWallet);
+  } else {
+    await runEoaFlow(conditionIds, rpcUrl, privateKey);
   }
 }
 
