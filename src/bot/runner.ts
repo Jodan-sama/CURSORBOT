@@ -316,7 +316,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
     }
 
-    // --- B2: last 5 min, check every 30s, place 97% limit ---
+    // --- B2: last 5 min, check every 30s, place 97% limit. Fire Kalshi + Poly in parallel like B1. ---
     if (isB2Window(minutesLeft)) {
       if (spreadMagnitude > 0.55) lastB2HighSpreadByAsset.set(asset, now.getTime());
       const key = windowKey('B2', asset, windowEndMs);
@@ -327,60 +327,67 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         continue;
       }
 
-      if (kalshiTicker && sizeKalshiB2 > 0) {
-        try {
-          const { orderId } = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2, side);
-          enteredThisWindow.add(key);
-          lastB2OrderByAsset.set(asset, now.getTime());
-          await logPosition({
-            bot: 'B2',
-            asset,
-            venue: 'kalshi',
-            strike_spread_pct: signedSpreadPct,
-            position_size: sizeKalshiB2,
-            ticker_or_slug: kalshiTicker,
-            order_id: orderId ?? undefined,
-          });
-          console.log(`B2 Kalshi ${asset} ${side} 97% orderId=${orderId}`);
-        } catch (e) {
+      const priceB2 = 0.97;
+      const placeB2Kalshi = async () => {
+        if (!kalshiTicker || sizeKalshiB2 <= 0) return { orderId: undefined as string | undefined };
+        const r = await tryPlaceKalshi(kalshiTicker, asset, 'B2', false, 97, sizeKalshiB2, side);
+        return { orderId: r.orderId };
+      };
+      const placeB2Poly = async () => {
+        if (!kalshiTicker || !polySlug || sizePolyB2 <= 0 || !isPolymarketEnabled()) return { orderId: undefined as string | undefined };
+        const minNotionalSize = Math.ceil(1 / priceB2);
+        const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
+        if (sizeB2 !== sizePolyB2) console.log(`B2 Poly ${asset} size ${sizePolyB2} → ${sizeB2} (min $1 notional)`);
+        const r = await tryPlacePolymarket(polySlug, asset, priceB2, sizeB2, side);
+        return { orderId: r.orderId };
+      };
+
+      const [kalshiResult, polyResult] = await Promise.all([
+        placeB2Kalshi().catch(async (e) => {
           await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
-        }
+          return { orderId: undefined as string | undefined };
+        }),
+        placeB2Poly().catch(async (e) => {
+          console.error(`B2 Poly ${asset} failed:`, e);
+          await logError(e, { bot: 'B2', asset, venue: 'polymarket', slug: polySlug ?? undefined });
+          return { orderId: undefined as string | undefined };
+        }),
+      ]);
+
+      if (kalshiResult.orderId) {
+        enteredThisWindow.add(key);
+        lastB2OrderByAsset.set(asset, now.getTime());
+        await logPosition({
+          bot: 'B2',
+          asset,
+          venue: 'kalshi',
+          strike_spread_pct: signedSpreadPct,
+          position_size: sizeKalshiB2,
+          ticker_or_slug: kalshiTicker ?? undefined,
+          order_id: kalshiResult.orderId,
+        });
+        console.log(`B2 Kalshi ${asset} ${side} 97% orderId=${kalshiResult.orderId}`);
       }
-      // Poly mirrors Kalshi: same entry condition; only place when we have Kalshi ticker and size > 0. CLOB min notional $1.
-      if (kalshiTicker && polySlug && sizePolyB2 > 0) {
-        if (!isPolymarketEnabled()) {
-          console.log(`B2 Poly ${asset} skip: ENABLE_POLYMARKET not true`);
-        } else {
-          try {
-            const priceB2 = 0.97;
-            const minNotionalSize = Math.ceil(1 / priceB2);
-            const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
-            if (sizeB2 !== sizePolyB2) console.log(`B2 Poly ${asset} size ${sizePolyB2} → ${sizeB2} (min $1 notional)`);
-            console.log(`B2 Poly ${asset} attempt slug=${polySlug}`);
-            const { orderId } = await tryPlacePolymarket(polySlug, asset, priceB2, sizeB2, side);
-            if (orderId) {
-              enteredThisWindow.add(key);
-              lastB2OrderByAsset.set(asset, now.getTime());
-              await logPosition({
-                bot: 'B2',
-                asset,
-                venue: 'polymarket',
-                strike_spread_pct: signedSpreadPct,
-                position_size: sizeB2,
-                ticker_or_slug: polySlug,
-                order_id: orderId,
-              });
-              console.log(`B2 Poly ${asset} orderId=${orderId}`);
-            }
-          } catch (e) {
-            console.error(`B2 Poly ${asset} failed:`, e);
-            await logError(e, { bot: 'B2', asset, venue: 'polymarket', slug: polySlug });
-          }
-        }
-      } else if (kalshiTicker && sizePolyB2 === 0) {
-        console.log(`B2 Poly ${asset} skip: position size 0 (set Poly size in dashboard to mirror)`);
-      } else if (kalshiTicker && !polySlug) {
-        console.log(`B2 Poly ${asset} skip: no poly slug`);
+      if (polyResult.orderId) {
+        enteredThisWindow.add(key);
+        lastB2OrderByAsset.set(asset, now.getTime());
+        const minNotionalSize = Math.ceil(1 / priceB2);
+        const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
+        await logPosition({
+          bot: 'B2',
+          asset,
+          venue: 'polymarket',
+          strike_spread_pct: signedSpreadPct,
+          position_size: sizeB2,
+          ticker_or_slug: polySlug ?? undefined,
+          order_id: polyResult.orderId,
+        });
+        console.log(`B2 Poly ${asset} orderId=${polyResult.orderId}`);
+      }
+      if (!kalshiResult.orderId && !polyResult.orderId && kalshiTicker) {
+        if (sizePolyB2 === 0) console.log(`B2 Poly ${asset} skip: position size 0 (set Poly size in dashboard to mirror)`);
+        else if (!polySlug) console.log(`B2 Poly ${asset} skip: no poly slug`);
+        else if (polySlug && sizePolyB2 > 0) console.log(`B2 Poly ${asset} no orderId returned (check errors)`);
       }
     }
 
