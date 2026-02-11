@@ -115,21 +115,40 @@ function conditionIdsFromRows(rows: PositionRow[], requireRedeemable: boolean): 
   return [...ids];
 }
 
-/** Fetch redeemable condition IDs: try API redeemable filter first, then fallback to all positions + client-side filter. */
-async function fetchRedeemableConditionIds(funder: string): Promise<string[]> {
-  // 1) Try with redeemable=true
-  const withFilter = await fetchPositions(funder, true);
-  let ids = conditionIdsFromRows(withFilter, true);
-  if (ids.length > 0) return ids;
+type PositionWithProxy = { conditionId: string; proxyWallet: string };
 
-  // 2) Fallback: fetch all positions and filter for redeemable (Data API sometimes returns empty for redeemable=true)
-  const all = await fetchPositions(funder, false);
-  const redeemableCount = all.filter((r) => r.redeemable).length;
-  if (redeemableCount > 0) {
-    console.log(`Found ${redeemableCount} redeemable position(s) via fallback (all positions).`);
-    ids = conditionIdsFromRows(all, true);
+/** Fetch redeemable positions with proxyWallet (actual holder). Uses proxyWallet from API; falls back to user if missing. */
+async function fetchRedeemablePositionsWithProxy(user: string): Promise<PositionWithProxy[]> {
+  let rows: PositionRow[];
+  const withFilter = await fetchPositions(user, true);
+  if (withFilter.length > 0) {
+    rows = withFilter;
+  } else {
+    const all = await fetchPositions(user, false);
+    const redeemable = all.filter((r) => r.redeemable);
+    if (redeemable.length > 0) {
+      console.log(`Found ${redeemable.length} redeemable position(s) via fallback (all positions).`);
+    }
+    rows = redeemable;
   }
-  return ids;
+  const out: PositionWithProxy[] = [];
+  for (const row of rows) {
+    if (!row.redeemable) continue;
+    const c = row.conditionId?.trim();
+    if (!c) continue;
+    const conditionId = c.startsWith('0x') ? c : `0x${c}`;
+    if (!/^0x[a-fA-F0-9]{64}$/.test(conditionId)) continue;
+    const proxy = row.proxyWallet?.trim();
+    const holder = proxy && isValidWalletAddress(proxy) ? proxy : user;
+    out.push({ conditionId, proxyWallet: holder });
+  }
+  return out;
+}
+
+/** Fetch redeemable condition IDs: try API redeemable filter first, then fallback (legacy, no proxyWallet). */
+async function fetchRedeemableConditionIds(funder: string): Promise<string[]> {
+  const withProxy = await fetchRedeemablePositionsWithProxy(funder);
+  return withProxy.map((p) => p.conditionId);
 }
 
 /** Encode CTF.redeemPositions(collateralToken, parentCollectionId, conditionId, indexSets). */
@@ -332,38 +351,54 @@ async function main() {
     discoveryAddresses.push({ addr: proxy, isSafe: false });
   }
 
+  // Positions grouped by holder: EOA (signer) vs Safe (proxyWallet). Polymarket uses Gnosis Safe proxies;
+  // positions live in the Safe, not the signer. We must redeem via Safe (execTransaction), not EOA directly.
   const eoaIds: string[] = [];
-  const safeIds: string[] = [];
+  const safePositionsByAddress = new Map<string, string[]>();
+
+  const signerFromEoa = eoaKey ? new ethers.Wallet(eoaKey.startsWith('0x') ? eoaKey : `0x${eoaKey}`).address : null;
 
   if (conditionIds.length === 0 && discoveryAddresses.length > 0) {
     try {
-      for (const { addr, isSafe } of discoveryAddresses) {
+      const seenConditionIds = new Set<string>();
+      for (const { addr } of discoveryAddresses) {
         console.log('Discovering redeemable positions for', addr, '...');
-        const ids = await fetchRedeemableConditionIds(addr);
-        if (ids.length > 0) console.log('Found', ids.length, 'for', addr);
-        for (const id of ids) {
-          if (isSafe) safeIds.push(id);
-          else eoaIds.push(id);
+        const positions = await fetchRedeemablePositionsWithProxy(addr);
+        if (positions.length > 0) console.log('Found', positions.length, 'for', addr);
+        for (const { conditionId, proxyWallet } of positions) {
+          if (seenConditionIds.has(conditionId)) continue;
+          seenConditionIds.add(conditionId);
+          const holder = proxyWallet.toLowerCase();
+          if (signerFromEoa && holder === signerFromEoa.toLowerCase()) {
+            eoaIds.push(conditionId);
+          } else {
+            const list = safePositionsByAddress.get(holder) ?? [];
+            list.push(conditionId);
+            safePositionsByAddress.set(holder, list);
+          }
         }
       }
-      conditionIds = [...new Set([...eoaIds, ...safeIds])];
-      if (conditionIds.length > 0) console.log('Total redeemable:', conditionIds.length);
+      const total = eoaIds.length + [...safePositionsByAddress.values()].flat().length;
+      if (total > 0) console.log('Total redeemable:', total);
     } catch (e) {
       console.error('Discovery failed:', e);
       process.exit(1);
     }
   }
 
-  if (conditionIds.length === 0) {
+  if (conditionIds.length === 0 && eoaIds.length === 0 && safePositionsByAddress.size === 0) {
     console.log('No condition IDs to redeem (no args, no CONDITION_IDS, and no redeemable positions from Data API).');
     await writeClaimLog('ALL ITEMS CLAIMED');
     process.exit(0);
   }
 
-  // If we had explicit CONDITION_IDS/args, we didn't run discovery - assign all to Safe if Safe flow, else EOA
-  if (eoaIds.length === 0 && safeIds.length === 0 && conditionIds.length > 0) {
-    if (safeFunder) {
-      conditionIds.forEach((id) => safeIds.push(id));
+  // Explicit CONDITION_IDS/args: no proxyWallet from API. Use Safe if safeFunder set, or if eoaFunder is a proxy (≠ signer).
+  if (eoaIds.length === 0 && safePositionsByAddress.size === 0 && conditionIds.length > 0) {
+    const eoaIsProxy = eoaFunder && signerFromEoa && eoaFunder.toLowerCase() !== signerFromEoa.toLowerCase();
+    if (safeFunder && isValidWalletAddress(safeFunder)) {
+      safePositionsByAddress.set(safeFunder.toLowerCase(), [...conditionIds]);
+    } else if (eoaIsProxy && isValidWalletAddress(eoaFunder!)) {
+      safePositionsByAddress.set(eoaFunder!.toLowerCase(), [...conditionIds]);
     } else {
       conditionIds.forEach((id) => eoaIds.push(id));
     }
@@ -372,7 +407,7 @@ async function main() {
   let flowResult: FlowResult = { needMorePol: false, redeemSuccess: 0, redeemFail: 0, transferOk: false };
 
   if (eoaIds.length > 0 && eoaKey) {
-    console.log('EOA flow:', eoaIds.length, 'position(s) from', eoaFunder || 'EOA');
+    console.log('EOA flow:', eoaIds.length, 'position(s) (signer holds directly)');
     const eoaResult = await runEoaFlow(eoaIds, rpcUrl, eoaKey);
     flowResult.redeemSuccess += eoaResult.redeemSuccess;
     flowResult.redeemFail += eoaResult.redeemFail;
@@ -383,25 +418,29 @@ async function main() {
     flowResult.redeemFail += eoaIds.length;
   }
 
-  if (eoaIds.length > 0 && safeIds.length > 0) {
-    await new Promise((r) => setTimeout(r, 3000));
-  }
-
-  if (safeIds.length > 0 && safeFunder && isValidWalletAddress(safeFunder)) {
-    if (!safeKey) {
-      console.error('POLYGUN_CLAIM_PRIVATE_KEY or POLYMARKET_PRIVATE_KEY required for Safe flow.');
-      flowResult.redeemFail += safeIds.length;
-    } else if (!isValidWalletAddress(polygonWallet)) {
-      console.error('POLYGON_WALLET must be valid. USDC is sent there from Safe.');
-      flowResult.redeemFail += safeIds.length;
-    } else {
-      console.log('Safe flow:', safeIds.length, 'position(s) from', safeFunder);
-      const safeResult = await runSafeFlow(safeIds, rpcUrl, safeKey, safeFunder, polygonWallet);
-      flowResult.redeemSuccess += safeResult.redeemSuccess;
-      flowResult.redeemFail += safeResult.redeemFail;
-      flowResult.needMorePol = flowResult.needMorePol || safeResult.needMorePol;
-      flowResult.transferOk = safeResult.transferOk;
+  for (const [safeAddr, ids] of safePositionsByAddress) {
+    if (ids.length === 0) continue;
+    const key = (safeAddr === safeFunder?.toLowerCase() ? safeKey : eoaKey) ?? eoaKey;
+    if (!key) {
+      console.error('No private key for Safe', safeAddr, '- POLYMARKET_PRIVATE_KEY or POLYGUN_CLAIM_PRIVATE_KEY required.');
+      flowResult.redeemFail += ids.length;
+      continue;
     }
+    if (!isValidWalletAddress(polygonWallet)) {
+      console.error('POLYGON_WALLET must be valid. USDC is sent there from Safe.');
+      flowResult.redeemFail += ids.length;
+      continue;
+    }
+    if (eoaIds.length > 0 || flowResult.redeemSuccess > 0 || flowResult.redeemFail > 0) {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    const safeAddrNorm = '0x' + safeAddr.replace(/^0x/, '');
+    console.log('Safe flow:', ids.length, 'position(s) from Safe', safeAddrNorm);
+    const safeResult = await runSafeFlow(ids, rpcUrl, key, safeAddrNorm, polygonWallet);
+    flowResult.redeemSuccess += safeResult.redeemSuccess;
+    flowResult.redeemFail += safeResult.redeemFail;
+    flowResult.needMorePol = flowResult.needMorePol || safeResult.needMorePol;
+    flowResult.transferOk = flowResult.transferOk || safeResult.transferOk;
   }
 
   reportAndLog(flowResult);
