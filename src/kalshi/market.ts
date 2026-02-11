@@ -11,6 +11,7 @@ const SERIES_TICKER: Record<Asset, string> = {
   BTC: 'KXBTC15M',
   ETH: 'KXETH15M',
   SOL: 'KXSOL15M',
+  XRP: 'KXXRP15M',
 };
 
 export interface KalshiMarket {
@@ -52,9 +53,13 @@ export async function listKalshiMarkets(
   return data.markets ?? [];
 }
 
+/** Tolerance for "exact" window match: 1 minute (handles API timestamp rounding). */
+const WINDOW_MATCH_TOLERANCE_MS = 60 * 1000;
+
 /**
  * Resolve the current 15m market ticker for an asset (expiration at current window end).
  * Uses expected_expiration_time (15m window) not expiration_time (contract expiry ~1 week out).
+ * Prefers an exact match to the current window end so we never use the next or previous window.
  */
 export async function getCurrentKalshiTicker(
   asset: Asset,
@@ -65,6 +70,7 @@ export async function getCurrentKalshiTicker(
   const markets = await listKalshiMarkets(series, baseUrl);
   const windowEnd = getCurrentWindowEnd(now);
   const targetMs = windowEnd.getTime();
+  let exact: KalshiMarketListItem | null = null;
   let best: KalshiMarketListItem | null = null;
   let bestDiff = Infinity;
   for (const m of markets) {
@@ -73,12 +79,17 @@ export async function getCurrentKalshiTicker(
     if (!exp) continue;
     const expMs = new Date(exp).getTime();
     const diff = Math.abs(expMs - targetMs);
+    if (diff <= WINDOW_MATCH_TOLERANCE_MS) {
+      exact = m;
+      break;
+    }
     if (diff < bestDiff) {
       bestDiff = diff;
       best = m;
     }
   }
-  return best?.ticker ?? null;
+  const chosen = exact ?? best;
+  return chosen?.ticker ?? null;
 }
 
 export async function getKalshiMarket(

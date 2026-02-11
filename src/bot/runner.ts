@@ -39,7 +39,7 @@ import {
   logPolySkip,
 } from '../db/supabase.js';
 
-const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL'];
+const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
 /** When false or unset, only trade on Kalshi (skip Polymarket). Set ENABLE_POLYMARKET=true to enable Poly. */
 function isPolymarketEnabled(): boolean {

@@ -5,7 +5,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { BOT_SPREAD_THRESHOLD_PCT, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 
-export type Asset = 'BTC' | 'ETH' | 'SOL';
+export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
 export type BotId = 'B1' | 'B2' | 'B3';
 export type Venue = 'kalshi' | 'polymarket';
 

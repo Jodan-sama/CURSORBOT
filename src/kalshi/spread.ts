@@ -12,12 +12,14 @@ const BINANCE_SYMBOL: Record<Asset, string> = {
   BTC: 'BTCUSDT',
   ETH: 'ETHUSDT',
   SOL: 'SOLUSDT',
+  XRP: 'XRPUSDT',
 };
 
 const COINGECKO_IDS: Record<Asset, string> = {
   BTC: 'bitcoin',
   ETH: 'ethereum',
   SOL: 'solana',
+  XRP: 'ripple',
 };
 
 /** Binance spot price only; throws on 451/geo-block or other errors. */
@@ -44,17 +46,18 @@ export async function fetchCoinGeckoPrice(asset: Asset): Promise<number> {
   return price;
 }
 
-/** CoinGecko prices for BTC, ETH, SOL in one request (avoids rate limit in scripts). */
+/** CoinGecko prices for BTC, ETH, SOL, XRP in one request (avoids rate limit in scripts). */
 export async function fetchCoinGeckoPricesAll(): Promise<Record<Asset, number>> {
-  const ids = ['bitcoin', 'ethereum', 'solana'].join(',');
+  const ids = ['bitcoin', 'ethereum', 'solana', 'ripple'].join(',');
   const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`CoinGecko price failed: ${res.status}`);
-  const data = (await res.json()) as { bitcoin?: { usd: number }; ethereum?: { usd: number }; solana?: { usd: number } };
+  const data = (await res.json()) as { bitcoin?: { usd: number }; ethereum?: { usd: number }; solana?: { usd: number }; ripple?: { usd: number } };
   return {
     BTC: data.bitcoin?.usd ?? NaN,
     ETH: data.ethereum?.usd ?? NaN,
     SOL: data.solana?.usd ?? NaN,
+    XRP: data.ripple?.usd ?? NaN,
   };
 }
 
@@ -103,9 +106,9 @@ export function strikeSpreadPctSigned(currentPrice: number, strike: number): num
  * is OUTSIDE this range (spread > threshold). E.g. 0.21% → enter at 0.23%, not at 0.12%.
  */
 export const BOT_SPREAD_THRESHOLD_PCT: Record<'B1' | 'B2' | 'B3', Record<Asset, number>> = {
-  B1: { BTC: 0.21, ETH: 0.23, SOL: 0.27 },
-  B2: { BTC: 0.57, ETH: 0.57, SOL: 0.62 },
-  B3: { BTC: 1.0, ETH: 1.0, SOL: 1.0 },
+  B1: { BTC: 0.21, ETH: 0.23, SOL: 0.27, XRP: 0.27 },
+  B2: { BTC: 0.57, ETH: 0.57, SOL: 0.62, XRP: 0.62 },
+  B3: { BTC: 1.0, ETH: 1.0, SOL: 1.0, XRP: 1.0 },
 };
 
 /** Matrix of spread thresholds (pct) per bot per asset. Used by runner when reading from DB. */

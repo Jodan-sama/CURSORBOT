@@ -12,7 +12,7 @@ create table if not exists bot_config (
   updated_at timestamptz not null default now()
 );
 
--- Per-bot, per-asset position size overrides (optional). Key: "B1"|"B2"|"B3", asset: "BTC"|"ETH"|"SOL"
+-- Per-bot, per-asset position size overrides (optional). Key: "B1"|"B2"|"B3", asset: "BTC"|"ETH"|"SOL"|"XRP"
 create table if not exists bot_position_sizes (
   bot text not null,
   asset text not null,
@@ -108,9 +108,9 @@ alter table bot_config add column if not exists b2_high_spread_block_min integer
 insert into bot_config (id, emergency_off) values ('default', false)
 on conflict (id) do nothing;
 
--- Seed spread thresholds (B1/B2/B3 x BTC/ETH/SOL)
+-- Seed spread thresholds (B1/B2/B3 x BTC/ETH/SOL/XRP). For existing DBs: add XRP if missing.
 insert into spread_thresholds (bot, asset, threshold_pct) values
-  ('B1', 'BTC', 0.21), ('B1', 'ETH', 0.23), ('B1', 'SOL', 0.27),
-  ('B2', 'BTC', 0.57), ('B2', 'ETH', 0.57), ('B2', 'SOL', 0.62),
-  ('B3', 'BTC', 1.0),  ('B3', 'ETH', 1.0),  ('B3', 'SOL', 1.0)
+  ('B1', 'BTC', 0.21), ('B1', 'ETH', 0.23), ('B1', 'SOL', 0.27), ('B1', 'XRP', 0.27),
+  ('B2', 'BTC', 0.57), ('B2', 'ETH', 0.57), ('B2', 'SOL', 0.62), ('B2', 'XRP', 0.62),
+  ('B3', 'BTC', 1.0),  ('B3', 'ETH', 1.0),  ('B3', 'SOL', 1.0),  ('B3', 'XRP', 1.0)
 on conflict (bot, asset) do nothing;

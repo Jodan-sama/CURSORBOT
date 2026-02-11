@@ -12,6 +12,7 @@ export const POLY_15M_SLUG_PREFIX: Record<Asset, string> = {
   BTC: 'btc-updown-15m-',
   ETH: 'eth-updown-15m-',
   SOL: 'sol-updown-15m-',
+  XRP: 'xrp-updown-15m-',
 };
 
 /**

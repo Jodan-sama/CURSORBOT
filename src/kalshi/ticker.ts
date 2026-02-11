@@ -10,12 +10,13 @@ const MONTH: Record<string, number> = {
   JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12,
 };
 
-export type Asset = 'BTC' | 'ETH' | 'SOL';
+export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
 
 const SERIES_ASSET: Record<string, Asset> = {
   KXBTC15M: 'BTC',
   KXETH15M: 'ETH',
   KXSOL15M: 'SOL',
+  KXXRP15M: 'XRP',
 };
 
 export interface ParsedTicker {
@@ -67,9 +68,9 @@ export function getAssetFromSeries(series: string): Asset | null {
   return SERIES_ASSET[series] ?? null;
 }
 
-/** Plausible strike range per asset (avoids bogus ticker/API values: e.g. 30 for BTC, 45/46 for SOL). */
-const STRIKE_MIN: Record<Asset, number> = { BTC: 1000, ETH: 100, SOL: 50 };
-const STRIKE_MAX: Record<Asset, number> = { BTC: 500_000, ETH: 100_000, SOL: 10_000 };
+/** Plausible strike range per asset (avoids bogus ticker/API values: e.g. 30 for BTC, 45/46 for SOL, XRP ~$0.50–$5). */
+const STRIKE_MIN: Record<Asset, number> = { BTC: 1000, ETH: 100, SOL: 50, XRP: 0.5 };
+const STRIKE_MAX: Record<Asset, number> = { BTC: 500_000, ETH: 100_000, SOL: 10_000, XRP: 20 };
 
 export function isReasonableStrike(asset: Asset, strike: number): boolean {
   const min = STRIKE_MIN[asset];

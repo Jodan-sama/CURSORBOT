@@ -15,7 +15,7 @@ function getSupabase(): SupabaseClient {
 }
 
 const BOTS = ['B1', 'B2', 'B3'] as const;
-const ASSETS = ['BTC', 'ETH', 'SOL'] as const;
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'] as const;
 
 const buttonStyle: React.CSSProperties = {
   padding: '8px 16px',
@@ -82,28 +82,11 @@ type PolySkipRow = {
   kalshi_placed: boolean;
 };
 
-/** Raw row from b4_paper_log (B4 46/50: profit / loss / no_fill per asset per cycle) */
-type B4LogRow = {
-  id: string;
-  window_unix: number;
-  asset: string | null;
-  event: string;
-  price: number | null;
-};
-/** One 15m cycle: window_unix → BTC, ETH, SOL result (dollars or null = no fill) */
-type B4Cycle = {
-  window_unix: number;
-  btc: number | null;
-  eth: number | null;
-  sol: number | null;
-};
-
 export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
-  const [b4Cycles, setB4Cycles] = useState<B4Cycle[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
   const [spreadRows, setSpreadRows] = useState<SpreadRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,7 +116,6 @@ export default function Dashboard() {
         { data: polySkipData },
         spreadResult,
         { data: botSizesData },
-        { data: b4Data },
         { data: claimLogData },
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
@@ -142,37 +124,20 @@ export default function Dashboard() {
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
-        getSupabase().from('b4_paper_log').select('window_unix, asset, event, price').in('event', ['profit', 'loss', 'no_fill']).order('window_unix', { ascending: false }).limit(120),
         getSupabase().from('polymarket_claim_log').select('message, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setErrors((errData ?? []) as ErrorLog[]);
       setPolySkips((polySkipData ?? []) as PolySkipRow[]);
-      const b4Rows = (b4Data ?? []) as B4LogRow[];
-      const cycleMap = new Map<number, { btc: number | null; eth: number | null; sol: number | null }>();
-      for (const r of b4Rows) {
-        const w = Number(r.window_unix);
-        if (!cycleMap.has(w)) cycleMap.set(w, { btc: null, eth: null, sol: null });
-        const row = cycleMap.get(w)!;
-        const val = r.event === 'no_fill' ? null : (r.price ?? null);
-        if (r.asset === 'BTC') row.btc = val;
-        else if (r.asset === 'ETH') row.eth = val;
-        else if (r.asset === 'SOL') row.sol = val;
-      }
       const claimRow = claimLogData as { message: string; created_at: string } | null;
       setClaimStatus(claimRow ? { message: claimRow.message, created_at: claimRow.created_at } : null);
-      const cycles: B4Cycle[] = Array.from(cycleMap.entries())
-        .sort((a, b) => b[0] - a[0])
-        .slice(0, 20)
-        .map(([window_unix, { btc, eth, sol }]) => ({ window_unix, btc, eth, sol }));
-      setB4Cycles(cycles);
       const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
       setSpreadRows(rows);
       const defaults: Record<string, string> = {
-        'B1-BTC': '0.21', 'B1-ETH': '0.23', 'B1-SOL': '0.27',
-        'B2-BTC': '0.57', 'B2-ETH': '0.57', 'B2-SOL': '0.62',
-        'B3-BTC': '1', 'B3-ETH': '1', 'B3-SOL': '1',
+        'B1-BTC': '0.21', 'B1-ETH': '0.23', 'B1-SOL': '0.27', 'B1-XRP': '0.27',
+        'B2-BTC': '0.57', 'B2-ETH': '0.57', 'B2-SOL': '0.62', 'B2-XRP': '0.62',
+        'B3-BTC': '1', 'B3-ETH': '1', 'B3-SOL': '1', 'B3-XRP': '1',
       };
       const edits: Record<string, string> = { ...defaults };
       rows.forEach((r) => {
@@ -596,41 +561,6 @@ export default function Dashboard() {
             'No claim runs yet.'
           )}
         </p>
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <h2 style={headingStyle}>B4 46/50 (last 20 cycles)</h2>
-        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>Per 15m cycle: buy 46¢, sell 50¢. Profit when sold at 50; loss when bought at 46 and never sold.</p>
-        {b4Cycles.length === 0 ? (
-          <p style={{ color: '#666' }}>No B4 cycles yet.</p>
-        ) : (
-          <table style={{ width: '100%', maxWidth: 560, borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Cycle (window end)</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>BTC</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>ETH</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>SOL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {b4Cycles.map((c) => (
-                <tr key={c.window_unix}>
-                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(new Date(c.window_unix * 1000).toISOString(), true)}</td>
-                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.btc != null ? (c.btc >= 0 ? 'green' : 'red') : undefined }}>
-                    {c.btc != null ? (c.btc >= 0 ? `+$${c.btc.toFixed(2)}` : `-$${Math.abs(c.btc).toFixed(2)}`) : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.eth != null ? (c.eth >= 0 ? 'green' : 'red') : undefined }}>
-                    {c.eth != null ? (c.eth >= 0 ? `+$${c.eth.toFixed(2)}` : `-$${Math.abs(c.eth).toFixed(2)}`) : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', color: c.sol != null ? (c.sol >= 0 ? 'green' : 'red') : undefined }}>
-                    {c.sol != null ? (c.sol >= 0 ? `+$${c.sol.toFixed(2)}` : `-$${Math.abs(c.sol).toFixed(2)}`) : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
       </section>
     </div>
   );
