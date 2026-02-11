@@ -46,7 +46,7 @@ type Config = {
   position_size_kalshi: number;
   position_size_polymarket: number;
   b3_block_min: number;
-  b2_order_block_min: number;
+  b2_high_spread_threshold_pct: number;
   b2_high_spread_block_min: number;
   updated_at: string;
 };
@@ -114,9 +114,9 @@ export default function Dashboard() {
     B3: { kalshi: '', poly: '' },
   });
   const [spreadEdits, setSpreadEdits] = useState<Record<string, string>>({});
-  const [delayEdits, setDelayEdits] = useState<{ b3: string; b2Order: string; b2HighSpread: string }>({
+  const [delayEdits, setDelayEdits] = useState<{ b3: string; b2SpreadThreshold: string; b2HighSpread: string }>({
     b3: '',
-    b2Order: '',
+    b2SpreadThreshold: '',
     b2HighSpread: '',
   });
   const [csvLoading, setCsvLoading] = useState(false);
@@ -196,7 +196,7 @@ export default function Dashboard() {
       const cfg = configData as Config | null;
       setDelayEdits({
         b3: cfg?.b3_block_min != null ? String(cfg.b3_block_min) : '60',
-        b2Order: cfg?.b2_order_block_min != null ? String(cfg.b2_order_block_min) : '15',
+        b2SpreadThreshold: cfg?.b2_high_spread_threshold_pct != null ? String(cfg.b2_high_spread_threshold_pct) : '0.55',
         b2HighSpread: cfg?.b2_high_spread_block_min != null ? String(cfg.b2_high_spread_block_min) : '15',
       });
     } catch (e) {
@@ -239,12 +239,12 @@ export default function Dashboard() {
     e.preventDefault();
     setSaving(true);
     const b3 = parseInt(delayEdits.b3, 10);
-    const b2Order = parseInt(delayEdits.b2Order, 10);
+    const b2SpreadThreshold = parseFloat(delayEdits.b2SpreadThreshold);
     const b2HighSpread = parseInt(delayEdits.b2HighSpread, 10);
-    if (!Number.isNaN(b3) && !Number.isNaN(b2Order) && !Number.isNaN(b2HighSpread) && b3 > 0 && b2Order > 0 && b2HighSpread > 0) {
+    if (!Number.isNaN(b3) && !Number.isNaN(b2SpreadThreshold) && !Number.isNaN(b2HighSpread) && b3 > 0 && b2SpreadThreshold > 0 && b2HighSpread > 0) {
       await getSupabase().from('bot_config').update({
         b3_block_min: b3,
-        b2_order_block_min: b2Order,
+        b2_high_spread_threshold_pct: b2SpreadThreshold,
         b2_high_spread_block_min: b2HighSpread,
       }).eq('id', 'default');
     }
@@ -393,21 +393,21 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>Delays (minutes)</h2>
+        <h2 style={headingStyle}>Delays & B2 spread threshold</h2>
         <p style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>
-          B3 placed → blocks B1/B2 for <strong>b3_block_min</strong>. B2 placed → blocks B1 for <strong>b2_order_block_min</strong>. B2 sees spread &gt;0.55% → blocks B1 for <strong>b2_high_spread_block_min</strong>.
+          B3 placed → blocks B1/B2 for <strong>b3_block_min</strong>. When B2 sees spread &gt; <strong>threshold</strong>%, B1 is blocked for <strong>b2_high_spread_block_min</strong>.
         </p>
         <form onSubmit={saveDelays}>
           <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
             <thead>
               <tr>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Delay</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Minutes</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Setting</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '6px 8px' }}>Value</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B3 blocks B1/B2</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B3 blocks B1/B2 (min)</td>
                 <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
                   <input
                     type="number"
@@ -419,19 +419,20 @@ export default function Dashboard() {
                 </td>
               </tr>
               <tr>
-                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B2 order → block B1</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B2 spread threshold (%)</td>
                 <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
                   <input
                     type="number"
-                    min="1"
-                    value={delayEdits.b2Order}
-                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b2Order: e.target.value }))}
+                    step="any"
+                    min="0"
+                    value={delayEdits.b2SpreadThreshold}
+                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b2SpreadThreshold: e.target.value }))}
                     style={{ width: 72, padding: '4px 6px' }}
                   />
                 </td>
               </tr>
               <tr>
-                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B2 spread &gt;0.55% → block B1</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B2 spread &gt; threshold → block B1 (min)</td>
                 <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
                   <input
                     type="number"
@@ -444,7 +445,7 @@ export default function Dashboard() {
               </tr>
             </tbody>
           </table>
-          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save delays</button>
+          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save</button>
         </form>
       </section>
 

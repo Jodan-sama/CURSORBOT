@@ -7,7 +7,7 @@ create table if not exists bot_config (
   position_size_kalshi numeric not null default 1,
   position_size_polymarket numeric not null default 5,
   b3_block_min integer not null default 60,
-  b2_order_block_min integer not null default 15,
+  b2_high_spread_threshold_pct numeric not null default 0.55,
   b2_high_spread_block_min integer not null default 15,
   updated_at timestamptz not null default now()
 );
@@ -99,9 +99,9 @@ create table if not exists spread_thresholds (
   primary key (bot, asset)
 );
 
--- For existing deployments: add delay columns if missing
+-- For existing deployments: add/update delay columns
 alter table bot_config add column if not exists b3_block_min integer not null default 60;
-alter table bot_config add column if not exists b2_order_block_min integer not null default 15;
+alter table bot_config add column if not exists b2_high_spread_threshold_pct numeric not null default 0.55;
 alter table bot_config add column if not exists b2_high_spread_block_min integer not null default 15;
 
 -- Seed config

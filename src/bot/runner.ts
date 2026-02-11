@@ -57,10 +57,7 @@ const MAX_SPREAD_PCT = 2;
 /** In-memory: already placed an order this window for (bot, asset). Cleared when window changes. */
 const enteredThisWindow = new Set<string>();
 
-/** In-memory: timestamp (ms) when B2 last placed for each asset. B1 skips that asset for b2OrderBlockMin. */
-const lastB2OrderByAsset = new Map<Asset, number>();
-
-/** In-memory: timestamp (ms) when B2 last saw spread > 0.55% for each asset. B1 skips for b2HighSpreadBlockMin. */
+/** In-memory: timestamp (ms) when B2 last saw spread > threshold for each asset. B1 skips for b2HighSpreadBlockMin. */
 const lastB2HighSpreadByAsset = new Map<Asset, number>();
 
 function windowKey(bot: string, asset: Asset, windowEndMs: number): string {
@@ -160,7 +157,6 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
   const minutesLeft = minutesLeftInWindow(now);
   const windowEndMs = getCurrentWindowEndMs();
   const [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
-  const b2OrderBlockMs = delays.b2OrderBlockMin * 60 * 1000;
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60 * 1000;
   const b3BlockMs = delays.b3BlockMin * 60 * 1000;
 
@@ -229,19 +225,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // --- B1: last 2.5 min, check every 5s, bid 90–96%, place 96% limit (or market in last 1 min) ---
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
-      const t = lastB2OrderByAsset.get(asset);
-      if (t != null && now.getTime() - t < b2OrderBlockMs) {
-        if (tickCount % 6 === 0) {
-          const minLeft = Math.ceil((b2OrderBlockMs - (now.getTime() - t)) / 60000);
-          console.log(`[tick] B1 ${asset} skip: ${delays.b2OrderBlockMin} min delay after B2 order (${minLeft} min left)`);
-        }
-        continue;
-      }
       const tHigh = lastB2HighSpreadByAsset.get(asset);
       if (tHigh != null && now.getTime() - tHigh < b2HighSpreadBlockMs) {
         if (tickCount % 6 === 0) {
           const minLeft = Math.ceil((b2HighSpreadBlockMs - (now.getTime() - tHigh)) / 60000);
-          console.log(`[tick] B1 ${asset} skip: ${delays.b2HighSpreadBlockMin} min delay after B2 saw spread >0.55% (${minLeft} min left)`);
+          console.log(`[tick] B1 ${asset} skip: ${delays.b2HighSpreadBlockMin} min delay after B2 saw spread >${delays.b2HighSpreadThresholdPct}% (${minLeft} min left)`);
         }
         continue;
       }
@@ -334,7 +322,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // B2 having already placed must NOT prevent B3 from running (B3 needs >1% spread). We skip B2 placement
     // but fall through so B3 can still place.
     if (isB2Window(minutesLeft)) {
-      if (spreadMagnitude > 0.55) lastB2HighSpreadByAsset.set(asset, now.getTime());
+      if (spreadMagnitude > delays.b2HighSpreadThresholdPct) lastB2HighSpreadByAsset.set(asset, now.getTime());
       const keyB2 = windowKey('B2', asset, windowEndMs);
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
       if (!enteredThisWindow.has(keyB2) && outsideB2) {
@@ -366,7 +354,6 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
       if (kalshiResult.orderId) {
         enteredThisWindow.add(keyB2);
-        lastB2OrderByAsset.set(asset, now.getTime());
         await logPosition({
           bot: 'B2',
           asset,
@@ -380,7 +367,6 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
       }
       if (polyResult.orderId) {
         enteredThisWindow.add(keyB2);
-        lastB2OrderByAsset.set(asset, now.getTime());
         const minNotionalSize = Math.ceil(1 / priceB2);
         const sizeB2 = sizePolyB2 * priceB2 >= 1 ? sizePolyB2 : Math.max(sizePolyB2, minNotionalSize);
         await logPosition({
