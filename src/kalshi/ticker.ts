@@ -68,14 +68,21 @@ export function getAssetFromSeries(series: string): Asset | null {
   return SERIES_ASSET[series] ?? null;
 }
 
-/** Plausible strike range per asset (avoids bogus ticker/API values: e.g. 30 for BTC, 45/46 for SOL, XRP ~$0.50–$5). */
-const STRIKE_MIN: Record<Asset, number> = { BTC: 1000, ETH: 100, SOL: 50, XRP: 0.5 };
-const STRIKE_MAX: Record<Asset, number> = { BTC: 500_000, ETH: 100_000, SOL: 10_000, XRP: 20 };
+/** Plausible strike range per asset (avoids bogus ticker/API: e.g. 30 for BTC, 45/46 for SOL, 15 for XRP when price ~$1.38). */
+const STRIKE_MIN: Record<Asset, number> = { BTC: 1000, ETH: 100, SOL: 50, XRP: 0.3 };
+const STRIKE_MAX: Record<Asset, number> = { BTC: 500_000, ETH: 100_000, SOL: 10_000, XRP: 5 };
 
 export function isReasonableStrike(asset: Asset, strike: number): boolean {
   const min = STRIKE_MIN[asset];
   const max = STRIKE_MAX[asset];
   return strike >= min && strike <= max;
+}
+
+/** Reject strike if it's >50% away from spot price (Kalshi sometimes returns wrong floor_strike). */
+export function strikeMatchesPrice(strike: number, spotPrice: number, maxPctDeviation = 0.5): boolean {
+  if (spotPrice <= 0 || Number.isNaN(spotPrice)) return false;
+  const ratio = strike / spotPrice;
+  return ratio >= 1 - maxPctDeviation && ratio <= 1 + maxPctDeviation;
 }
 
 export function getBinanceSymbol(asset: Asset): string {

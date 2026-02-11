@@ -15,7 +15,7 @@ import {
   isBlackoutWindow,
 } from '../clock.js';
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
-import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
+import { parseKalshiTicker, isReasonableStrike, strikeMatchesPrice } from '../kalshi/ticker.js';
 import { createKalshiOrder } from '../kalshi/orders.js';
 import { fetchAllPricesOnce, strikeSpreadPctSigned, isOutsideSpreadThreshold } from '../kalshi/spread.js';
 import { kalshiYesBidAsPercent } from '../kalshi/market.js';
@@ -220,11 +220,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
         const floorStrike = km.floor_strike ?? null;
         // Ticker is exact for the contract; floor_strike can be wrong (e.g. 15 for SOL). Prefer ticker when reasonable, else floor_strike. Same API load (we already fetch market for yes_bid).
         const useTickerStrike =
-          tickerStrike != null && isReasonableStrike(asset, tickerStrike);
+          tickerStrike != null &&
+          isReasonableStrike(asset, tickerStrike) &&
+          (!Number.isNaN(currentPrice) && currentPrice > 0 ? strikeMatchesPrice(tickerStrike, currentPrice) : true);
         const validFloor =
           floorStrike != null &&
           floorStrike !== 0 &&
-          isReasonableStrike(asset, floorStrike);
+          isReasonableStrike(asset, floorStrike) &&
+          (!Number.isNaN(currentPrice) && currentPrice > 0 ? strikeMatchesPrice(floorStrike, currentPrice) : true);
         kalshiStrike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
         kalshiBid = km.yes_bid ?? null;
         if (kalshiStrike != null && !Number.isNaN(currentPrice) && currentPrice > 0) {

@@ -3,7 +3,7 @@
  * Refreshes every 5 seconds. Run: npm run spreads  or  npx tsx src/scripts/current-kalshi-spreads.ts
  */
 import { getCurrentKalshiTicker, getKalshiMarket } from '../kalshi/market.js';
-import { parseKalshiTicker, isReasonableStrike } from '../kalshi/ticker.js';
+import { parseKalshiTicker, isReasonableStrike, strikeMatchesPrice } from '../kalshi/ticker.js';
 import { fetchBinancePriceOnly, fetchCoinGeckoPricesAll } from '../kalshi/spread.js';
 import { strikeSpreadPctSigned } from '../kalshi/spread.js';
 
@@ -66,22 +66,29 @@ async function runOne(): Promise<void> {
     const parsed = parseKalshiTicker(ticker);
     const tickerStrike = parsed?.strikeFromTicker;
     const floorStrike = market.floor_strike ?? null;
-    const useTickerStrike =
-      tickerStrike != null && isReasonableStrike(asset, tickerStrike);
-    const validFloor =
-      floorStrike != null &&
-      floorStrike !== 0 &&
-      isReasonableStrike(asset, floorStrike);
-    const strike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
-    if (strike == null) {
-      console.log(`${asset}   | (no strike)`);
-      continue;
-    }
 
     const binancePrice = await fetchBinanceOrNull(asset);
     const rawCg = coingeckoPrices?.[asset];
     const coingeckoPrice =
       rawCg != null && !Number.isNaN(rawCg) ? rawCg : null;
+    const spotPrice = binancePrice ?? coingeckoPrice ?? 0;
+
+    const useTickerStrike =
+      tickerStrike != null &&
+      isReasonableStrike(asset, tickerStrike) &&
+      (spotPrice > 0 ? strikeMatchesPrice(tickerStrike, spotPrice) : true);
+    const validFloor =
+      floorStrike != null &&
+      floorStrike !== 0 &&
+      isReasonableStrike(asset, floorStrike) &&
+      (spotPrice > 0 ? strikeMatchesPrice(floorStrike, spotPrice) : true);
+    const strike = (useTickerStrike ? tickerStrike : null) ?? (validFloor ? floorStrike : null);
+    if (strike == null) {
+      const bogus = tickerStrike ?? floorStrike;
+      const note = bogus != null && spotPrice > 0 ? ` (Kalshi strike ${bogus} rejected vs spot ${spotPrice.toFixed(2)})` : '';
+      console.log(`${asset}   | (no valid strike)${note}`);
+      continue;
+    }
 
     const binanceStr =
       binancePrice != null ? fmtPrice(binancePrice) : '        N/A';
