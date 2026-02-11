@@ -47,7 +47,7 @@ Add one line per variable. **No spaces around the `=`**. Replace the placeholder
 | `POLYMARKET_PRIVATE_KEY` | Your wallet’s private key (hex, with or without `0x`) | `POLYMARKET_PRIVATE_KEY=0xabc123...` or `POLYMARKET_PRIVATE_KEY=abc123...` |
 | `POLYMARKET_FUNDER` | The **same wallet’s address** (0x...) — used to find redeemable positions | `POLYMARKET_FUNDER=0x1234567890abcdef...` |
 | `POLYGON_RPC_URL` | A Polygon RPC URL (for sending the claim tx). Free option: [Alchemy](https://www.alchemy.com/) → create app → Polygon Mainnet → copy HTTPS URL | `POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY` |
-| `POLYMARKET_PROXY_WALLET` | **(Optional)** If positions don’t show up, your app (e.g. PolyGun) may hold them in a **proxy wallet**. Set this to that proxy address (0x...) so the script also looks up positions for it. You still need the **private key for the wallet that holds the tokens** (proxy or EOA) to redeem. | `POLYMARKET_PROXY_WALLET=0x...` |
+| `POLYMARKET_PROXY_WALLET` | **(Optional)** If positions don’t show up, your app (e.g. PolyGun) may hold them in a **proxy wallet**. Set this to that proxy **address** (0x + 40 hex chars, like 0x1234…abcd). Do **not** put a condition ID or private key here (those are 64 hex chars). The script looks up positions for it. You still need the **private key for the wallet that holds the tokens** (proxy or EOA) to redeem. | `POLYMARKET_PROXY_WALLET=0x...` |
 
 **Example block to paste (then replace the values):**
 
@@ -57,7 +57,7 @@ POLYMARKET_FUNDER=0xYourWalletAddress
 POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourAlchemyApiKey
 ```
 
-- **POL** (MATIC): The wallet needs a small amount of POL on Polygon to pay gas. Send POL to `POLYMARKET_FUNDER` if needed.
+- **POL (MATIC) for gas:** The wallet that **signs** the redeem tx (the one whose private key is in `POLYMARKET_PRIVATE_KEY`) must have **POL on Polygon** to pay gas. If you see `insufficient funds for intrinsic transaction cost` / `balance 0`, that wallet has no POL. Send **0.1–0.5 POL** (or a few dollars’ worth) to that wallet’s address on the **Polygon** network. Each redeem costs only a few cents of gas.
 - **Proxy (optional):** If the droplet is in a region that blocks Polymarket’s API, add:
   ```env
   HTTPS_PROXY=http://your-proxy:port
@@ -115,3 +115,5 @@ The script uses `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, and `POLYGON_RPC_
 - **Fallback in script:** The script now tries two ways to find redeemable positions: (1) API with `redeemable=true`, then (2) fetch all positions for your address and filter for `redeemable` in code. Redeploy and run again; you may see “Found N redeemable position(s) via fallback.”
 
 - **Proxy wallet (e.g. PolyGun):** If you trade via PolyGun or another app, your positions may be under a **proxy wallet** address, not your main wallet. Add `POLYMARKET_PROXY_WALLET=0xYourProxyAddress` to `.env`. Find the proxy in your app (e.g. profile, settings, or “wallet” / “proxy” in the UI). The script will look up positions for both your main address and the proxy. **Redeeming** still requires the private key for whichever wallet actually holds the tokens (that wallet signs the redeem tx).
+
+- **"insufficient funds for intrinsic transaction cost" / "balance 0":** The wallet that signs (the one whose key is in `POLYMARKET_PRIVATE_KEY`) has **no POL (MATIC)** on Polygon. Send **0.1–0.5 POL** to that wallet’s address on **Polygon**; then run the script again.

@@ -19,6 +19,12 @@ const DATA_API_BASE = 'https://data-api.polymarket.com';
 const PARENT_COLLECTION_NULL = '0x' + '0'.repeat(64);
 const INDEX_SETS_BINARY = [1, 2]; // Yes | No
 
+/** Ethereum address: 0x + 40 hex chars (20 bytes). Data API requires this for the user param. */
+function isValidWalletAddress(s: string): boolean {
+  const t = s?.trim();
+  return !!t && /^0x[a-fA-F0-9]{40}$/.test(t);
+}
+
 function getConditionIdsFromEnvOrArgs(): string[] {
   const envIds = process.env.CONDITION_IDS?.trim();
   if (envIds) return envIds.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
@@ -83,8 +89,17 @@ async function main() {
   if (conditionIds.length === 0 && funder) {
     try {
       const proxy = process.env.POLYMARKET_PROXY_WALLET?.trim();
-      const addressesToTry = proxy ? [funder, proxy] : [funder];
-      for (const addr of addressesToTry) {
+      const addressesToTry: string[] = [funder];
+      if (proxy && isValidWalletAddress(proxy)) addressesToTry.push(proxy);
+      else if (proxy) {
+        console.warn('POLYMARKET_PROXY_WALLET ignored: must be a wallet address (0x + 40 hex chars), not a condition ID or key.');
+      }
+      const validAddresses = addressesToTry.filter(isValidWalletAddress);
+      if (validAddresses.length === 0) {
+        console.error('POLYMARKET_FUNDER must be a wallet address (0x + 40 hex chars).');
+        process.exit(1);
+      }
+      for (const addr of validAddresses) {
         console.log('Discovering redeemable positions for', addr, '...');
         const ids = await fetchRedeemableConditionIds(addr);
         if (ids.length > 0) {
@@ -105,6 +120,13 @@ async function main() {
 
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const wallet = new ethers.Wallet(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`, provider);
+  const signerAddress = wallet.address;
+  console.log('Signing with wallet:', signerAddress, '- this address must have POL on Polygon for gas.');
+  const balanceWei = await provider.getBalance(signerAddress);
+  if (balanceWei === 0n) {
+    console.error('This wallet has 0 POL on Polygon. Send POL to', signerAddress, 'then run again.');
+    process.exit(1);
+  }
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
 
   for (const rawId of conditionIds) {
