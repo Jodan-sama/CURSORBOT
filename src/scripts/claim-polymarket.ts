@@ -170,12 +170,16 @@ function encodeTransfer(to: string, amount: bigint): string {
 
 type FlowResult = { needMorePol: boolean; redeemSuccess: number; redeemFail: number; transferOk: boolean };
 
+/**
+ * @param transferDestination If set, transfer Safe's USDC here after redeeming. If null, leave USDC in Safe
+ * (e.g. polymarket proxy – keep funds available on Polymarket).
+ */
 async function runSafeFlow(
   conditionIds: string[],
   rpcUrl: string,
   privateKey: string,
   safeAddress: string,
-  polygonWallet: string
+  transferDestination: string | null
 ): Promise<FlowResult> {
   const result: FlowResult = { needMorePol: false, redeemSuccess: 0, redeemFail: 0, transferOk: false };
   const pk = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
@@ -190,7 +194,8 @@ async function runSafeFlow(
   if (!signerAddress) {
     throw new Error('Safe init: no signer address. POLYMARKET_PRIVATE_KEY must be an owner of the Safe.');
   }
-  console.log('Safe flow: Safe', safeAddress, '| signer (owner)', signerAddress, '| USDC →', polygonWallet);
+  const destMsg = transferDestination ? `USDC → ${transferDestination}` : 'USDC stays in Safe (Polymarket)';
+  console.log('Safe flow: Safe', safeAddress, '| signer (owner)', signerAddress, '|', destMsg);
 
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const wallet = new ethers.Wallet(pk, provider);
@@ -238,13 +243,19 @@ async function runSafeFlow(
 
   await new Promise((r) => setTimeout(r, 3000));
 
+  if (!transferDestination) {
+    result.transferOk = true;
+    console.log('USDC left in Safe (Polymarket proxy – ready to trade).');
+    return result;
+  }
+
   const usdc = new ethers.Contract(USDC_POLYGON, ERC20_ABI, provider);
   const balance = await usdc.balanceOf(safeAddress);
   if (balance === 0n) {
     console.log('No USDC balance in Safe to transfer.');
     return result;
   }
-  console.log('Transferring', ethers.formatUnits(balance, 6), 'USDC to', polygonWallet);
+  console.log('Transferring', ethers.formatUnits(balance, 6), 'USDC to', transferDestination);
 
   try {
     const freshKit = await (Safe as any).init({
@@ -255,7 +266,7 @@ async function runSafeFlow(
     const transferData: MetaTransactionData = {
       to: USDC_POLYGON,
       value: '0',
-      data: encodeTransfer(polygonWallet, balance),
+      data: encodeTransfer(transferDestination, balance),
       operation: OperationType.Call,
     };
     let transferTx = await freshKit.createTransaction({
@@ -270,7 +281,7 @@ async function runSafeFlow(
       return result;
     }
     result.transferOk = true;
-    console.log('USDC transferred to', polygonWallet);
+    console.log('USDC transferred to', transferDestination);
   } catch (e) {
     if (isInsufficientGasError(e)) result.needMorePol = true;
     console.error('Transfer failed:', e);
@@ -426,8 +437,10 @@ async function main() {
       flowResult.redeemFail += ids.length;
       continue;
     }
-    if (!isValidWalletAddress(polygonWallet)) {
-      console.error('POLYGON_WALLET must be valid. USDC is sent there from Safe.');
+    const isPolygunSafe = safeAddr === safeFunder?.toLowerCase();
+    const transferDest = isPolygunSafe && isValidWalletAddress(polygonWallet) ? polygonWallet : null;
+    if (isPolygunSafe && !isValidWalletAddress(polygonWallet)) {
+      console.error('POLYGON_WALLET must be valid. USDC from PolyGun Safe is sent there.');
       flowResult.redeemFail += ids.length;
       continue;
     }
@@ -436,7 +449,7 @@ async function main() {
     }
     const safeAddrNorm = '0x' + safeAddr.replace(/^0x/, '');
     console.log('Safe flow:', ids.length, 'position(s) from Safe', safeAddrNorm);
-    const safeResult = await runSafeFlow(ids, rpcUrl, key, safeAddrNorm, polygonWallet);
+    const safeResult = await runSafeFlow(ids, rpcUrl, key, safeAddrNorm, transferDest);
     flowResult.redeemSuccess += safeResult.redeemSuccess;
     flowResult.redeemFail += safeResult.redeemFail;
     flowResult.needMorePol = flowResult.needMorePol || safeResult.needMorePol;

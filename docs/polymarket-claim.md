@@ -48,7 +48,7 @@ Add one line per variable. **No spaces around the `=`**. Replace the placeholder
 | `POLYMARKET_FUNDER` | The **same wallet’s address** (0x...) — used to find redeemable positions | `POLYMARKET_FUNDER=0x1234567890abcdef...` |
 | `POLYGON_RPC_URL` | A Polygon RPC URL (for sending the claim tx). Free option: [Alchemy](https://www.alchemy.com/) → create app → Polygon Mainnet → copy HTTPS URL | `POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY` |
 | `POLYMARKET_SAFE_ADDRESS` | **(PolyGun)** Polymarket Wallet (Safe) address that holds positions. When set, script redeems via Safe and sends USDC to `POLYGON_WALLET`. | `POLYMARKET_SAFE_ADDRESS=0xBDD5AD35435bAb6b3AdF6A8E7e639D0393263932` |
-| `POLYGON_WALLET` | **(PolyGun)** Where claimed USDC is sent (PolyGun Polygon wallet). Default `0x6370422C2DA0cb4b0fE095DDC1dc97d87Cd5223b`. | `POLYGON_WALLET=0x6370422C2DA0cb4b0fE095DDC1dc97d87Cd5223b` |
+| `POLYGON_WALLET` | **(PolyGun only)** Where claimed USDC from the **PolyGun Safe** is sent. **Polymarket proxy** claims stay in the Safe (ready to trade on Polymarket). Default `0x6370422C2DA0cb4b0fE095DDC1dc97d87Cd5223b`. | `POLYGON_WALLET=0x6370422C2DA0cb4b0fE095DDC1dc97d87Cd5223b` |
 | `POLYMARKET_PROXY_WALLET` | **(Optional)** If positions don’t show up, your app (e.g. PolyGun) may hold them in a **proxy wallet**. Set this to that proxy **address** (0x + 40 hex chars, like 0x1234…abcd). Do **not** put a condition ID or private key here (those are 64 hex chars). The script looks up positions for it. You still need the **private key for the wallet that holds the tokens** (proxy or EOA) to redeem. | `POLYMARKET_PROXY_WALLET=0x...` |
 
 **Example block to paste (then replace the values):**
@@ -61,7 +61,13 @@ POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourAlchemyApiKey
 
 **PolyGun (Safe) — claim into your Polygon wallet:** Set `POLYMARKET_SAFE_ADDRESS` to your Polymarket Wallet (e.g. `0xBDD5AD35435bAb6b3AdF6A8E7e639D0393263932`) and `POLYGON_WALLET` to where USDC should go (e.g. `0x6370422C2DA0cb4b0fE095DDC1dc97d87Cd5223b`). Use the **private key of an owner** of that Safe for `POLYMARKET_PRIVATE_KEY`. The script will redeem via the Safe and transfer claimed USDC to `POLYGON_WALLET`.
 
-**Two wallets in one .env:** If you have both a main Polymarket wallet (for the bot) and a PolyGun wallet (for claiming), only the **last** value of each variable is used. To keep both, use the **PolyGun-only** names for the claim script; it checks these first and falls back to the shared names:
+**Polymarket proxy vs PolyGun:** Positions in your **Polymarket proxy** (e.g. `0xbafbed80...` from polymarket.com) stay in that Safe after redeem – USDC remains available to trade. Positions in the **PolyGun Safe** (e.g. `0xbdd5ad...`) are transferred to `POLYGON_WALLET` after redeem.
+
+**Two wallets (EOA + Safe):** The script discovers and claims from **both** your main Polymarket proxy and the PolyGun Safe. Set both:
+- `POLYMARKET_FUNDER=0xbafbed80...` and `POLYMARKET_PRIVATE_KEY=...` for the EOA
+- `POLYGUN_CLAIM_FUNDER=0xbdd5ad...` and `POLYGUN_CLAIM_PRIVATE_KEY=...` for the Safe
+
+**Two wallets in one .env:** If you have both a main Polymarket wallet (for the bot) and a PolyGun wallet (for claiming), use the **PolyGun-only** names for the Safe; the script checks these and also uses POLYMARKET_* for the EOA:
 
 | Use for claim script only | Same as |
 |---------------------------|---------|
@@ -104,6 +110,16 @@ If asked, choose `nano`. Add this **single line** at the end of the file (replac
 Save (`Ctrl+O`, `Enter`) and exit (`Ctrl+X`).  
 Cron will run the script at **:05, :20, :35, :50** every hour (~ every 15 minutes).
 
+**Deploy updates:** After pulling or copying new code, run `npm run build` on the droplet so `claim-polymarket.js` and `check-safe-balance.js` are compiled.
+
+**Optional:** To log each run (date, time, status only), use:
+
+```
+5,20,35,50 * * * * cd /root/cursorbot && mkdir -p logs && /usr/bin/node dist/scripts/claim-polymarket.js >> logs/claim-polymarket.log 2>&1
+```
+
+The script also writes a **one-line summary** (date, time, message) to `logs/claim-polymarket.log` and to Supabase `polymarket_claim_log`. The dashboard shows the latest status: **ALL ITEMS CLAIMED**, **NEED MORE POL**, or **CLAIM INCOMPLETE**.
+
 ### 7. Test once by hand
 
 ```bash
@@ -111,6 +127,16 @@ cd /root/cursorbot && node dist/scripts/claim-polymarket.js
 ```
 
 You should see either “Discovering redeemable positions…” and then “Redeemed: …” for each, or “No condition IDs to redeem…” if there’s nothing to claim yet.
+
+At the end you'll see **ALL ITEMS CLAIMED**, **NEED MORE POL**, or **CLAIM INCOMPLETE**.
+
+### 8. Check Safe USDC balance
+
+```bash
+cd /root/cursorbot && npm run check-safe-balance
+```
+
+Prints the Safe's USDC balance in human form (e.g. `0.265537`).
 
 ---
 
@@ -131,5 +157,7 @@ The script uses `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, and `POLYGON_RPC_
 - **Proxy wallet (e.g. PolyGun):** If you trade via PolyGun or another app, your positions may be under a **proxy wallet** address, not your main wallet. Add `POLYMARKET_PROXY_WALLET=0xYourProxyAddress` to `.env`. Find the proxy in your app (e.g. profile, settings, or “wallet” / “proxy” in the UI). The script will look up positions for both your main address and the proxy. **Redeeming** still requires the private key for whichever wallet actually holds the tokens (that wallet signs the redeem tx).
 
 - **"insufficient funds for intrinsic transaction cost" / "balance 0":** The wallet that signs (the one whose key is in `POLYMARKET_PRIVATE_KEY`) has **no POL (MATIC)** on Polygon. Send **0.1–0.5 POL** to that wallet’s address on **Polygon**; then run the script again.
+
+- **"insufficient funds for gas * price + value" (ran out mid-run):** The signer ran out of POL partway through. Each redeem uses ~0.006–0.01 POL; 15 redeems + transfer needs ~0.15–0.2 POL. Top up the signer with **0.2–0.5 POL** and run `claim-poly` again.
 
 - **Tx succeeds but 0 USDC / positions still in PolyGun:** The script calls `redeemPositions` from the **EOA** in `POLYMARKET_PRIVATE_KEY` (e.g. 0xd61800...). The CTF burns tokens from **msg.sender** and credits USDC to msg.sender. Your PolyGun **Polymarket Wallet** (0xbdd5ad...) is a **Gnosis Safe (smart contract)** — the positions are held by that Safe, not your EOA. So redeeming from your EOA burns 0 tokens and returns 0 USDC. A successful PolyGun claim uses **Safe.execTransaction** so the Safe calls the CTF; tokens are burned from the Safe and USDC goes to the Safe. To claim from this script you need either: (1) positions in an EOA you control and use that key here, or (2) Safe support (build/sign a Safe tx that tells the Safe to call `redeemPositions`; you must be an owner of that Safe). Until then, use **PolyGun's Claim** for positions in the Polymarket Wallet.
