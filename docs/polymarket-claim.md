@@ -9,25 +9,98 @@ Polymarket’s docs: [Redeeming Tokens](https://docs.polymarket.com/developers/C
 - Once the condition has **payouts reported** (via UMA/CTF adapter), holders of the winning outcome can call **`redeemPositions`** on the CTF contract.
 - That **burns** the winning conditional tokens and credits the underlying collateral (USDC) to your wallet.
 
-## Contract parameters
+---
 
-`redeemPositions` takes:
+## Setup: .env and cron (step-by-step)
 
-- **collateralToken**: USDC address on Polygon.
-- **parentCollectionId**: `bytes32` – null for Polymarket’s binary markets.
-- **conditionId**: The market’s condition ID (we have this from Gamma, e.g. in `positions.ticker_or_slug` or from the market’s `conditionId`).
-- **indexSets**: For binary (Yes/No), typically `[1, 2]` (both outcome sets) – exact values depend on the CTF encoding; see [Deployment and Additional Information](https://docs.polymarket.com/developers/CTF/deployment-resources).
+Do this on the **droplet** (the server where CURSORBOT runs). You need your **wallet address** and **private key** (e.g. from Polygun). **Never paste your private key in chat or commit it to git** — only put it in `.env` on the server.
 
-## In-repo claim script (auto-discovery)
+### 1. SSH into the droplet
 
-The script calls the CTF contract’s `redeemPositions` using `POLYMARKET_PRIVATE_KEY` and `POLYGON_RPC_URL`. **With no arguments and no `CONDITION_IDS`, it automatically discovers redeemable positions** for your wallet via the Polymarket Data API (`user=POLYMARKET_FUNDER`) and redeems each one.
-
-**Cron on the droplet** (already configured) runs at **:05, :20, :35, :50** every hour:
+From your Mac (in Terminal):
 
 ```bash
+ssh root@YOUR_DROPLET_IP
+```
+
+Use the same IP you use for the main bot (e.g. from `docs/CHECK-BOT-AND-LOGS.md`). If you use a key file:
+
+```bash
+ssh -i /path/to/your/key root@YOUR_DROPLET_IP
+```
+
+### 2. Open the .env file
+
+```bash
+cd /root/cursorbot
+nano .env
+```
+
+If `.env` doesn’t exist yet, the same command will create it when you save.
+
+### 3. Add these line items
+
+Add one line per variable. **No spaces around the `=`**. Replace the placeholder values with your real ones.
+
+| Variable | What to put | Example (fake) |
+|----------|-------------|-----------------|
+| `POLYMARKET_PRIVATE_KEY` | Your wallet’s private key (hex, with or without `0x`) | `POLYMARKET_PRIVATE_KEY=0xabc123...` or `POLYMARKET_PRIVATE_KEY=abc123...` |
+| `POLYMARKET_FUNDER` | The **same wallet’s address** (0x...) — used to find redeemable positions | `POLYMARKET_FUNDER=0x1234567890abcdef...` |
+| `POLYGON_RPC_URL` | A Polygon RPC URL (for sending the claim tx). Free option: [Alchemy](https://www.alchemy.com/) → create app → Polygon Mainnet → copy HTTPS URL | `POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY` |
+
+**Example block to paste (then replace the values):**
+
+```env
+POLYMARKET_PRIVATE_KEY=0xYourPrivateKeyHexNoSpaces
+POLYMARKET_FUNDER=0xYourWalletAddress
+POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourAlchemyApiKey
+```
+
+- **POL** (MATIC): The wallet needs a small amount of POL on Polygon to pay gas. Send POL to `POLYMARKET_FUNDER` if needed.
+- **Proxy (optional):** If the droplet is in a region that blocks Polymarket’s API, add:
+  ```env
+  HTTPS_PROXY=http://your-proxy:port
+  ```
+
+### 4. Save and exit nano
+
+- **Save:** `Ctrl+O`, then `Enter`.
+- **Exit:** `Ctrl+X`.
+
+### 5. Build the project (so the claim script is compiled)
+
+```bash
+cd /root/cursorbot
+npm run build
+```
+
+### 6. Install the cron job (runs every ~15 minutes)
+
+```bash
+crontab -e
+```
+
+If asked, choose `nano`. Add this **single line** at the end of the file (replace with your path if different):
+
+```
 5,20,35,50 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js
 ```
 
-No need to set `CONDITION_IDS`; the script fetches redeemable positions and redeems them. Uses `HTTP_PROXY`/`HTTPS_PROXY` if set. You need a small amount of **POL** on Polygon to pay gas.
+Save (`Ctrl+O`, `Enter`) and exit (`Ctrl+X`).  
+Cron will run the script at **:05, :20, :35, :50** every hour (~ every 15 minutes).
+
+### 7. Test once by hand
+
+```bash
+cd /root/cursorbot && node dist/scripts/claim-polymarket.js
+```
+
+You should see either “Discovering redeemable positions…” and then “Redeemed: …” for each, or “No condition IDs to redeem…” if there’s nothing to claim yet.
+
+---
+
+## In-repo claim script (auto-discovery)
+
+The script uses `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, and `POLYGON_RPC_URL` from `.env`. With no arguments and no `CONDITION_IDS`, it **automatically discovers redeemable positions** for that wallet via the Polymarket Data API and redeems each one.
 
 **Optional:** To redeem only specific markets, set `CONDITION_IDS=id1,id2` in `.env` or pass condition IDs as arguments. **Manual:** Claim from the Polymarket UI (portfolio → resolved positions → Claim).
