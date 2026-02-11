@@ -81,6 +81,20 @@ function polyErrorReason(polyError: unknown): string {
   return msg.length > 100 ? `${msg.slice(0, 100)}…` : msg;
 }
 
+/** Extract Kalshi error body from "Kalshi POST ...: 400 {...}" for richer context. */
+function kalshiErrorContext(err: unknown): Record<string, unknown> {
+  const msg = err instanceof Error ? err.message : String(err);
+  const jsonMatch = msg.match(/: 4\d\d\s+(\{.+\})$/);
+  if (!jsonMatch) return {};
+  try {
+    const body = JSON.parse(jsonMatch[1]) as { error?: { code?: string; message?: string } };
+    if (body.error) return { kalshi_code: body.error.code, kalshi_msg: body.error.message };
+  } catch {
+    /* ignore parse errors */
+  }
+  return {};
+}
+
 async function tryPlaceKalshi(
   ticker: string,
   asset: Asset,
@@ -160,7 +174,10 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60 * 1000;
   const b3BlockMs = delays.b3BlockMin * 60 * 1000;
 
+  const ASSET_DELAY_MS = 400; // Space out Kalshi+Poly calls across assets to reduce burst rate limits
+
   for (const asset of ASSETS) {
+    if (asset !== ASSETS[0]) await new Promise((r) => setTimeout(r, ASSET_DELAY_MS));
     if (await isAssetBlocked(asset)) {
       if (tickCount % 12 === 0) console.log(`[tick] ${asset} skipped (B3 cooldown, blocked 1h)`);
       continue;
@@ -266,7 +283,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
       // Run Kalshi first, then Poly. Poly's withPolyProxy sets global undici/axios—running in parallel would proxy Kalshi's fetch and can break it.
       const kalshiResult = await placeB1Kalshi().catch(async (e) => {
-        await logError(e, { bot: 'B1', asset, venue: 'kalshi' });
+        await logError(e, { bot: 'B1', asset, venue: 'kalshi', ...kalshiErrorContext(e) });
         return { orderId: undefined as string | undefined };
       });
       const polyResult = await placeB1Poly().catch(async (e) => {
@@ -343,7 +360,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
       // Run Kalshi first, then Poly—avoid Poly proxy affecting Kalshi's fetch (see B1 comment).
       const kalshiResult = await placeB2Kalshi().catch(async (e) => {
-        await logError(e, { bot: 'B2', asset, venue: 'kalshi' });
+        await logError(e, { bot: 'B2', asset, venue: 'kalshi', ...kalshiErrorContext(e) });
         return { orderId: undefined as string | undefined };
       });
       const polyResult = await placeB2Poly().catch(async (e) => {
@@ -426,7 +443,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
 
       // Run Kalshi first, then Poly—avoid Poly proxy affecting Kalshi's fetch (see B1 comment).
       const kalshiResult = await placeB3Kalshi().catch(async (e) => {
-        await logError(e, { bot: 'B3', asset, venue: 'kalshi' });
+        await logError(e, { bot: 'B3', asset, venue: 'kalshi', ...kalshiErrorContext(e) });
         return { orderId: undefined as string | undefined };
       });
       const polyResult = await placeB3Poly().catch(async (e) => {

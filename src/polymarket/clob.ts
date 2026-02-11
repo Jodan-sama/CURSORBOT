@@ -178,9 +178,20 @@ export function createPolyClobClient(config: PolyClobConfig): ClobClient {
   );
 }
 
+/** Polymarket order response (API may use orderId or orderID). */
+type PolyOrderResponse = {
+  success?: boolean;
+  errorMsg?: string;
+  orderId?: string;
+  orderID?: string;
+  status?: string;
+  [k: string]: unknown;
+};
+
 /**
  * Place a GTC limit order on Polymarket (BUY YES at given price).
  * Size is in number (e.g. 5); CLOB accepts number, min often 5.
+ * Throws if success=false or errorMsg is set; handles both orderId/orderID casing.
  */
 export async function createAndPostPolyOrder(
   client: ClobClient,
@@ -198,17 +209,33 @@ export async function createAndPostPolyOrder(
     size: params.size,
     side: Side.BUY,
   };
-  const result = await client.createAndPostOrder(
+  const result = (await client.createAndPostOrder(
     userOrder,
     options,
     OrderType.GTC
-  );
-  return result as { orderID?: string; status?: string; [k: string]: unknown };
+  )) as PolyOrderResponse;
+
+  const orderId = result.orderID ?? result.orderId;
+  const success = result.success;
+  const errorMsg = result.errorMsg;
+
+  if (success === false || (typeof errorMsg === 'string' && errorMsg.length > 0)) {
+    throw new Error(
+      `Polymarket order rejected: success=${success} errorMsg=${errorMsg ?? 'none'}`
+    );
+  }
+  if (!orderId) {
+    throw new Error(
+      `Polymarket order: no orderId in response (success=${success} errorMsg=${errorMsg ?? ''})`
+    );
+  }
+  return { ...result, orderID: orderId };
 }
 
 /**
  * Build order params from a parsed Gamma market.
  * side: 'yes' = first outcome (Up), 'no' = second outcome (Down). We only buy the winning side.
+ * Enforces orderMinSize from market (CLOB rejects INVALID_ORDER_MIN_SIZE if below).
  */
 export function orderParamsFromParsedMarket(
   parsed: ParsedPolyMarket,
@@ -218,10 +245,15 @@ export function orderParamsFromParsedMarket(
 ): CreatePolyOrderParams {
   const tokenId = side === 'yes' ? parsed.clobTokenIds[0] : parsed.clobTokenIds[1];
   if (!tokenId) throw new Error(`Market has no ${side.toUpperCase()} token`);
+  const minSize = parsed.orderMinSize ?? 1;
+  const effectiveSize = Math.max(size, minSize);
+  if (effectiveSize !== size) {
+    console.log(`[Poly] size ${size} → ${effectiveSize} (market orderMinSize=${minSize})`);
+  }
   return {
     tokenId,
     price,
-    size,
+    size: effectiveSize,
     tickSize: toTickSize(parsed.orderPriceMinTickSize),
     negRisk: parsed.negRisk,
   };
