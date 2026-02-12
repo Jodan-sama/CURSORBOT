@@ -168,6 +168,20 @@ export async function hasB1PositionThisWindow(asset: Asset, windowStartMs: numbe
   return data != null;
 }
 
+/** True if at least one Kalshi position was logged in the last N hours. */
+export async function hasKalshiPositionInLastHours(hours: number): Promise<boolean> {
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const { data, error } = await getDb()
+    .from('positions')
+    .select('id')
+    .eq('venue', 'kalshi')
+    .gte('entered_at', since)
+    .limit(1)
+    .maybeSingle();
+  if (error) return true; // on DB error, assume we have activity (don't restart)
+  return data != null;
+}
+
 /** True if this asset is currently blocked (B3 filled recently). */
 export async function isAssetBlocked(asset: Asset): Promise<boolean> {
   const now = new Date().toISOString();
