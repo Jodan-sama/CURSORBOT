@@ -12,6 +12,8 @@ Environment=ENABLE_POLYMARKET=true
 ExecStart=/usr/bin/node /root/cursorbot/dist/bot/run.js
 Restart=on-failure
 RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 
