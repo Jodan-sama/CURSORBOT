@@ -153,6 +153,21 @@ export async function getSpreadThresholds(): Promise<SpreadThresholdsMatrix> {
   return matrix;
 }
 
+/** True if B1 already placed an order for this asset in the current 15m window (persists across restarts). */
+export async function hasB1PositionThisWindow(asset: Asset, windowStartMs: number): Promise<boolean> {
+  const windowStart = new Date(windowStartMs).toISOString();
+  const { data, error } = await getDb()
+    .from('positions')
+    .select('id')
+    .eq('bot', 'B1')
+    .eq('asset', asset)
+    .gte('entered_at', windowStart)
+    .limit(1)
+    .maybeSingle();
+  if (error) return false; // on DB error, allow placement (don't block on bad query)
+  return data != null;
+}
+
 /** True if this asset is currently blocked (B3 filled recently). */
 export async function isAssetBlocked(asset: Asset): Promise<boolean> {
   const now = new Date().toISOString();

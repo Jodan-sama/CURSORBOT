@@ -36,6 +36,7 @@ import {
   logPosition,
   setAssetBlock,
   isAssetBlocked,
+  hasB1PositionThisWindow,
   logError,
   logPolySkip,
 } from '../db/supabase.js';
@@ -263,6 +264,12 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). ---
     if (isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
+      const windowStartMs = windowEndMs - 15 * 60 * 1000;
+      // Persisted check: prevents duplicate orders after restart (enteredThisWindow is in-memory only)
+      if (await hasB1PositionThisWindow(asset, windowStartMs)) {
+        enteredThisWindow.add(key);
+        continue;
+      }
       const tHigh = lastB2HighSpreadByAsset.get(asset);
       if (tHigh != null && now.getTime() - tHigh < b2HighSpreadBlockMs) {
         if (tickCount % 6 === 0) {

@@ -91,6 +91,7 @@ const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
  */
 export async function fetchAllPricesOnce(): Promise<Record<Asset, number>> {
   const byAsset: Partial<Record<Asset, number>> = {};
+  const binanceFailed: Asset[] = [];
   for (const a of ASSETS) {
     try {
       const price = await fetchBinancePriceOnly(a);
@@ -101,20 +102,26 @@ export async function fetchAllPricesOnce(): Promise<Record<Asset, number>> {
         const price = await fetchBinancePriceOnly(a);
         if (!Number.isNaN(price)) byAsset[a] = price;
       } catch {
-        /* fall through to CoinGecko batch */
+        binanceFailed.push(a);
       }
     }
   }
   if (Object.keys(byAsset).length === ASSETS.length) {
     return byAsset as Record<Asset, number>;
   }
-  const cg = await fetchCoinGeckoPricesAll();
-  return {
-    BTC: byAsset.BTC ?? cg.BTC,
-    ETH: byAsset.ETH ?? cg.ETH,
-    SOL: byAsset.SOL ?? cg.SOL,
-    XRP: byAsset.XRP ?? cg.XRP,
-  };
+  try {
+    const cg = await fetchCoinGeckoPricesAll();
+    return {
+      BTC: byAsset.BTC ?? cg.BTC,
+      ETH: byAsset.ETH ?? cg.ETH,
+      SOL: byAsset.SOL ?? cg.SOL,
+      XRP: byAsset.XRP ?? cg.XRP,
+    };
+  } catch (e) {
+    const cgMsg = e instanceof Error ? e.message : String(e);
+    const binanceCtx = binanceFailed.length > 0 ? `Binance failed for: ${binanceFailed.join(', ')}; ` : '';
+    throw new Error(`Price fetch failed: ${binanceCtx}CoinGecko fallback: ${cgMsg}`);
+  }
 }
 
 /**
