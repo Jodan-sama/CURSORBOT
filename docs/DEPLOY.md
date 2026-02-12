@@ -19,7 +19,7 @@
    npm run bot
    ```
 5. Run in the background: use `tmux`, `screen`, or a process manager.
-   - **systemd** (recommended): create `/etc/systemd/system/cursorbot.service`:
+   - **systemd** (recommended): copy `deploy/cursorbot.service` to `/etc/systemd/system/cursorbot.service` (adjust paths if needed) or create:
      ```ini
      [Unit]
      Description=Cursorbot 15M trading
@@ -68,6 +68,6 @@ See `dashboard/README.md` for dashboard setup and Vercel deploy.
 
 - [ ] `.env` on the droplet has all keys (Kalshi, Polymarket, Supabase); no keys in git.
 - [ ] Supabase schema applied; RLS allows dashboard to read/write what it needs.
-- [ ] Bot runs under systemd (or similar) and restarts on failure.
+- [ ] Bot runs under systemd (or similar) and restarts on failure. The bot exits with code 1 on unhandled errors or after 3 min of consecutive price-fetch failures, so systemd `Restart=on-failure` will restart it.
 - [ ] Dashboard is deployed and you can toggle emergency off and change position sizes.
 - [ ] Test with small sizes first; confirm positions show up in `positions` and in the dashboard.

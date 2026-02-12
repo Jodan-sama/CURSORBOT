@@ -173,11 +173,12 @@ async function tryPlacePolymarket(
   });
 }
 
-export async function runOneTick(now: Date, tickCount: number = 0): Promise<void> {
-  if (await isEmergencyOff()) return;
+/** Returns true if tick completed successfully (got prices, ran loop). False if bailed early (e.g. price fetch failed). */
+export async function runOneTick(now: Date, tickCount: number = 0): Promise<boolean> {
+  if (await isEmergencyOff()) return true;
   if (isBlackoutWindow(now)) {
     if (tickCount % 12 === 0) console.log('[tick] blackout 08:00–08:15 MST (Utah) Mon–Fri; no trades');
-    return;
+    return true;
   }
 
   const minutesLeft = minutesLeftInWindow(now);
@@ -193,7 +194,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     prices = await fetchAllPricesOnce();
   } catch (e) {
     await logError(e, { stage: 'market_data' });
-    return;
+    return false;
   }
 
   for (const asset of ASSETS) {
@@ -555,11 +556,16 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<void
     const ms = parseInt(k.split('-')[0], 10);
     if (ms < cutoff) enteredThisWindow.delete(k);
   }
+  return true;
 }
+
+/** Consecutive tick failures before we exit(1) to trigger systemd restart. 36 = 3 min at 5s ticks. */
+const WATCHDOG_FAILURE_LIMIT = 36;
 
 /** Run loop: B1 every 5s, B2 every 30s, B3 every 30s (so we check in the first minute of the 8-min window). */
 export function startBotLoop(): void {
   let tickCount = 0;
+  let consecutiveFailures = 0;
   const interval = setInterval(async () => {
     tickCount += 1;
     const now = new Date();
@@ -573,9 +579,22 @@ export function startBotLoop(): void {
     const shouldB3 = tickCount % 6 === 0; // every 30s so B3 checks during full 8 min (incl. 8-min-left)
     if (shouldB1 || shouldB2 || shouldB3) {
       try {
-        await runOneTick(now, tickCount);
+        const ok = await runOneTick(now, tickCount);
+        if (ok) consecutiveFailures = 0;
+        else {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= WATCHDOG_FAILURE_LIMIT) {
+            console.error(`[cursorbot] ${consecutiveFailures} consecutive tick failures; exiting to trigger systemd restart`);
+            process.exit(1);
+          }
+        }
       } catch (e) {
         await logError(e, { stage: 'runOneTick' });
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= WATCHDOG_FAILURE_LIMIT) {
+          console.error(`[cursorbot] ${consecutiveFailures} consecutive tick failures; exiting to trigger systemd restart`);
+          process.exit(1);
+        }
       }
     }
   }, B1_CHECK_INTERVAL_MS);

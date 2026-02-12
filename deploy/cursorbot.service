@@ -1,0 +1,19 @@
+[Unit]
+Description=Cursorbot 15M trading
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/cursorbot
+EnvironmentFile=/root/cursorbot/.env
+Environment=ENABLE_POLYMARKET=true
+ExecStart=/usr/bin/node /root/cursorbot/dist/bot/run.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
