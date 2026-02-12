@@ -37,6 +37,7 @@ import {
   setAssetBlock,
   isAssetBlocked,
   hasB1PositionThisWindow,
+  hasKalshiPositionInLastHours,
   logError,
   logPolySkip,
 } from '../db/supabase.js';
@@ -61,6 +62,11 @@ const enteredThisWindow = new Set<string>();
 
 /** In-memory: timestamp (ms) when B2 last saw spread > threshold for each asset. B1 skips for b2HighSpreadBlockMin. */
 const lastB2HighSpreadByAsset = new Map<Asset, number>();
+
+/** Last window we ran the 3h-no-trade watchdog. Run once per window at start. */
+let lastWatchdogWindowMs: number = 0;
+
+const NO_TRADE_WATCHDOG_HOURS = 3;
 
 function windowKey(bot: string, asset: Asset, windowEndMs: number): string {
   return `${windowEndMs}-${bot}-${asset}`;
@@ -183,6 +189,16 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
 
   const minutesLeft = minutesLeftInWindow(now);
   const windowEndMs = getCurrentWindowEndMs();
+
+  // At start of each new window: if no Kalshi trades in last 3h, exit to trigger systemd restart
+  if (minutesLeft > 14 && windowEndMs !== lastWatchdogWindowMs) {
+    lastWatchdogWindowMs = windowEndMs;
+    const hasTrades = await hasKalshiPositionInLastHours(NO_TRADE_WATCHDOG_HOURS);
+    if (!hasTrades) {
+      console.error(`[cursorbot] no Kalshi trades in last ${NO_TRADE_WATCHDOG_HOURS}h; exiting to trigger restart`);
+      process.exit(1);
+    }
+  }
   const [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60 * 1000;
   const b3BlockMs = delays.b3BlockMin * 60 * 1000;
@@ -199,10 +215,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
 
   for (const asset of ASSETS) {
     if (asset !== ASSETS[0]) await new Promise((r) => setTimeout(r, ASSET_DELAY_MS));
-    if (await isAssetBlocked(asset)) {
-      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skipped (B3 cooldown, blocked 1h)`);
-      continue;
-    }
+    /** B3 block: when B3 placed recently, block B1/B2 only. B3 can always place in new windows. */
+    const blocked = await isAssetBlocked(asset);
+    if (blocked && tickCount % 12 === 0) console.log(`[tick] ${asset} B1/B2 skip (B3 cooldown 1h); B3 still eligible`);
 
     let kalshiTicker: string | null = null;
     let kalshiStrike: number | null = null;
@@ -262,8 +277,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     const sizeKalshiB3 = await getPositionSize('kalshi', 'B3', asset);
     const sizePolyB3 = await getPositionSize('polymarket', 'B3', asset);
 
-    // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). ---
-    if (isB1Window(minutesLeft)) {
+    // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). Blocked when B3 placed recently. ---
+    if (!blocked && isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
       const windowStartMs = windowEndMs - 15 * 60 * 1000;
       // Persisted check: prevents duplicate orders after restart (enteredThisWindow is in-memory only)
@@ -377,10 +392,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       }
     }
 
-    // --- B2: last 5 min, check every 30s, place 97% limit. Fire Kalshi + Poly in parallel like B1. ---
-    // B2 having already placed must NOT prevent B3 from running (B3 needs >1% spread). We skip B2 placement
-    // but fall through so B3 can still place.
-    if (isB2Window(minutesLeft)) {
+    // --- B2: last 5 min, check every 30s, place 97% limit. Blocked when B3 placed recently. ---
+    if (!blocked && isB2Window(minutesLeft)) {
       if (spreadMagnitude > delays.b2HighSpreadThresholdPct) lastB2HighSpreadByAsset.set(asset, now.getTime());
       const keyB2 = windowKey('B2', asset, windowEndMs);
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
