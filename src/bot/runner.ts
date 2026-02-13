@@ -206,8 +206,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
   const ASSET_DELAY_MS = 400; // Space out Kalshi+Poly calls across assets to reduce burst rate limits
 
   let prices: Record<Asset, number>;
+  let priceSource: Record<Asset, 'binance' | 'coingecko'>;
   try {
-    prices = await fetchAllPricesOnce();
+    const result = await fetchAllPricesOnce();
+    prices = result.prices;
+    priceSource = result.priceSource;
   } catch (e) {
     await logError(e, { stage: 'market_data' });
     return false;
@@ -357,6 +360,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeKalshiB1,
           ticker_or_slug: kalshiTicker ?? undefined,
           order_id: kalshiResult.orderId,
+          raw: { price_source: priceSource[asset] },
         });
         console.log(`B1 Kalshi ${asset} ${side} ${useMarket ? 'market' : '96% limit'} orderId=${kalshiResult.orderId}`);
       }
@@ -371,6 +375,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeB1,
           ticker_or_slug: polySlug ?? '',
           order_id: polyResult.orderId,
+          raw: { price_source: priceSource[asset] },
         });
         console.log(`B1 Poly ${asset} ${priceB1 * 100}% orderId=${polyResult.orderId}`);
       }
@@ -434,6 +439,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeKalshiB2,
           ticker_or_slug: kalshiTicker ?? undefined,
           order_id: kalshiResult.orderId,
+          raw: { price_source: priceSource[asset] },
         });
         console.log(`B2 Kalshi ${asset} ${side} 97% orderId=${kalshiResult.orderId}`);
       }
@@ -449,6 +455,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeB2,
           ticker_or_slug: polySlug ?? undefined,
           order_id: polyResult.orderId,
+          raw: { price_source: priceSource[asset] },
         });
         console.log(`B2 Poly ${asset} orderId=${polyResult.orderId}`);
       }
@@ -521,6 +528,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeKalshiB3,
           ticker_or_slug: kalshiTicker ?? undefined,
           order_id: kalshiResult.orderId,
+          raw: { price_source: priceSource[asset] },
         });
         console.log(`B3 Kalshi ${asset} ${side} 97% orderId=${kalshiResult.orderId}`);
       }
@@ -536,6 +544,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeB3,
           ticker_or_slug: polySlug ?? undefined,
           order_id: polyResult.orderId,
+          raw: { price_source: priceSource[asset] },
         });
         console.log(`B3 Poly ${asset} orderId=${polyResult.orderId}`);
       }
