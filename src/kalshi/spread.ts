@@ -85,12 +85,20 @@ export async function fetchBinancePrice(asset: Asset): Promise<number> {
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
+export type PriceSource = 'binance' | 'coingecko';
+
+export interface FetchPricesResult {
+  prices: Record<Asset, number>;
+  priceSource: Record<Asset, PriceSource>;
+}
+
 /**
  * Fetches prices for all assets in one tick. Uses Binance sequentially (avoids burst);
  * each gets one retry. On any failure, falls back to single CoinGecko batch (avoids 429).
  */
-export async function fetchAllPricesOnce(): Promise<Record<Asset, number>> {
+export async function fetchAllPricesOnce(): Promise<FetchPricesResult> {
   const byAsset: Partial<Record<Asset, number>> = {};
+  const priceSource: Record<Asset, PriceSource> = { BTC: 'binance', ETH: 'binance', SOL: 'binance', XRP: 'binance' };
   const binanceFailed: Asset[] = [];
   for (const a of ASSETS) {
     try {
@@ -107,15 +115,20 @@ export async function fetchAllPricesOnce(): Promise<Record<Asset, number>> {
     }
   }
   if (Object.keys(byAsset).length === ASSETS.length) {
-    return byAsset as Record<Asset, number>;
+    return { prices: byAsset as Record<Asset, number>, priceSource };
   }
   try {
     const cg = await fetchCoinGeckoPricesAll();
+    console.log(`[price] CoinGecko fallback (Binance failed: ${binanceFailed.join(', ')})`);
+    for (const a of binanceFailed) priceSource[a] = 'coingecko';
     return {
-      BTC: byAsset.BTC ?? cg.BTC,
-      ETH: byAsset.ETH ?? cg.ETH,
-      SOL: byAsset.SOL ?? cg.SOL,
-      XRP: byAsset.XRP ?? cg.XRP,
+      prices: {
+        BTC: byAsset.BTC ?? cg.BTC,
+        ETH: byAsset.ETH ?? cg.ETH,
+        SOL: byAsset.SOL ?? cg.SOL,
+        XRP: byAsset.XRP ?? cg.XRP,
+      },
+      priceSource,
     };
   } catch (e) {
     const cgMsg = e instanceof Error ? e.message : String(e);
