@@ -155,11 +155,16 @@ export async function getSpreadThresholds(): Promise<SpreadThresholdsMatrix> {
 
 /** True if B1 already placed an order for this asset in the current 15m window (persists across restarts). */
 export async function hasB1PositionThisWindow(asset: Asset, windowStartMs: number): Promise<boolean> {
+  return hasBotPositionThisWindow('B1', asset, windowStartMs);
+}
+
+/** True if this bot already placed any order (Kalshi or Poly) for this asset in the current 15m window. Persists across restarts. */
+export async function hasBotPositionThisWindow(bot: BotId, asset: Asset, windowStartMs: number): Promise<boolean> {
   const windowStart = new Date(windowStartMs).toISOString();
   const { data, error } = await getDb()
     .from('positions')
     .select('id')
-    .eq('bot', 'B1')
+    .eq('bot', bot)
     .eq('asset', asset)
     .gte('entered_at', windowStart)
     .limit(1)

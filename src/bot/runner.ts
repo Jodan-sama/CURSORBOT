@@ -37,6 +37,7 @@ import {
   setAssetBlock,
   isAssetBlocked,
   hasB1PositionThisWindow,
+  hasBotPositionThisWindow,
   hasKalshiPositionInLastHours,
   logError,
   logPolySkip,
@@ -159,7 +160,7 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** All Polymarket HTTP (Gamma + CLOB) runs through proxy when set. Polygon RPC (signing) uses Alchemy via POLYGON_RPC_URL in createPolyClobClient. */
+/** Gamma API (market data) runs direct. Only CLOB (order placement) uses proxy when set. Polygon RPC uses Alchemy. */
 async function tryPlacePolymarket(
   slug: string,
   asset: Asset,
@@ -167,8 +168,8 @@ async function tryPlacePolymarket(
   size: number,
   side: 'yes' | 'no'
 ): Promise<{ orderId?: string; skipReason?: string }> {
+  const parsed = await getPolyMarketBySlug(slug);
   return withPolyProxy(async () => {
-    const parsed = await getPolyMarketBySlug(slug);
     const config = getPolyClobConfigFromEnv();
     const client = config
       ? createPolyClobClient(config)
@@ -401,6 +402,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     if (!blocked && isB2Window(minutesLeft)) {
       if (spreadMagnitude > delays.b2HighSpreadThresholdPct) lastB2HighSpreadByAsset.set(asset, now.getTime());
       const keyB2 = windowKey('B2', asset, windowEndMs);
+      const windowStartMs = windowEndMs - 15 * 60 * 1000;
+      if (await hasBotPositionThisWindow('B2', asset, windowStartMs)) {
+        enteredThisWindow.add(keyB2);
+        continue;
+      }
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
       if (!enteredThisWindow.has(keyB2) && outsideB2) {
         const priceB2 = 0.97;
@@ -483,6 +489,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     // --- B3: last 8 min, check every 1 min, place 97% limit. Fire Kalshi + Poly in parallel like B1/B2. ---
     if (isB3Window(minutesLeft)) {
       const key = windowKey('B3', asset, windowEndMs);
+      const windowStartMs = windowEndMs - 15 * 60 * 1000;
+      if (await hasBotPositionThisWindow('B3', asset, windowStartMs)) {
+        enteredThisWindow.add(key);
+        continue;
+      }
       const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB3) {
@@ -584,21 +595,22 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
 /** Consecutive tick failures before we exit(1) to trigger systemd restart. 36 = 3 min at 5s ticks. */
 const WATCHDOG_FAILURE_LIMIT = 36;
 
-/** Run loop: B1 every 5s, B2 every 30s, B3 every 30s (so we check in the first minute of the 8-min window). */
+/** Run loop: B1 every 5s, B2 every 30s, B3 every 30s. Waits for each tick to finish before scheduling next—no overlapping ticks. */
 export function startBotLoop(): void {
   let tickCount = 0;
   let consecutiveFailures = 0;
-  const interval = setInterval(async () => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const runTick = async () => {
     tickCount += 1;
     const now = new Date();
-    // Heartbeat every 60s so logs show the process is alive
     if (tickCount % 12 === 0) {
       const venue = isPolymarketEnabled() ? 'Kalshi + Polymarket' : 'Kalshi only';
       console.log(`[cursorbot] alive | UTC ${now.toISOString()} | ${venue}`);
     }
     const shouldB1 = true;
     const shouldB2 = tickCount % 6 === 0;
-    const shouldB3 = tickCount % 6 === 0; // every 30s so B3 checks during full 8 min (incl. 8-min-left)
+    const shouldB3 = tickCount % 6 === 0;
     if (shouldB1 || shouldB2 || shouldB3) {
       try {
         const ok = await runOneTick(now, tickCount);
@@ -619,10 +631,13 @@ export function startBotLoop(): void {
         }
       }
     }
-  }, B1_CHECK_INTERVAL_MS);
+    timeoutId = setTimeout(runTick, B1_CHECK_INTERVAL_MS);
+  };
+
+  runTick();
 
   const shutdown = () => {
-    clearInterval(interval);
+    if (timeoutId) clearTimeout(timeoutId);
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
