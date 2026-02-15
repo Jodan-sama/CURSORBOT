@@ -17,6 +17,8 @@ export interface BotConfigRow {
   b3_block_min: number;
   b2_high_spread_threshold_pct: number;
   b2_high_spread_block_min: number;
+  b3_early_high_spread_pct: number;
+  b3_early_high_spread_block_min: number;
   updated_at: string;
 }
 
@@ -71,17 +73,21 @@ export async function isEmergencyOff(): Promise<boolean> {
   return c.emergency_off;
 }
 
-/** B3 block duration (min), B2 spread threshold (%), B2 high-spread→B1 delay (min). */
+/** B3 block duration (min), B2 spread threshold (%), B2 high-spread→B1 delay (min), B3 early high-spread. */
 export async function getBotDelays(): Promise<{
   b3BlockMin: number;
   b2HighSpreadThresholdPct: number;
   b2HighSpreadBlockMin: number;
+  b3EarlyHighSpreadPct: number;
+  b3EarlyHighSpreadBlockMin: number;
 }> {
   const c = await getBotConfig();
   return {
     b3BlockMin: Number(c.b3_block_min) || 60,
     b2HighSpreadThresholdPct: Number(c.b2_high_spread_threshold_pct) || 0.55,
     b2HighSpreadBlockMin: Number(c.b2_high_spread_block_min) || 15,
+    b3EarlyHighSpreadPct: Number(c.b3_early_high_spread_pct) ?? 1.8,
+    b3EarlyHighSpreadBlockMin: Number(c.b3_early_high_spread_block_min) ?? 15,
   };
 }
 

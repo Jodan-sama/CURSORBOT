@@ -48,6 +48,8 @@ type Config = {
   b3_block_min: number;
   b2_high_spread_threshold_pct: number;
   b2_high_spread_block_min: number;
+  b3_early_high_spread_pct?: number;
+  b3_early_high_spread_block_min?: number;
   updated_at: string;
 };
 
@@ -61,6 +63,7 @@ type Position = {
   position_size: number;
   ticker_or_slug: string | null;
   order_id: string | null;
+  raw?: { price_source?: string } | null;
 };
 
 type SpreadRow = { bot: string; asset: string; threshold_pct: number };
@@ -97,10 +100,12 @@ export default function Dashboard() {
     B3: { kalshi: '', poly: '' },
   });
   const [spreadEdits, setSpreadEdits] = useState<Record<string, string>>({});
-  const [delayEdits, setDelayEdits] = useState<{ b3: string; b2SpreadThreshold: string; b2HighSpread: string }>({
+  const [delayEdits, setDelayEdits] = useState<{ b3: string; b2SpreadThreshold: string; b2HighSpread: string; b3EarlySpreadPct: string; b3EarlySpreadBlock: string }>({
     b3: '',
     b2SpreadThreshold: '',
     b2HighSpread: '',
+    b3EarlySpreadPct: '',
+    b3EarlySpreadBlock: '',
   });
   const [csvLoading, setCsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -163,6 +168,8 @@ export default function Dashboard() {
         b3: cfg?.b3_block_min != null ? String(cfg.b3_block_min) : '60',
         b2SpreadThreshold: cfg?.b2_high_spread_threshold_pct != null ? String(cfg.b2_high_spread_threshold_pct) : '0.55',
         b2HighSpread: cfg?.b2_high_spread_block_min != null ? String(cfg.b2_high_spread_block_min) : '15',
+        b3EarlySpreadPct: cfg?.b3_early_high_spread_pct != null ? String(cfg.b3_early_high_spread_pct) : '1.8',
+        b3EarlySpreadBlock: cfg?.b3_early_high_spread_block_min != null ? String(cfg.b3_early_high_spread_block_min) : '15',
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -206,12 +213,16 @@ export default function Dashboard() {
     const b3 = parseInt(delayEdits.b3, 10);
     const b2SpreadThreshold = parseFloat(delayEdits.b2SpreadThreshold);
     const b2HighSpread = parseInt(delayEdits.b2HighSpread, 10);
-    if (!Number.isNaN(b3) && !Number.isNaN(b2SpreadThreshold) && !Number.isNaN(b2HighSpread) && b3 > 0 && b2SpreadThreshold > 0 && b2HighSpread > 0) {
-      await getSupabase().from('bot_config').update({
-        b3_block_min: b3,
-        b2_high_spread_threshold_pct: b2SpreadThreshold,
-        b2_high_spread_block_min: b2HighSpread,
-      }).eq('id', 'default');
+    const b3EarlySpreadPct = parseFloat(delayEdits.b3EarlySpreadPct);
+    const b3EarlySpreadBlock = parseInt(delayEdits.b3EarlySpreadBlock, 10);
+    const updates: Record<string, number> = {};
+    if (!Number.isNaN(b3) && b3 > 0) updates.b3_block_min = b3;
+    if (!Number.isNaN(b2SpreadThreshold) && b2SpreadThreshold > 0) updates.b2_high_spread_threshold_pct = b2SpreadThreshold;
+    if (!Number.isNaN(b2HighSpread) && b2HighSpread > 0) updates.b2_high_spread_block_min = b2HighSpread;
+    if (!Number.isNaN(b3EarlySpreadPct) && b3EarlySpreadPct > 0) updates.b3_early_high_spread_pct = b3EarlySpreadPct;
+    if (!Number.isNaN(b3EarlySpreadBlock) && b3EarlySpreadBlock > 0) updates.b3_early_high_spread_block_min = b3EarlySpreadBlock;
+    if (Object.keys(updates).length > 0) {
+      await getSupabase().from('bot_config').update(updates).eq('id', 'default');
     }
     await load();
     setSaving(false);
@@ -244,13 +255,14 @@ export default function Dashboard() {
 
   function downloadCsv() {
     setCsvLoading(true);
-    const headers = ['entered_at', 'bot', 'asset', 'exchange', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id'];
+    const headers = ['entered_at', 'bot', 'asset', 'exchange', 'price_source', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id'];
     const rows = positions.map((p) =>
       [
         escapeCsv(p.entered_at),
         escapeCsv(p.bot),
         escapeCsv(p.asset),
         escapeCsv(p.venue),
+        escapeCsv((p.raw as { price_source?: string })?.price_source ?? ''),
         escapeCsv(String(p.strike_spread_pct)),
         escapeCsv(String(p.position_size)),
         escapeCsv(p.ticker_or_slug ?? ''),
@@ -360,7 +372,7 @@ export default function Dashboard() {
       <section style={{ marginBottom: 24 }}>
         <h2 style={headingStyle}>Delays & B2 spread threshold</h2>
         <p style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>
-          B3 placed → blocks B1/B2 for <strong>b3_block_min</strong>. When B2 sees spread &gt; <strong>threshold</strong>%, B1 is blocked for <strong>b2_high_spread_block_min</strong>.
+          B3 placed → blocks B1/B2 for <strong>b3_block_min</strong>. When B2 sees spread &gt; <strong>threshold</strong>%, B1 is blocked for <strong>b2_high_spread_block_min</strong>. B3 early: if spread &gt; <strong>b3_early_high_spread_pct</strong>% in first 7 min, skip B3 entry for <strong>b3_early_high_spread_block_min</strong>.
         </p>
         <form onSubmit={saveDelays}>
           <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
@@ -404,6 +416,31 @@ export default function Dashboard() {
                     min="1"
                     value={delayEdits.b2HighSpread}
                     onChange={(e) => setDelayEdits((prev) => ({ ...prev, b2HighSpread: e.target.value }))}
+                    style={{ width: 72, padding: '4px 6px' }}
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B3 early spread threshold (%)</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={delayEdits.b3EarlySpreadPct}
+                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b3EarlySpreadPct: e.target.value }))}
+                    style={{ width: 72, padding: '4px 6px' }}
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>B3 early spread &gt; threshold → block B3 (min)</td>
+                <td style={{ borderBottom: '1px solid #ddd', padding: '6px 8px' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    value={delayEdits.b3EarlySpreadBlock}
+                    onChange={(e) => setDelayEdits((prev) => ({ ...prev, b3EarlySpreadBlock: e.target.value }))}
                     style={{ width: 72, padding: '4px 6px' }}
                   />
                 </td>
@@ -516,7 +553,7 @@ export default function Dashboard() {
           <span style={{ fontSize: 13, color: '#666' }}>Orders <strong>placed</strong> by the bot — limit orders may not fill; check the exchange for fill status.</span>
           <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 200)'}</button>
           <span style={{ display: 'block', fontSize: 13, color: '#555', marginTop: 6 }}>
-            CSV includes an <strong>exchange</strong> column: <code>kalshi</code> or <code>polymarket</code>.
+            CSV includes <strong>exchange</strong> (kalshi/polymarket) and <strong>price_source</strong> (binance/coingecko).
           </span>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -526,6 +563,7 @@ export default function Dashboard() {
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Venue</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
             </tr>
@@ -537,6 +575,7 @@ export default function Dashboard() {
                 <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
                 <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
                 <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
+                <td style={{ borderBottom: '1px solid #eee' }}>{(p.raw as { price_source?: string })?.price_source ?? '—'}</td>
                 <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
                 <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
               </tr>

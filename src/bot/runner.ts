@@ -64,6 +64,9 @@ const enteredThisWindow = new Set<string>();
 /** In-memory: timestamp (ms) when B2 last saw spread > threshold for each asset. B1 skips for b2HighSpreadBlockMin. */
 const lastB2HighSpreadByAsset = new Map<Asset, number>();
 
+/** In-memory: timestamp (ms) when B3 saw spread > threshold during first 7 min. Skip B3 entry for block_min after. */
+const lastB3EarlyHighSpreadByAsset = new Map<Asset, number>();
+
 /** Last window we ran the 3h-no-trade watchdog. Run once per window at start. */
 let lastWatchdogWindowMs: number = 0;
 
@@ -203,6 +206,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
   const [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60 * 1000;
   const b3BlockMs = delays.b3BlockMin * 60 * 1000;
+  const b3EarlyHighSpreadPct = delays.b3EarlyHighSpreadPct;
+  const b3EarlyHighSpreadBlockMin = delays.b3EarlyHighSpreadBlockMin;
 
   const ASSET_DELAY_MS = 400; // Space out Kalshi+Poly calls across assets to reduce burst rate limits
 
@@ -273,6 +278,12 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       continue;
     }
     const side = sideFromSignedSpread(signedSpreadPct);
+
+    // B3 early check: first 7 min of window, every 1 min. If spread > threshold, skip B3 entry for block_min.
+    if (minutesLeft > 8 && tickCount % 12 === 0 && spreadMagnitude > b3EarlyHighSpreadPct) {
+      lastB3EarlyHighSpreadByAsset.set(asset, now.getTime());
+      console.log(`[tick] B3 ${asset} early spread ${spreadMagnitude.toFixed(2)}% > ${b3EarlyHighSpreadPct}%; skip entry for ${b3EarlyHighSpreadBlockMin} min`);
+    }
 
     const sizeKalshiB1 = await getPositionSize('kalshi', 'B1', asset);
     const sizePolyB1 = await getPositionSize('polymarket', 'B1', asset);
@@ -494,6 +505,15 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
         enteredThisWindow.add(key);
         continue;
       }
+      const b3EarlyBlockMs = b3EarlyHighSpreadBlockMin * 60 * 1000;
+      const tEarly = lastB3EarlyHighSpreadByAsset.get(asset);
+      if (tEarly != null && now.getTime() - tEarly < b3EarlyBlockMs) {
+        if (tickCount % 12 === 0) {
+          const minLeft = Math.ceil((b3EarlyBlockMs - (now.getTime() - tEarly)) / 60000);
+          console.log(`[tick] B3 ${asset} skip: early spread >${b3EarlyHighSpreadPct}% in first 7 min; block ${minLeft} min left`);
+        }
+        continue;
+      }
       const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB3) {
@@ -559,6 +579,11 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
         });
         console.log(`B3 Poly ${asset} orderId=${polyResult.orderId}`);
       }
+      if (placed) {
+        const blockUntil = new Date(now.getTime() + b3BlockMs);
+        await setAssetBlock(asset, blockUntil);
+        console.log(`B3 placed for ${asset}: block B1/B2 ${delays.b3BlockMin}min until ${blockUntil.toISOString()}`);
+      }
       if (!polyResult.orderId && kalshiTicker) {
         const reason =
           sizePolyB3 === 0
@@ -574,11 +599,6 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
                     : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B3', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B3 Poly ${asset} skip: ${reason}`);
-      }
-      if (placed) {
-        const blockUntil = new Date(now.getTime() + b3BlockMs);
-        await setAssetBlock(asset, blockUntil);
-        console.log(`B3 placed for ${asset}: block B1/B2 ${delays.b3BlockMin}min until ${blockUntil.toISOString()}`);
       }
     }
   }

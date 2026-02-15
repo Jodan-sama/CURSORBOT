@@ -9,6 +9,8 @@ create table if not exists bot_config (
   b3_block_min integer not null default 60,
   b2_high_spread_threshold_pct numeric not null default 0.55,
   b2_high_spread_block_min integer not null default 15,
+  b3_early_high_spread_pct numeric not null default 1.8,
+  b3_early_high_spread_block_min integer not null default 15,
   updated_at timestamptz not null default now()
 );
 
@@ -103,6 +105,8 @@ create table if not exists spread_thresholds (
 alter table bot_config add column if not exists b3_block_min integer not null default 60;
 alter table bot_config add column if not exists b2_high_spread_threshold_pct numeric not null default 0.55;
 alter table bot_config add column if not exists b2_high_spread_block_min integer not null default 15;
+alter table bot_config add column if not exists b3_early_high_spread_pct numeric not null default 1.8;
+alter table bot_config add column if not exists b3_early_high_spread_block_min integer not null default 15;
 
 -- Seed config
 insert into bot_config (id, emergency_off) values ('default', false)
