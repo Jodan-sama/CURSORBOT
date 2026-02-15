@@ -279,10 +279,12 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     }
     const side = sideFromSignedSpread(signedSpreadPct);
 
-    // B3 early check: first 7 min of window, every 1 min. If spread > threshold, skip B3 entry for block_min.
+    // B3 early check: first 7 min of window, every 1 min. If spread > threshold, skip B3 for block_min and block B1/B2 for 1h.
     if (minutesLeft > 8 && tickCount % 12 === 0 && spreadMagnitude > b3EarlyHighSpreadPct) {
       lastB3EarlyHighSpreadByAsset.set(asset, now.getTime());
-      console.log(`[tick] B3 ${asset} early spread ${spreadMagnitude.toFixed(2)}% > ${b3EarlyHighSpreadPct}%; skip entry for ${b3EarlyHighSpreadBlockMin} min`);
+      const b1b2BlockUntil = new Date(now.getTime() + b3BlockMs);
+      await setAssetBlock(asset, b1b2BlockUntil);
+      console.log(`[tick] B3 ${asset} early spread ${spreadMagnitude.toFixed(2)}% > ${b3EarlyHighSpreadPct}%; skip B3 for ${b3EarlyHighSpreadBlockMin} min, block B1/B2 for ${delays.b3BlockMin} min`);
     }
 
     const sizeKalshiB1 = await getPositionSize('kalshi', 'B1', asset);
