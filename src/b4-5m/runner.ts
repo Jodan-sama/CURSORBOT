@@ -29,6 +29,7 @@ import {
 import {
   isEmergencyOff,
   logError,
+  logPosition,
 } from '../db/supabase.js';
 import type { Candle1m } from './download-candles.js';
 
@@ -245,6 +246,29 @@ async function runOneTick(
       windowState.orderId = result.orderId;
       windowState.direction = signals.direction;
       console.log(`[B4] ORDER PLACED: ${side} ${contracts}x @ ~50c | orderId=${result.orderId}`);
+      try {
+        await logPosition({
+          bot: 'B4',
+          asset: 'BTC',
+          venue: 'polymarket',
+          strike_spread_pct: signals.composite,
+          position_size: betSize,
+          ticker_or_slug: slug,
+          order_id: result.orderId,
+          raw: {
+            direction: signals.direction,
+            composite: signals.composite,
+            intraWindow: signals.intraWindow,
+            momentum: signals.momentum,
+            volume: signals.volume,
+            rsiSignal: signals.rsiSignal,
+            trend: signals.trend,
+            volatility: signals.volatility,
+            phase: risk.bankroll < 200 ? 1 : risk.bankroll < 5000 ? 2 : 3,
+            bankroll: risk.bankroll,
+          },
+        });
+      } catch { /* don't fail the trade on log error */ }
     } else {
       console.log(`[B4] order skip: ${result.skipReason}`);
     }

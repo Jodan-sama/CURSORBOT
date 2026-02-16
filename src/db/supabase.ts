@@ -6,7 +6,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { BOT_SPREAD_THRESHOLD_PCT, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 
 export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
-export type BotId = 'B1' | 'B2' | 'B3';
+export type BotId = 'B1' | 'B2' | 'B3' | 'B4';
 export type Venue = 'kalshi' | 'polymarket';
 
 export interface BotConfigRow {
@@ -153,8 +153,10 @@ export async function getSpreadThresholds(): Promise<SpreadThresholdsMatrix> {
     B2: { ...BOT_SPREAD_THRESHOLD_PCT.B2 },
     B3: { ...BOT_SPREAD_THRESHOLD_PCT.B3 },
   };
-  for (const row of data as { bot: BotId; asset: Asset; threshold_pct: number }[]) {
-    matrix[row.bot][row.asset] = Number(row.threshold_pct);
+  for (const row of data as { bot: string; asset: Asset; threshold_pct: number }[]) {
+    if (row.bot in matrix) {
+      (matrix as Record<string, Record<string, number>>)[row.bot][row.asset] = Number(row.threshold_pct);
+    }
   }
   return matrix;
 }
