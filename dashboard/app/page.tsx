@@ -661,8 +661,8 @@ export default function Dashboard() {
       <section style={{ marginBottom: 24 }}>
         <h2 style={headingStyle}>B4 — 5-Minute BTC Spread Bot</h2>
 
-        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
-          <p style={{ margin: 0, marginBottom: 8 }}>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+          <p style={{ margin: 0, marginBottom: 8, color: '#e5e5e5' }}>
             B4 Status: <strong style={{ color: b4State?.cooldown_until_ms === 1 ? '#ef4444' : '#22c55e' }}>{b4State?.cooldown_until_ms === 1 ? 'OFF (paused)' : 'Running'}</strong>
           </p>
           <button
@@ -698,52 +698,52 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
-          <h3 style={{ ...headingStyle, margin: '0 0 12px', fontSize: 16 }}>B4 Spread Tier Config</h3>
-          <p style={{ fontSize: 13, color: '#888', marginBottom: 12 }}>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+          <h3 style={{ ...headingStyle, margin: '0 0 12px', fontSize: 16, color: '#fff' }}>B4 Spread Tier Config</h3>
+          <p style={{ fontSize: 13, color: '#ccc', marginBottom: 12 }}>
             T1: last 50s, T2: last 100s (blocks T1), T3: last 160s (blocks T1+T2). Saved to Supabase, picked up by bot within ~90s.
           </p>
           <form onSubmit={saveB4TierConfig}>
             <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#bbb' }}>Setting</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#bbb' }}>Value</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#fff' }}>Setting</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#fff' }}>Value</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T1 spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T1 spread threshold (%)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="0" value={b4Config.t1_spread} onChange={(e) => setB4Config((p) => ({ ...p, t1_spread: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T2 spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T2 spread threshold (%)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="0" value={b4Config.t2_spread} onChange={(e) => setB4Config((p) => ({ ...p, t2_spread: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T3 spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 spread threshold (%)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="0" value={b4Config.t3_spread} onChange={(e) => setB4Config((p) => ({ ...p, t3_spread: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T2 → blocks T1 (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T2 → blocks T1 (min)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" min="1" value={b4Config.t2_block_min} onChange={(e) => setB4Config((p) => ({ ...p, t2_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T3 → blocks T1+T2 (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T1+T2 (min)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" min="1" value={b4Config.t3_block_min} onChange={(e) => setB4Config((p) => ({ ...p, t3_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>Position size ($)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Position size ($)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="1" value={b4Config.position_size} onChange={(e) => setB4Config((p) => ({ ...p, position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
