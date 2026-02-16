@@ -10,6 +10,9 @@
 node_modules/
 dist/
 
+# Backtest data cache
+data/
+
 # Logs and OS
 *.log
 .DS_Store

@@ -1,0 +1,15 @@
+[Unit]
+Description=Cursorbot B4 5-Minute BTC Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/cursorbot
+EnvironmentFile=/root/cursorbot/.env
+ExecStart=/usr/bin/node /root/cursorbot/dist/b4-5m/run.js
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
