@@ -4,7 +4,7 @@
  * Strategy:
  *   Entry:  1-minute BTC momentum > 0.03%  → buy Up contracts
  *           1-minute BTC momentum < -0.03% → buy Down contracts
- *   Size:   $1 per trade (fixed, configurable via B4_POSITION_SIZE env)
+ *   Size:   $5 per trade (fixed, configurable via B4_POSITION_SIZE env)
  *   Exit:   +3% take profit OR -5% stop loss on contract price (early close)
  *   Limit:  Max 3 trades per 5-minute window, 1 open position at a time
  *   Poll:   Every 3 seconds
@@ -48,7 +48,7 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const POSITION_SIZE_USD = parseFloat(process.env.B4_POSITION_SIZE || '1');
+const POSITION_SIZE_USD = parseFloat(process.env.B4_POSITION_SIZE || '5');
 const MAX_TRADES_PER_WINDOW = 3;
 const MOMENTUM_THRESHOLD = 0.0003;   // 0.03%
 const TAKE_PROFIT_PCT = 0.03;        // +3% contract price
