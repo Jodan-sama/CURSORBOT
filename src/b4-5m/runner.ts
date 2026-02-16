@@ -248,17 +248,6 @@ async function runOneTick(
         recordResult(risk, won, windowState.betSize);
         console.log(`[B4] window resolved: bet ${windowState.direction}, outcome ${wasUp ? 'up' : 'down'}, ${won ? 'WIN' : 'LOSS'} | ${getRiskSummary(risk)}`);
 
-        // Sync bankroll from actual wallet balance (1 free RPC call, no proxy)
-        const walletBal = await getWalletUsdcBalance();
-        if (walletBal != null && walletBal > 0) {
-          const drift = Math.abs(walletBal - risk.bankroll);
-          if (drift > 0.01) {
-            console.log(`[B4] bankroll sync: internal $${risk.bankroll.toFixed(2)} → wallet $${walletBal.toFixed(2)} (drift $${drift.toFixed(2)})`);
-            risk.bankroll = walletBal;
-            if (walletBal > risk.maxBankroll) risk.maxBankroll = walletBal;
-          }
-        }
-
         try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
       } catch (e) {
         console.error('[B4] outcome check failed:', e instanceof Error ? e.message : e);
@@ -415,16 +404,10 @@ export async function startB4Loop(): Promise<void> {
     console.log(`[B4] Fresh start: bankroll $${INITIAL_BANKROLL}`);
   }
 
-  // Sync bankroll from actual wallet balance on startup
+  // Log wallet balance for reference (don't override — wallet lags due to unclaimed wins)
   const startupBal = await getWalletUsdcBalance();
-  if (startupBal != null && startupBal > 0) {
-    const drift = Math.abs(startupBal - risk.bankroll);
-    if (drift > 0.01) {
-      console.log(`[B4] startup wallet sync: $${risk.bankroll.toFixed(2)} → $${startupBal.toFixed(2)}`);
-      risk.bankroll = startupBal;
-      if (startupBal > risk.maxBankroll) risk.maxBankroll = startupBal;
-      try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
-    }
+  if (startupBal != null) {
+    console.log(`[B4] wallet USDC: $${startupBal.toFixed(2)} (internal bankroll: $${risk.bankroll.toFixed(2)})`);
   }
 
   const feed = new PriceFeed();
