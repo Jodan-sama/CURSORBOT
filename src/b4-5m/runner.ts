@@ -250,24 +250,27 @@ async function sellContracts(pos: Position): Promise<{ orderId?: string; error?:
       const client = await getClobClient();
 
       // Query actual token balance so we sell EVERYTHING (not the rounded estimate)
+      // getBalanceAllowance returns raw atomic units (10^6), divide to get shares
       let sellAmount = pos.contracts;
       try {
         const bal = await client.getBalanceAllowance({
           asset_type: 'CONDITIONAL' as unknown as import('@polymarket/clob-client').AssetType,
           token_id: pos.tokenId,
         });
-        const actualBalance = parseFloat(bal.balance);
-        if (actualBalance > 0) {
-          sellAmount = actualBalance;
-          if (actualBalance !== pos.contracts) {
-            console.log(`[B4] actual token balance: ${actualBalance} (estimated: ${pos.contracts})`);
+        const rawBalance = parseFloat(bal.balance);
+        if (rawBalance > 0) {
+          // Balance is in atomic units (6 decimals like USDC); convert to shares
+          const actualShares = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
+          sellAmount = actualShares;
+          if (actualShares !== pos.contracts) {
+            console.log(`[B4] token balance: raw=${rawBalance} shares=${actualShares.toFixed(6)} (estimated: ${pos.contracts})`);
           }
         }
       } catch {
         // Fall back to estimated contracts if balance query fails
       }
 
-      console.log(`[B4] SELL ${sellAmount} contracts (FOK market) | ${pos.tokenId.slice(0, 20)}…`);
+      console.log(`[B4] SELL ${sellAmount.toFixed(6)} shares (FOK market) | ${pos.tokenId.slice(0, 20)}…`);
 
       const result = await client.createAndPostMarketOrder(
         { tokenID: pos.tokenId, amount: sellAmount, side: Side.SELL },
