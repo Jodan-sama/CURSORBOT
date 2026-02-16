@@ -89,7 +89,7 @@ export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
-  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; results_json: boolean[]; updated_at: string } | null>(null);
+  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: boolean[]; updated_at: string } | null>(null);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -195,6 +195,13 @@ export default function Dashboard() {
   async function setEmergencyOff(off: boolean) {
     setSaving(true);
     await getSupabase().from('bot_config').update({ emergency_off: off }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function setB4EmergencyOff(off: boolean) {
+    setSaving(true);
+    await getSupabase().from('b4_state').update({ cooldown_until_ms: off ? 1 : 0, updated_at: new Date().toISOString() }).eq('id', 'default');
     await load();
     setSaving(false);
   }
@@ -344,7 +351,7 @@ export default function Dashboard() {
       <h1 style={headingStyle}>Cursorbot Control</h1>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>Emergency</h2>
+        <h2 style={headingStyle}>Emergency — B1 / B2 / B3</h2>
         <p>
           Status: <strong>{config?.emergency_off ? 'OFF (no new orders)' : 'Running'}</strong>
         </p>
@@ -589,6 +596,28 @@ export default function Dashboard() {
 
       <section style={{ marginBottom: 24 }}>
         <h2 style={headingStyle}>B4 — 5-Minute BTC Bot</h2>
+
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
+          <p style={{ margin: 0, marginBottom: 8 }}>
+            B4 Status: <strong style={{ color: b4State?.cooldown_until_ms === 1 ? '#ef4444' : '#22c55e' }}>{b4State?.cooldown_until_ms === 1 ? 'OFF (paused)' : 'Running'}</strong>
+          </p>
+          <button
+            type="button"
+            onClick={() => setB4EmergencyOff(true)}
+            disabled={saving || b4State?.cooldown_until_ms === 1}
+            style={{ marginRight: 8, ...(saving || b4State?.cooldown_until_ms === 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#dc2626' }) }}
+          >
+            Pause B4
+          </button>
+          <button
+            type="button"
+            onClick={() => setB4EmergencyOff(false)}
+            disabled={saving || b4State?.cooldown_until_ms !== 1}
+            style={saving || b4State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }}
+          >
+            Resume B4
+          </button>
+        </div>
 
         {b4State && (() => {
           const bankroll = Number(b4State.bankroll) || 0;

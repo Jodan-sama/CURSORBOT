@@ -67,10 +67,32 @@ export async function getBotConfig(): Promise<BotConfigRow> {
   return data as BotConfigRow;
 }
 
-/** Check if trading is paused. */
+/** Check if trading is paused (B1/B2/B3). */
 export async function isEmergencyOff(): Promise<boolean> {
   const c = await getBotConfig();
   return c.emergency_off;
+}
+
+/** Check if B4 is paused (uses cooldown_until_ms in b4_state: 1 = off, 0 = running). */
+export async function isB4EmergencyOff(): Promise<boolean> {
+  try {
+    const { data } = await getDb()
+      .from('b4_state')
+      .select('cooldown_until_ms')
+      .eq('id', 'default')
+      .maybeSingle();
+    return data?.cooldown_until_ms === 1;
+  } catch {
+    return false;
+  }
+}
+
+/** Set B4 emergency off/resume (uses cooldown_until_ms in b4_state). */
+export async function setB4EmergencyOff(off: boolean): Promise<void> {
+  await getDb().from('b4_state').update({
+    cooldown_until_ms: off ? 1 : 0,
+    updated_at: new Date().toISOString(),
+  }).eq('id', 'default');
 }
 
 /** B3 block duration (min), B2 spread threshold (%), B2 high-spread→B1 delay (min), B3 early high-spread. */

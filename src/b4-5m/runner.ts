@@ -23,7 +23,7 @@ import {
   secondsIntoWindow,
 } from './clock.js';
 import {
-  isEmergencyOff,
+  isB4EmergencyOff,
   logError,
   logPosition,
   loadB4State,
@@ -310,10 +310,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     tradesThisWindow = 0;
   }
 
-  // --- Emergency off check (every ~30s) ---
+  // --- B4-specific emergency off check (every ~30s) ---
   if (tickCount % 10 === 0) {
     try {
-      if (await isEmergencyOff()) {
+      if (await isB4EmergencyOff()) {
         if (tickCount % 100 === 0) console.log('[B4] emergency off — paused');
         return;
       }
