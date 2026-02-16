@@ -361,6 +361,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           const reverseBook = await getBookTopLevels(reverseTokenId);
 
           if (normalBook && reverseBook) {
+            // Skip entries at extreme prices (no room for profit)
+            if (normalBook.mid > 0.90 || normalBook.mid < 0.10) {
+              if (tickCount % 10 === 0) console.log(`[PAPER] B4 skip: contract at extreme (mid=${normalBook.mid.toFixed(3)})`);
+            } else {
             b4TradesThisWindow++;
             console.log(`[PAPER] B4 SIGNAL: momentum=${(momentum * 100).toFixed(4)}% | normal=${normalDir} reverse=${reverseDir}`);
 
@@ -393,6 +397,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
               slug,
               momentumAtEntry: momentum,
             });
+          } // end else (not extreme)
           }
         }
       } catch (e) {
