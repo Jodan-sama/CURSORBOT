@@ -310,6 +310,37 @@ export async function saveB4State(state: Omit<B4StateRow, 'updated_at'>): Promis
   }
 }
 
+/** Save B4 open position to Supabase (survives restarts). Pass null to clear. */
+export async function saveB4OpenPosition(position: Record<string, unknown> | null): Promise<void> {
+  try {
+    await getDb().from('b4_state').update({
+      results_json: position ?? [],
+      updated_at: new Date().toISOString(),
+    }).eq('id', 'default');
+  } catch (e) {
+    console.error('[saveB4OpenPosition] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+/** Load B4 open position from Supabase. Returns null if none saved. */
+export async function loadB4OpenPosition(): Promise<Record<string, unknown> | null> {
+  try {
+    const { data, error } = await getDb()
+      .from('b4_state')
+      .select('results_json')
+      .eq('id', 'default')
+      .maybeSingle();
+    if (error || !data) return null;
+    const raw = (data as Record<string, unknown>).results_json;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Set emergency_off flag in bot_config. */
 export async function setEmergencyOff(off: boolean): Promise<void> {
   await getDb().from('bot_config').update({ emergency_off: off }).eq('id', 'default');

@@ -4,7 +4,7 @@
  * Strategy:
  *   Entry:  1-minute BTC momentum > 0.03%  → buy Up contracts
  *           1-minute BTC momentum < -0.03% → buy Down contracts
- *   Size:   $5 per trade (fixed)
+ *   Size:   $1 per trade (fixed, configurable via B4_POSITION_SIZE env)
  *   Exit:   +3% take profit OR -5% stop loss on contract price (early close)
  *   Limit:  Max 3 trades per 5-minute window, 1 open position at a time
  *   Poll:   Every 3 seconds
@@ -28,6 +28,8 @@ import {
   logPosition,
   loadB4State,
   saveB4State,
+  saveB4OpenPosition,
+  loadB4OpenPosition,
 } from '../db/supabase.js';
 import {
   createPolyClobClient,
@@ -46,7 +48,7 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const POSITION_SIZE_USD = parseFloat(process.env.B4_POSITION_SIZE || '5');
+const POSITION_SIZE_USD = parseFloat(process.env.B4_POSITION_SIZE || '1');
 const MAX_TRADES_PER_WINDOW = 3;
 const MOMENTUM_THRESHOLD = 0.0003;   // 0.03%
 const TAKE_PROFIT_PCT = 0.03;        // +3% contract price
@@ -338,6 +340,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           if (forceExit) {
             console.warn(`[B4] forced exit sell failed — contract will resolve at window end`);
             openPosition = null;
+            try { await saveB4OpenPosition(null); } catch { /* best effort */ }
           }
           return;
         }
@@ -384,7 +387,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           });
         } catch { /* best effort */ }
 
-        // Persist state
+        // Persist state & clear saved position
         try {
           await saveB4State({
             bankroll,
@@ -396,6 +399,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
             daily_start_date: '',
             half_kelly_trades_left: 0,
           });
+          await saveB4OpenPosition(null);
         } catch { /* best effort */ }
 
         openPosition = null;
@@ -456,6 +460,12 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       `[B4] OPENED: ${direction} ~${result.contracts}x | entryMid=${result.entryMid.toFixed(3)} ` +
       `| trades=${tradesThisWindow}/${MAX_TRADES_PER_WINDOW} | bankroll=$${bankroll.toFixed(2)}`,
     );
+
+    // Persist open position to Supabase so it survives restarts
+    try {
+      await saveB4OpenPosition(openPosition as unknown as Record<string, unknown>);
+      console.log('[B4] position persisted to Supabase');
+    } catch { /* best effort */ }
   } else {
     console.log(`[B4] order failed: ${result.error}`);
     try { await logError(new Error(result.error ?? 'order failed'), { bot: 'B4', slug, side }); } catch { /* ignore */ }
@@ -477,6 +487,34 @@ export async function startB4Loop(): Promise<void> {
     bankroll = parseFloat(process.env.B4_INITIAL_BANKROLL || '10');
     peakBankroll = bankroll;
     console.log(`[B4] Fresh start: bankroll=$${bankroll.toFixed(2)}`);
+  }
+
+  // Restore persisted open position (survives restarts)
+  try {
+    const savedPos = await loadB4OpenPosition();
+    if (savedPos && savedPos.tokenId && savedPos.entryMid) {
+      openPosition = {
+        direction: String(savedPos.direction) as 'up' | 'down',
+        tokenId: String(savedPos.tokenId),
+        entryMid: Number(savedPos.entryMid),
+        contracts: Number(savedPos.contracts),
+        entryBtcPrice: Number(savedPos.entryBtcPrice ?? 0),
+        entryTime: Number(savedPos.entryTime ?? Date.now()),
+        windowStart: Number(savedPos.windowStart ?? 0),
+        orderId: String(savedPos.orderId ?? ''),
+        slug: String(savedPos.slug ?? ''),
+        negRisk: Boolean(savedPos.negRisk),
+        tickSize: (String(savedPos.tickSize ?? '0.01')) as Position['tickSize'],
+      };
+      console.log(
+        `[B4] RESTORED open position: ${openPosition.direction} ` +
+        `| entryMid=${openPosition.entryMid.toFixed(3)} ` +
+        `| contracts=${openPosition.contracts} ` +
+        `| slug=${openPosition.slug}`,
+      );
+    }
+  } catch (e) {
+    console.warn('[B4] could not restore open position:', e instanceof Error ? e.message : e);
   }
 
   const feed = new PriceFeed();
@@ -529,8 +567,36 @@ export async function startB4Loop(): Promise<void> {
 
   runTick();
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return; // prevent double shutdown
+    shuttingDown = true;
     console.log(`[B4] shutting down | bankroll=$${bankroll.toFixed(2)} W/L=${totalWins}/${totalLosses}`);
+
+    // Attempt to sell open position before exiting
+    if (openPosition) {
+      console.log(`[B4] selling open position before shutdown: ${openPosition.direction} ${openPosition.contracts}x`);
+      try {
+        const sellResult = await sellContracts(openPosition);
+        if (sellResult.orderId) {
+          const mid = await getContractMidPrice(openPosition.tokenId);
+          const pnl = mid ? (mid - openPosition.entryMid) * openPosition.contracts : 0;
+          bankroll += pnl;
+          if (bankroll > peakBankroll) peakBankroll = bankroll;
+          totalTrades++;
+          if (pnl > 0) totalWins++; else totalLosses++;
+          console.log(`[B4] pre-shutdown sell OK | PnL=$${pnl.toFixed(3)} | bankroll=$${bankroll.toFixed(2)}`);
+          openPosition = null;
+          try { await saveB4OpenPosition(null); } catch { /* best effort */ }
+        } else {
+          console.warn(`[B4] pre-shutdown sell FAILED: ${sellResult.error} — position persisted for next restart`);
+          // Position stays persisted in Supabase, next startup will pick it up
+        }
+      } catch (e) {
+        console.warn('[B4] pre-shutdown sell error:', e instanceof Error ? e.message : e);
+      }
+    }
+
     try {
       await saveB4State({
         bankroll,
