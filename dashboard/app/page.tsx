@@ -88,6 +88,7 @@ type PolySkipRow = {
 export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [b4Positions, setB4Positions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -108,6 +109,7 @@ export default function Dashboard() {
     b3EarlySpreadBlock: '',
   });
   const [csvLoading, setCsvLoading] = useState(false);
+  const [b4CsvLoading, setB4CsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   async function load() {
@@ -117,6 +119,7 @@ export default function Dashboard() {
       const [
         { data: configData },
         { data: posData },
+        { data: b4PosData },
         { data: errData },
         { data: polySkipData },
         spreadResult,
@@ -124,7 +127,8 @@ export default function Dashboard() {
         { data: claimLogData },
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').neq('bot', 'B4').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').eq('bot', 'B4').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
@@ -133,6 +137,7 @@ export default function Dashboard() {
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
+      setB4Positions((b4PosData ?? []) as Position[]);
       setErrors((errData ?? []) as ErrorLog[]);
       setPolySkips((polySkipData ?? []) as PolySkipRow[]);
       const claimRow = claimLogData as { message: string; created_at: string } | null;
@@ -278,6 +283,33 @@ export default function Dashboard() {
     a.click();
     URL.revokeObjectURL(url);
     setCsvLoading(false);
+  }
+
+  function downloadB4Csv() {
+    setB4CsvLoading(true);
+    const headers = ['entered_at', 'direction', 'composite', 'position_size', 'bankroll', 'phase', 'slug', 'order_id'];
+    const rows = b4Positions.map((p) => {
+      const raw = (p.raw ?? {}) as Record<string, unknown>;
+      return [
+        escapeCsv(p.entered_at),
+        escapeCsv(String(raw.direction ?? '')),
+        escapeCsv(String(raw.composite ?? p.strike_spread_pct)),
+        escapeCsv(String(p.position_size)),
+        escapeCsv(String(raw.bankroll ?? '')),
+        escapeCsv(String(raw.phase ?? '')),
+        escapeCsv(p.ticker_or_slug ?? ''),
+        escapeCsv(p.order_id ?? ''),
+      ].join(',');
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cursorbot-b4-trades-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setB4CsvLoading(false);
   }
 
   if (loading) return <p>Loading…</p>;
@@ -547,8 +579,50 @@ export default function Dashboard() {
         )}
       </section>
 
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>B4 — 5-Minute BTC Bot (last 50)</h2>
+        <p style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: '#666' }}>Momentum scalper trades on Polymarket 5m BTC Up/Down markets.</span>
+          <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
+        </p>
+        {b4Positions.length === 0 ? (
+          <p style={{ color: '#666' }}>No B4 trades yet.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Direction</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Composite</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bet $</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bankroll</th>
+                <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc' }}>Phase</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Slug</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b4Positions.map((p) => {
+                const raw = (p.raw ?? {}) as Record<string, unknown>;
+                const dir = String(raw.direction ?? '');
+                return (
+                  <tr key={p.id}>
+                    <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
+                    <td style={{ borderBottom: '1px solid #eee', fontWeight: 600, color: dir === 'up' ? '#16a34a' : dir === 'down' ? '#dc2626' : undefined }}>{dir || '—'}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{(Number(raw.composite) || p.strike_spread_pct)?.toFixed(3)}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${p.position_size}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${Number(raw.bankroll ?? 0).toFixed(2)}</td>
+                    <td style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>{String(raw.phase ?? '')}</td>
+                    <td style={{ borderBottom: '1px solid #eee', fontSize: 11, color: '#888' }}>{p.ticker_or_slug ?? ''}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
       <section>
-        <h2 style={headingStyle}>Recent positions (last 200)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 positions (last 200)</h2>
         <p style={{ marginBottom: 8 }}>
           <span style={{ fontSize: 13, color: '#666' }}>Orders <strong>placed</strong> by the bot — limit orders may not fill; check the exchange for fill status.</span>
           <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 200)'}</button>
