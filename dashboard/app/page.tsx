@@ -602,39 +602,39 @@ export default function Dashboard() {
           const target = 1_000_000;
           const progressPct = Math.min(100, Math.max(0, (Math.log(bankroll) - Math.log(30)) / (Math.log(target) - Math.log(30)) * 100));
           return (
-            <div style={{ marginBottom: 16, padding: 12, border: '1px solid #333', borderRadius: 8, background: '#111' }}>
+            <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 10 }}>
                 <div>
-                  <span style={{ fontSize: 12, color: '#888' }}>Bankroll</span>
+                  <span style={{ fontSize: 12, color: '#aaa' }}>Bankroll</span>
                   <div style={{ fontSize: 22, fontWeight: 700, color: '#0D9488' }}>${bankroll.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                 </div>
                 <div>
-                  <span style={{ fontSize: 12, color: '#888' }}>Phase</span>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{phase}</div>
+                  <span style={{ fontSize: 12, color: '#aaa' }}>Phase</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#e5e5e5' }}>{phase}</div>
                 </div>
                 <div>
-                  <span style={{ fontSize: 12, color: '#888' }}>Today P&L</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: dailyPnl >= 0 ? '#16a34a' : '#dc2626' }}>{dailyPnl >= 0 ? '+' : ''}{dailyPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</div>
+                  <span style={{ fontSize: 12, color: '#aaa' }}>Today P&L</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: dailyPnl >= 0 ? '#22c55e' : '#ef4444' }}>{dailyPnl >= 0 ? '+' : ''}{dailyPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</div>
                 </div>
                 <div>
-                  <span style={{ fontSize: 12, color: '#888' }}>Win Rate</span>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{results.length >= 10 ? `${wr.toFixed(1)}%` : `${results.length} trades`}</div>
+                  <span style={{ fontSize: 12, color: '#aaa' }}>Win Rate</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#e5e5e5' }}>{results.length >= 10 ? `${wr.toFixed(1)}%` : `${results.length} trades`}</div>
                 </div>
                 <div>
-                  <span style={{ fontSize: 12, color: '#888' }}>Drawdown</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: dd > 10 ? '#dc2626' : '#888' }}>{dd.toFixed(1)}%</div>
+                  <span style={{ fontSize: 12, color: '#aaa' }}>Drawdown</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: dd > 10 ? '#ef4444' : '#e5e5e5' }}>{dd.toFixed(1)}%</div>
                 </div>
                 <div>
-                  <span style={{ fontSize: 12, color: '#888' }}>Trades</span>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{results.length}</div>
+                  <span style={{ fontSize: 12, color: '#aaa' }}>Trades</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#e5e5e5' }}>{results.length}</div>
                 </div>
               </div>
-              <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>Progress to $1,000,000 (log scale)</div>
+              <div style={{ fontSize: 12, color: '#bbb', marginBottom: 4 }}>Progress to $1,000,000 (log scale)</div>
               <div style={{ background: '#222', borderRadius: 4, height: 20, overflow: 'hidden', position: 'relative' }}>
-                <div style={{ background: 'linear-gradient(90deg, #0D9488, #16a34a)', height: '100%', width: `${progressPct}%`, borderRadius: 4, transition: 'width 0.5s' }} />
-                <span style={{ position: 'absolute', right: 6, top: 2, fontSize: 11, color: '#ccc' }}>{progressPct.toFixed(1)}%</span>
+                <div style={{ background: 'linear-gradient(90deg, #0D9488, #22c55e)', height: '100%', width: `${progressPct}%`, borderRadius: 4, transition: 'width 0.5s' }} />
+                <span style={{ position: 'absolute', right: 6, top: 2, fontSize: 11, color: '#e5e5e5' }}>{progressPct.toFixed(1)}%</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#555', marginTop: 2 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#999', marginTop: 2 }}>
                 <span>$30</span>
                 <span>$200</span>
                 <span>$5K</span>
@@ -642,7 +642,7 @@ export default function Dashboard() {
                 <span>$200K</span>
                 <span>$1M</span>
               </div>
-              {b4State.updated_at && <div style={{ fontSize: 11, color: '#555', marginTop: 6 }}>Last updated: {formatMst(b4State.updated_at, true)}</div>}
+              {b4State.updated_at && <div style={{ fontSize: 11, color: '#999', marginTop: 6 }}>Last updated: {formatMst(b4State.updated_at, true)}</div>}
             </div>
           );
         })()}
