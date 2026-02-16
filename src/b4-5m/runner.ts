@@ -39,7 +39,6 @@ import {
   Side,
   OrderType,
   type ClobClient,
-  type UserOrder,
   type CreateOrderOptions,
 } from '@polymarket/clob-client';
 
@@ -65,7 +64,7 @@ const CLOB_HOST = 'https://clob.polymarket.com';
 interface Position {
   direction: 'up' | 'down';
   tokenId: string;
-  entryContractPrice: number;
+  entryMid: number;       // mid-price at entry (baseline for TP/SL)
   contracts: number;
   entryBtcPrice: number;
   entryTime: number;
@@ -178,11 +177,18 @@ async function getClobClient(): Promise<ClobClient> {
 interface TradeResult {
   orderId?: string;
   tokenId?: string;
-  contractPrice?: number;
+  entryMid?: number;      // mid at time of entry (baseline for TP/SL)
   contracts?: number;
   negRisk?: boolean;
   tickSize?: CreateOrderOptions['tickSize'];
   error?: string;
+}
+
+function parseMid(raw: unknown): number {
+  if (typeof raw === 'string') return parseFloat(raw);
+  if (typeof raw === 'number') return raw;
+  if (raw && typeof raw === 'object' && 'mid' in raw) return parseFloat(String((raw as { mid: string }).mid));
+  return 0;
 }
 
 async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResult> {
@@ -196,45 +202,32 @@ async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResu
 
       const client = await getClobClient();
 
-      // Get current mid-price for entry
-      const midRaw = await client.getMidpoint(tokenId);
-      const mid = parseFloat(typeof midRaw === 'string' ? midRaw : (midRaw as { mid?: string })?.mid ?? '0');
+      // Get current mid-price — this becomes the TP/SL baseline
+      const mid = parseMid(await client.getMidpoint(tokenId));
       if (mid <= 0.05 || mid >= 0.95) return { error: `Mid-price out of range: ${mid}` };
 
       const tickSize: CreateOrderOptions['tickSize'] =
         (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
-      const tickVal = parseFloat(tickSize);
 
-      // Buy slightly above mid (cross the spread for immediate fill)
-      const buyPrice = Math.min(
-        Math.round((mid + tickVal * 2) / tickVal) * tickVal,
-        0.99,
-      );
-      const contracts = Math.max(1, Math.floor(POSITION_SIZE_USD / buyPrice));
+      // FOK market order: fills immediately at best available price, or fails entirely
+      const contracts = Math.max(1, Math.floor(POSITION_SIZE_USD / mid));
 
-      const userOrder: UserOrder = {
-        tokenID: tokenId,
-        price: Number(buyPrice.toFixed(4)),
-        size: contracts,
-        side: Side.BUY,
-      };
+      console.log(`[B4] BUY ${side} $${POSITION_SIZE_USD} (mid=${mid.toFixed(3)}, ~${contracts} contracts) | ${slug}`);
 
-      console.log(`[B4] BUY ${side} ${contracts}x @ ${buyPrice.toFixed(3)} (mid=${mid.toFixed(3)}) | ${slug}`);
-
-      const result = await client.createAndPostOrder(
-        userOrder,
+      const result = await client.createAndPostMarketOrder(
+        { tokenID: tokenId, amount: POSITION_SIZE_USD, side: Side.BUY },
         { tickSize, negRisk: market.negRisk ?? false },
-        OrderType.GTC,
+        OrderType.FOK,
       );
 
       const orderId = (result as { orderID?: string; orderId?: string })?.orderID
         ?? (result as { orderId?: string })?.orderId;
-      if (!orderId) return { error: `No orderId: ${JSON.stringify(result)}` };
+      if (!orderId) return { error: `No fill (FOK rejected): ${JSON.stringify(result)}` };
 
       return {
         orderId,
         tokenId,
-        contractPrice: buyPrice,
+        entryMid: mid,
         contracts,
         negRisk: market.negRisk ?? false,
         tickSize,
@@ -249,40 +242,24 @@ async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResu
 // Sell contracts (early exit)
 // ---------------------------------------------------------------------------
 
-async function sellContracts(pos: Position): Promise<{ orderId?: string; sellPrice?: number; error?: string }> {
+async function sellContracts(pos: Position): Promise<{ orderId?: string; error?: string }> {
   try {
     return await withPolyProxy(async () => {
       const client = await getClobClient();
 
-      // Get current mid to place aggressive sell
-      const midRaw = await client.getMidpoint(pos.tokenId);
-      const mid = parseFloat(typeof midRaw === 'string' ? midRaw : (midRaw as { mid?: string })?.mid ?? '0');
-      const tickVal = parseFloat(pos.tickSize);
+      console.log(`[B4] SELL ${pos.contracts} contracts (FOK market) | ${pos.tokenId.slice(0, 20)}…`);
 
-      // Sell slightly below mid for immediate fill
-      const sellPrice = Math.max(
-        Math.round((mid - tickVal * 2) / tickVal) * tickVal,
-        tickVal,
-      );
-
-      const userOrder: UserOrder = {
-        tokenID: pos.tokenId,
-        price: Number(sellPrice.toFixed(4)),
-        size: pos.contracts,
-        side: Side.SELL,
-      };
-
-      console.log(`[B4] SELL ${pos.contracts}x @ ${sellPrice.toFixed(3)} (mid=${mid.toFixed(3)})`);
-
-      const result = await client.createAndPostOrder(
-        userOrder,
+      // FOK market sell: sells at best available bids, or fails entirely
+      const result = await client.createAndPostMarketOrder(
+        { tokenID: pos.tokenId, amount: pos.contracts, side: Side.SELL },
         { tickSize: pos.tickSize, negRisk: pos.negRisk },
-        OrderType.GTC,
+        OrderType.FOK,
       );
 
       const orderId = (result as { orderID?: string; orderId?: string })?.orderID
         ?? (result as { orderId?: string })?.orderId;
-      return { orderId: orderId ?? undefined, sellPrice };
+      if (!orderId) return { error: `Sell FOK rejected: ${JSON.stringify(result)}` };
+      return { orderId };
     });
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -325,7 +302,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   if (openPosition) {
     const mid = await getContractMidPrice(openPosition.tokenId);
     if (mid != null) {
-      const pctChange = (mid - openPosition.entryContractPrice) / openPosition.entryContractPrice;
+      // Compare mid-to-mid (entry mid vs current mid) for TP/SL
+      const pctChange = (mid - openPosition.entryMid) / openPosition.entryMid;
       const forceExit = msLeft < FORCED_EXIT_SEC * 1000;
 
       let exitReason: string | null = null;
@@ -335,8 +313,20 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
       if (exitReason) {
         const sellResult = await sellContracts(openPosition);
-        const exitPrice = sellResult.sellPrice ?? mid;
-        const pnl = (exitPrice - openPosition.entryContractPrice) * openPosition.contracts;
+
+        if (sellResult.error) {
+          // Sell failed — position is still open, don't update bankroll
+          console.error(`[B4] SELL FAILED (${exitReason}): ${sellResult.error} — will retry next tick`);
+          // If we're at forced exit and sell fails, abandon tracking (let contract resolve)
+          if (forceExit) {
+            console.warn(`[B4] forced exit sell failed — contract will resolve at window end`);
+            openPosition = null;
+          }
+          return;
+        }
+
+        // Sell succeeded — record P&L based on mid movement
+        const pnl = (mid - openPosition.entryMid) * openPosition.contracts;
         const won = pnl > 0;
 
         bankroll += pnl;
@@ -347,15 +337,11 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
         console.log(
           `[B4] EXIT ${exitReason}: ${openPosition.direction} ` +
-          `| entry=${openPosition.entryContractPrice.toFixed(3)} exit=${exitPrice.toFixed(3)} ` +
+          `| entryMid=${openPosition.entryMid.toFixed(3)} currentMid=${mid.toFixed(3)} ` +
           `| change=${(pctChange * 100).toFixed(2)}% ` +
           `| PnL=$${pnl.toFixed(3)} (${won ? 'WIN' : 'LOSS'}) ` +
           `| bankroll=$${bankroll.toFixed(2)} W/L=${totalWins}/${totalLosses}`,
         );
-
-        if (sellResult.error) {
-          console.error(`[B4] sell error (position may still be open): ${sellResult.error}`);
-        }
 
         // Log to Supabase
         try {
@@ -370,8 +356,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
             raw: {
               direction: openPosition.direction,
               exitReason,
-              entryContractPrice: openPosition.entryContractPrice,
-              exitContractPrice: exitPrice,
+              entryMid: openPosition.entryMid,
+              exitMid: mid,
               contracts: openPosition.contracts,
               pnl,
               bankroll,
@@ -397,10 +383,9 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
         openPosition = null;
       } else if (tickCount % 10 === 0) {
-        // Periodic position status log
         console.log(
           `[B4] holding ${openPosition.direction} ` +
-          `| entry=${openPosition.entryContractPrice.toFixed(3)} mid=${mid.toFixed(3)} ` +
+          `| entryMid=${openPosition.entryMid.toFixed(3)} currentMid=${mid.toFixed(3)} ` +
           `| change=${(pctChange * 100).toFixed(2)}% ` +
           `| TP@+${(TAKE_PROFIT_PCT * 100).toFixed(0)}% SL@-${(STOP_LOSS_PCT * 100).toFixed(0)}%`,
         );
@@ -435,11 +420,11 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
   const result = await buyContracts(slug, side);
 
-  if (result.orderId && result.tokenId && result.contractPrice && result.contracts) {
+  if (result.orderId && result.tokenId && result.entryMid && result.contracts) {
     openPosition = {
       direction,
       tokenId: result.tokenId,
-      entryContractPrice: result.contractPrice,
+      entryMid: result.entryMid,
       contracts: result.contracts,
       entryBtcPrice: cl?.price ?? 0,
       entryTime: Date.now(),
@@ -451,7 +436,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     };
     tradesThisWindow++;
     console.log(
-      `[B4] OPENED: ${direction} ${result.contracts}x @ ${result.contractPrice.toFixed(3)} ` +
+      `[B4] OPENED: ${direction} ~${result.contracts}x | entryMid=${result.entryMid.toFixed(3)} ` +
       `| trades=${tradesThisWindow}/${MAX_TRADES_PER_WINDOW} | bankroll=$${bankroll.toFixed(2)}`,
     );
   } else {
