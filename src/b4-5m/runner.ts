@@ -33,8 +33,30 @@ import {
 import type { Candle1m } from './download-candles.js';
 
 // ---------------------------------------------------------------------------
-// Polymarket 5m order placement (uses existing CLOB infrastructure)
+// Polymarket 5m order placement (uses existing CLOB infrastructure + proxy)
 // ---------------------------------------------------------------------------
+
+/** Wrap fn with HTTP proxy for Polymarket CLOB calls (axios + undici). */
+async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (!proxy) return fn();
+  const axios = (await import('axios')).default;
+  const { HttpsProxyAgent } = await import('https-proxy-agent');
+  const prevUndici = (await import('undici')).getGlobalDispatcher();
+  const { setGlobalDispatcher, ProxyAgent } = await import('undici');
+  const prevAxiosAgent = axios.defaults.httpsAgent;
+  const prevAxiosProxy = axios.defaults.proxy;
+  try {
+    setGlobalDispatcher(new ProxyAgent(proxy));
+    axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
+    axios.defaults.proxy = false;
+    return await fn();
+  } finally {
+    setGlobalDispatcher(prevUndici);
+    axios.defaults.httpsAgent = prevAxiosAgent;
+    axios.defaults.proxy = prevAxiosProxy;
+  }
+}
 
 async function placePolyOrder(
   slug: string,
@@ -46,25 +68,27 @@ async function placePolyOrder(
     createPolyClobClient,
     getPolyClobConfigFromEnv,
     getOrCreateDerivedPolyClient,
-    useDerivedPolyKey,
     createAndPostPolyOrder,
     orderParamsFromParsedMarket,
   } = await import('../polymarket/clob.js');
 
+  // Gamma API (market lookup) runs direct — only CLOB (order placement) uses proxy
   const market = await getPolyMarketBySlug(slug);
   if (!market) return { skipReason: `market not found: ${slug}` };
 
-  const cfg = getPolyClobConfigFromEnv();
-  const client = cfg != null
-    ? createPolyClobClient(cfg)
-    : await getOrCreateDerivedPolyClient();
+  return withPolyProxy(async () => {
+    const cfg = getPolyClobConfigFromEnv();
+    const client = cfg != null
+      ? createPolyClobClient(cfg)
+      : await getOrCreateDerivedPolyClient();
 
-  const price = 0.50;
-  const params = orderParamsFromParsedMarket(market, price, size, side);
+    const price = 0.50;
+    const params = orderParamsFromParsedMarket(market, price, size, side);
 
-  const result = await createAndPostPolyOrder(client, params);
-  const orderId = result.orderID ?? (result as Record<string, unknown>).orderId as string | undefined;
-  return { orderId };
+    const result = await createAndPostPolyOrder(client, params);
+    const orderId = result.orderID ?? (result as Record<string, unknown>).orderId as string | undefined;
+    return { orderId };
+  });
 }
 
 // ---------------------------------------------------------------------------
