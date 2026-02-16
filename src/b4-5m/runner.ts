@@ -2,10 +2,10 @@
  * B4 5-Minute BTC Momentum Scalper — v2
  *
  * Strategy:
- *   Entry:  1-minute BTC momentum > 0.03%  → buy Up contracts
- *           1-minute BTC momentum < -0.03% → buy Down contracts
+ *   Entry:  1-minute BTC momentum > 0.06%  → buy Up contracts
+ *           1-minute BTC momentum < -0.06% → buy Down contracts
  *   Size:   $5 per trade (fixed, configurable via B4_POSITION_SIZE env)
- *   Exit:   +3% take profit OR -5% stop loss on contract price (early close)
+ *   Exit:   +8% take profit OR -4% stop loss on contract price (early close)
  *   Limit:  Max 3 trades per 5-minute window, 1 open position at a time
  *   Poll:   Every 3 seconds
  *   Price:  Chainlink BTC/USD via Polymarket RTDS WebSocket (same oracle as resolution)
@@ -50,9 +50,9 @@ import {
 
 const POSITION_SIZE_USD = parseFloat(process.env.B4_POSITION_SIZE || '5');
 const MAX_TRADES_PER_WINDOW = 3;
-const MOMENTUM_THRESHOLD = 0.0003;   // 0.03%
-const TAKE_PROFIT_PCT = 0.03;        // +3% contract price
-const STOP_LOSS_PCT = 0.05;          // -5% contract price
+const MOMENTUM_THRESHOLD = 0.0006;   // 0.06% — filters noise, needs real directional move
+const TAKE_PROFIT_PCT = 0.08;        // +8% contract price — nets ~6% after spread
+const STOP_LOSS_PCT = 0.04;          // -4% contract price — nets ~6% loss after spread
 const TICK_INTERVAL_MS = 3_000;      // 3 seconds
 const FORCED_EXIT_SEC = 25;          // force-exit this many seconds before window end
 const MIN_ENTRY_SEC_LEFT = 60;       // need at least 60s left for entry
@@ -425,7 +425,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     return;
   }
   if (msLeft < MIN_ENTRY_SEC_LEFT * 1000) return; // not enough time for TP/SL
-  if (secInWindow < 15) return; // let the window settle for ~15s
+  if (secInWindow < 60) return; // wait 60s for order book to fill out (spread is too wide early)
 
   // --- Momentum signal ---
   const momentum = getMomentum1m();
