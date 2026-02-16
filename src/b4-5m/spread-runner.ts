@@ -17,6 +17,7 @@
  */
 
 import 'dotenv/config';
+import { ethers } from 'ethers';
 import { PriceFeed, getChainlinkPrice } from './price-feed.js';
 import {
   getWindowStart,
@@ -29,6 +30,7 @@ import {
   logError,
   logPosition,
   loadB4Config,
+  getDb,
 } from '../db/supabase.js';
 import {
   createPolyClobClient,
@@ -100,6 +102,39 @@ const placedThisWindow = new Set<string>();
 // Blocking timestamps
 let t1BlockedUntil = 0;
 let t2BlockedUntil = 0;
+
+// ---------------------------------------------------------------------------
+// Wallet balance polling (every ~15 min → updates b4_state.bankroll)
+// ---------------------------------------------------------------------------
+
+const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const SAFE_ADDRESS = process.env.POLYGUN_CLAIM_SAFE_ADDRESS?.trim()
+  ?? process.env.POLYMARKET_SAFE_ADDRESS?.trim()
+  ?? '0xBDD5AD35435bAb6b3AdF6A8E7e639D0393263932';
+const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
+const BALANCE_POLL_MS = 15 * 60_000; // 15 minutes
+let lastBalancePoll = 0;
+
+async function pollWalletBalance(): Promise<void> {
+  const now = Date.now();
+  if (now - lastBalancePoll < BALANCE_POLL_MS) return;
+  lastBalancePoll = now;
+  try {
+    const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || 'https://polygon-mainnet.g.alchemy.com/v2/J6wjUKfJUdYzPD5QNDd-i';
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const usdc = new ethers.Contract(USDC_POLYGON, ERC20_ABI, provider);
+    const raw = await usdc.balanceOf(SAFE_ADDRESS);
+    const balance = Number(ethers.formatUnits(raw, 6));
+    console.log(`[B4] wallet balance: $${balance.toFixed(2)}`);
+    await getDb().from('b4_state').update({
+      bankroll: balance,
+      max_bankroll: balance,
+      updated_at: new Date().toISOString(),
+    }).eq('id', 'default');
+  } catch (e) {
+    console.warn('[B4] balance poll failed:', e instanceof Error ? e.message : e);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Proxy wrapper
@@ -249,6 +284,9 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       }
     } catch { /* Supabase may not be configured */ }
   }
+
+  // Poll wallet balance every ~15 min
+  await pollWalletBalance();
 
   // Refresh config from Supabase every ~30 ticks (~90 seconds)
   if (tickCount % 30 === 0) {
