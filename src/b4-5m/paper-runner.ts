@@ -61,6 +61,7 @@ interface PaperPosition {
   entryBtcPrice: number;
   entryTime: number;
   windowStart: number;
+  windowOpenPrice: number;  // BTC price at window open (for resolution comparison)
   slug: string;
   tier?: string;           // for B5 spread tiers
   spreadAtEntry?: number;  // for B5
@@ -282,6 +283,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
   const btcPrice = cl?.price ?? 0;
   const slug = getPolySlug5m(now);
+  const windowOpenPrice = await feed.getWindowOpen();
 
   // --- Monitor open positions for TP/SL/Window End ---
   const positionsToCheck = [...openPositions];
@@ -303,11 +305,13 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     if (pos.strategy === 'spread') {
       if (pos.windowStart !== windowStartMs) {
         // Window ended — resolve at $1 or $0
-        const windowOpenPrice = await feed.getWindowOpen();
-        const resolvedUp = btcPrice > windowOpenPrice;
+        // Use the window open price stored at position entry (not the new window's open)
+        const resolvedUp = btcPrice > pos.windowOpenPrice;
         const won = (pos.direction === 'up' && resolvedUp) || (pos.direction === 'down' && !resolvedUp);
         const resolvePrice = won ? 1.0 : 0.0;
-        const resolvePnl = (resolvePrice - pos.entryAsk) * (POSITION_SIZE_USD / pos.entryAsk);
+        console.log(
+          `[PAPER] B5 resolution: BTC=$${btcPrice.toFixed(2)} vs open=$${pos.windowOpenPrice.toFixed(2)} → ${resolvedUp ? 'UP' : 'DOWN'} → ${won ? 'WIN' : 'LOSS'}`,
+        );
         await paperExit(pos, won ? 'RESOLVED_WIN' : 'RESOLVED_LOSS', resolvePrice, resolvePrice, resolvePrice, btcPrice);
       }
       continue;
@@ -370,6 +374,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
               entryBid: normalBook.bid,
               entryBtcPrice: btcPrice,
               windowStart: windowStartMs,
+              windowOpenPrice,
               slug,
               momentumAtEntry: momentum,
             });
@@ -384,6 +389,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
               entryBid: reverseBook.bid,
               entryBtcPrice: btcPrice,
               windowStart: windowStartMs,
+              windowOpenPrice,
               slug,
               momentumAtEntry: momentum,
             });
@@ -441,6 +447,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
                 entryBid: book.bid,
                 entryBtcPrice: btcPrice,
                 windowStart: windowStartMs,
+                windowOpenPrice,
                 slug,
                 tier: tier.name,
                 spreadAtEntry: spreadPct,
