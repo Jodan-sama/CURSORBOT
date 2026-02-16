@@ -412,8 +412,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     }
   }
 
-  // Periodic status log
-  if (tickCount % 20 === 0 && absSpread > 0.01) {
+  // Periodic status log (~every 9 seconds)
+  if (tickCount % 3 === 0 && absSpread > 0.001) {
     console.log(
       `[B4] spread: ${signedSpread.toFixed(4)}% ${spreadDir} ` +
       `| BTC=$${btcPrice.toFixed(2)} open=$${windowOpenPrice.toFixed(2)} ` +
