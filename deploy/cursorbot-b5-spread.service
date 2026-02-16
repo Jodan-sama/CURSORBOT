@@ -1,0 +1,18 @@
+[Unit]
+Description=Cursorbot B5 Spread Runner (5-min BTC, Polymarket)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/cursorbot
+ExecStart=/usr/bin/node dist/b4-5m/spread-run.js
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/cursorbot/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cursorbot-b5
+
+[Install]
+WantedBy=multi-user.target
