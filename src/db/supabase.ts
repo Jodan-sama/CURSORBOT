@@ -322,7 +322,7 @@ export async function saveB4OpenPosition(position: Record<string, unknown> | nul
   }
 }
 
-/** Load B4 open position from Supabase. Returns null if none saved. */
+/** Load B4 open position from Supabase. Returns null if none saved or data is invalid. */
 export async function loadB4OpenPosition(): Promise<Record<string, unknown> | null> {
   try {
     const { data, error } = await getDb()
@@ -333,7 +333,11 @@ export async function loadB4OpenPosition(): Promise<Record<string, unknown> | nu
     if (error || !data) return null;
     const raw = (data as Record<string, unknown>).results_json;
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      return raw as Record<string, unknown>;
+      const pos = raw as Record<string, unknown>;
+      // Validate required fields to avoid restoring stale/corrupt data
+      if (!pos.tokenId || !pos.entryMid || !pos.direction) return null;
+      if (typeof pos.entryMid === 'number' && (pos.entryMid <= 0 || pos.entryMid >= 1)) return null;
+      return pos;
     }
     return null;
   } catch {
