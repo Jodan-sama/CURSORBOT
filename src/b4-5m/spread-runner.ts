@@ -29,8 +29,6 @@ import {
   logError,
   logPosition,
   loadB4Config,
-  saveB4State,
-  loadB4State,
 } from '../db/supabase.js';
 import {
   createPolyClobClient,
@@ -98,10 +96,6 @@ interface OpenOrder {
 const openOrders: OpenOrder[] = [];
 let currentWindowStart = 0;
 const placedThisWindow = new Set<string>();
-let totalTrades = 0;
-let totalWins = 0;
-let totalLosses = 0;
-let totalPnl = 0;
 
 // Blocking timestamps
 let t1BlockedUntil = 0;
@@ -210,46 +204,14 @@ async function placeLimitOrder(
 }
 
 // ---------------------------------------------------------------------------
-// Resolve positions at window end (internal tracking only)
+// Clean up stale orders from previous windows (no bankroll tracking —
+// limit orders may not fill, so we can't assume P&L from placement alone)
 // ---------------------------------------------------------------------------
 
-async function resolveWindowEnd(btcPrice: number): Promise<void> {
-  const toResolve = openOrders.filter(o => o.windowStart !== currentWindowStart);
-  for (const order of toResolve) {
-    const resolvedUp = btcPrice > order.windowOpenPrice;
-    const won = (order.direction === 'up' && resolvedUp) || (order.direction === 'down' && !resolvedUp);
-    const resolvePrice = won ? 1.0 : 0.0;
-
-    const contracts = order.size / order.limitPrice;
-    const pnl = (resolvePrice - order.limitPrice) * contracts;
-
-    totalTrades++;
-    if (won) totalWins++; else totalLosses++;
-    totalPnl += pnl;
-
-    console.log(
-      `[B4] RESOLVED ${order.tier}: ${order.direction} → ${resolvedUp ? 'UP' : 'DOWN'} → ${won ? 'WIN' : 'LOSS'} ` +
-      `| BTC=$${btcPrice.toFixed(2)} vs open=$${order.windowOpenPrice.toFixed(2)} ` +
-      `| PnL=$${pnl.toFixed(3)} | cumPnl=$${totalPnl.toFixed(2)} W/L=${totalWins}/${totalLosses}`,
-    );
-
-    // Update bankroll in b4_state
-    try {
-      const state = await loadB4State();
-      if (state) {
-        const newBankroll = state.bankroll + pnl;
-        const newMaxBankroll = Math.max(state.max_bankroll, newBankroll);
-        await saveB4State({
-          ...state,
-          bankroll: newBankroll,
-          max_bankroll: newMaxBankroll,
-          consecutive_losses: won ? 0 : state.consecutive_losses + 1,
-          // Keep existing results_json (tier config)
-        });
-      }
-    } catch { /* best effort */ }
-
-    // Remove from tracking
+function cleanupOldOrders(): void {
+  const stale = openOrders.filter(o => o.windowStart !== currentWindowStart);
+  for (const order of stale) {
+    console.log(`[B4] window ended — removing ${order.tier} ${order.direction} order (fill unknown)`);
     const idx = openOrders.indexOf(order);
     if (idx >= 0) openOrders.splice(idx, 1);
   }
@@ -275,8 +237,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const btcPrice = cl?.price ?? 0;
   if (btcPrice <= 0) return;
 
-  // Resolve old-window positions
-  await resolveWindowEnd(btcPrice);
+  // Clean up orders from previous windows
+  cleanupOldOrders();
 
   // B4 emergency off check
   if (tickCount % 10 === 0) {
@@ -423,8 +385,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     console.log(`[B4] ═══ Status @ ${new Date().toISOString()} ═══`);
     console.log(`[B4] BTC=$${btcPrice.toFixed(2)} | spread=${signedSpread.toFixed(4)}% ${spreadDir}`);
     console.log(`[B4] Tiers: T1>${activeTiers[0].spreadPct}% T2>${activeTiers[1].spreadPct}% T3>${activeTiers[2].spreadPct}%`);
-    console.log(`[B4] Trades: ${totalTrades} | W/L: ${totalWins}/${totalLosses} | PnL: $${totalPnl.toFixed(2)}`);
-    console.log(`[B4] Open orders: ${openOrders.length}`);
+    console.log(`[B4] Pending orders: ${openOrders.length}`);
     if (t1BlockedUntil > nowMs) console.log(`[B4] T1 blocked for ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s`);
     if (t2BlockedUntil > nowMs) console.log(`[B4] T2 blocked for ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s`);
     console.log('');
@@ -480,9 +441,7 @@ export async function startSpreadRunner(): Promise<void> {
 
   const shutdown = () => {
     console.log('');
-    console.log('[B4] ═══ Final Results ═══');
-    console.log(`[B4] Trades: ${totalTrades} | W/L: ${totalWins}/${totalLosses} | PnL: $${totalPnl.toFixed(2)}`);
-    console.log(`[B4] Open orders at shutdown: ${openOrders.length} (will resolve when market settles)`);
+    console.log(`[B4] shutting down — ${openOrders.length} pending orders will resolve on-chain`);
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
