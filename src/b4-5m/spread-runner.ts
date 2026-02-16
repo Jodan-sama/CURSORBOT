@@ -59,7 +59,7 @@ interface TierConfig {
 let activeTiers: TierConfig[] = [
   { name: 'B4-T1', spreadPct: 0.10, entryAfterSec: 250, limitPrice: 0.96 },
   { name: 'B4-T2', spreadPct: 0.21, entryAfterSec: 200, limitPrice: 0.97 },
-  { name: 'B4-T3', spreadPct: 0.45, entryAfterSec: 140, limitPrice: 0.97 },
+  { name: 'B4-T3', spreadPct: 0.45, entryAfterSec: 100, limitPrice: 0.97 },
 ];
 
 let positionSize = parseFloat(process.env.B4_POSITION_SIZE || '5');
@@ -147,7 +147,7 @@ async function refreshConfig(): Promise<void> {
     activeTiers = [
       { name: 'B4-T1', spreadPct: cfg.t1_spread, entryAfterSec: 250, limitPrice: 0.96 },
       { name: 'B4-T2', spreadPct: cfg.t2_spread, entryAfterSec: 200, limitPrice: 0.97 },
-      { name: 'B4-T3', spreadPct: cfg.t3_spread, entryAfterSec: 140, limitPrice: 0.97 },
+      { name: 'B4-T3', spreadPct: cfg.t3_spread, entryAfterSec: 100, limitPrice: 0.97 },
     ];
     positionSize = cfg.position_size;
     t2BlockMs = cfg.t2_block_min * 60_000;
