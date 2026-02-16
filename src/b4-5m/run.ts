@@ -17,4 +17,7 @@ process.on('uncaughtException', (err) => {
 });
 
 console.log(`B4 5-min BTC bot starting`);
-startB4Loop();
+startB4Loop().catch((e) => {
+  console.error('[B4] startB4Loop failed:', e);
+  process.exit(1);
+});

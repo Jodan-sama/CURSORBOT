@@ -248,6 +248,73 @@ export async function logPolySkip(entry: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// B4 state persistence
+// ---------------------------------------------------------------------------
+
+export interface B4StateRow {
+  bankroll: number;
+  max_bankroll: number;
+  consecutive_losses: number;
+  cooldown_until_ms: number;
+  results_json: boolean[];
+  daily_start_bankroll: number;
+  daily_start_date: string;
+  half_kelly_trades_left: number;
+  updated_at: string;
+}
+
+/** Load B4 risk state from Supabase. Returns null if table doesn't exist or no row. */
+export async function loadB4State(): Promise<B4StateRow | null> {
+  try {
+    const { data, error } = await getDb()
+      .from('b4_state')
+      .select('*')
+      .eq('id', 'default')
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as Record<string, unknown>;
+    return {
+      bankroll: Number(row.bankroll) || 30,
+      max_bankroll: Number(row.max_bankroll) || 30,
+      consecutive_losses: Number(row.consecutive_losses) || 0,
+      cooldown_until_ms: Number(row.cooldown_until_ms) || 0,
+      results_json: Array.isArray(row.results_json) ? row.results_json as boolean[] : [],
+      daily_start_bankroll: Number(row.daily_start_bankroll) || 30,
+      daily_start_date: String(row.daily_start_date ?? ''),
+      half_kelly_trades_left: Number(row.half_kelly_trades_left) || 0,
+      updated_at: String(row.updated_at ?? ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Save B4 risk state to Supabase. Does not throw. */
+export async function saveB4State(state: Omit<B4StateRow, 'updated_at'>): Promise<void> {
+  try {
+    await getDb().from('b4_state').upsert({
+      id: 'default',
+      bankroll: state.bankroll,
+      max_bankroll: state.max_bankroll,
+      consecutive_losses: state.consecutive_losses,
+      cooldown_until_ms: state.cooldown_until_ms,
+      results_json: state.results_json,
+      daily_start_bankroll: state.daily_start_bankroll,
+      daily_start_date: state.daily_start_date,
+      half_kelly_trades_left: state.half_kelly_trades_left,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+  } catch (e) {
+    console.error('[saveB4State] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+/** Set emergency_off flag in bot_config. */
+export async function setEmergencyOff(off: boolean): Promise<void> {
+  await getDb().from('bot_config').update({ emergency_off: off }).eq('id', 'default');
+}
+
 /** Log an error to Supabase (and optionally console). Does not throw. */
 export async function logError(
   err: unknown,

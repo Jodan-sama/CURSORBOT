@@ -4,6 +4,8 @@
  *
  * Loop: every 5 seconds, check timing → collect data → compute signals → place order.
  * Entry window: 90-150 seconds into the 5-min window (after seeing 2 min of price action).
+ *
+ * Features: bankroll persistence, 5-phase Kelly, order splitting, $1M auto-stop.
  */
 
 import 'dotenv/config';
@@ -11,11 +13,15 @@ import { PriceFeed } from './price-feed.js';
 import { computeSignals, type SignalOutput } from './signals.js';
 import {
   createRiskState,
+  restoreRiskState,
+  serializeRiskState,
   shouldTrade,
   getConfidenceThreshold,
   getBetSize,
+  getPhase,
   recordResult,
   getRiskSummary,
+  isTargetReached,
   type RiskState,
 } from './risk.js';
 import {
@@ -28,8 +34,11 @@ import {
 } from './clock.js';
 import {
   isEmergencyOff,
+  setEmergencyOff,
   logError,
   logPosition,
+  loadB4State,
+  saveB4State,
 } from '../db/supabase.js';
 import type { Candle1m } from './download-candles.js';
 
@@ -59,11 +68,18 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+const ORDER_CHUNK_SIZE = 500; // split orders into ~$500 chunks
+const CHUNK_DELAY_MS = 1_500; // 1.5s between chunks
+
+/**
+ * Place order on Polymarket. Splits into chunks if betSize > ORDER_CHUNK_SIZE.
+ * Returns the first successful orderId.
+ */
 async function placePolyOrder(
   slug: string,
   side: 'yes' | 'no',
-  size: number,
-): Promise<{ orderId?: string; skipReason?: string }> {
+  totalSize: number,
+): Promise<{ orderId?: string; skipReason?: string; chunksPlaced?: number; chunksFailed?: number }> {
   const { getPolyMarketBySlug } = await import('../polymarket/gamma.js');
   const {
     createPolyClobClient,
@@ -73,23 +89,53 @@ async function placePolyOrder(
     orderParamsFromParsedMarket,
   } = await import('../polymarket/clob.js');
 
-  // Gamma API (market lookup) runs direct — only CLOB (order placement) uses proxy
   const market = await getPolyMarketBySlug(slug);
   if (!market) return { skipReason: `market not found: ${slug}` };
 
-  return withPolyProxy(async () => {
-    const cfg = getPolyClobConfigFromEnv();
-    const client = cfg != null
-      ? createPolyClobClient(cfg)
-      : await getOrCreateDerivedPolyClient();
+  // Calculate chunks: each chunk is ~ORDER_CHUNK_SIZE contracts
+  const contractsTotal = Math.max(10, Math.round(totalSize / 0.50));
+  const chunkContracts = Math.max(10, Math.round(ORDER_CHUNK_SIZE / 0.50));
+  const numChunks = totalSize > ORDER_CHUNK_SIZE ? Math.ceil(contractsTotal / chunkContracts) : 1;
+  const contractsPerChunk = numChunks === 1 ? contractsTotal : chunkContracts;
 
-    const price = 0.50;
-    const params = orderParamsFromParsedMarket(market, price, size, side);
+  let firstOrderId: string | undefined;
+  let chunksPlaced = 0;
+  let chunksFailed = 0;
 
-    const result = await createAndPostPolyOrder(client, params);
-    const orderId = result.orderID ?? (result as Record<string, unknown>).orderId as string | undefined;
-    return { orderId };
-  });
+  for (let i = 0; i < numChunks; i++) {
+    const chunkSize = i === numChunks - 1 ? contractsTotal - contractsPerChunk * i : contractsPerChunk;
+    if (chunkSize <= 0) break;
+
+    try {
+      const orderId = await withPolyProxy(async () => {
+        const cfg = getPolyClobConfigFromEnv();
+        const client = cfg != null
+          ? createPolyClobClient(cfg)
+          : await getOrCreateDerivedPolyClient();
+        const price = 0.50;
+        const params = orderParamsFromParsedMarket(market, price, chunkSize, side);
+        const result = await createAndPostPolyOrder(client, params);
+        return result.orderID ?? (result as Record<string, unknown>).orderId as string | undefined;
+      });
+
+      if (orderId) {
+        if (!firstOrderId) firstOrderId = orderId;
+        chunksPlaced++;
+        if (numChunks > 1) console.log(`[B4] chunk ${i + 1}/${numChunks}: ${chunkSize} contracts | orderId=${orderId}`);
+      } else {
+        chunksFailed++;
+      }
+    } catch (e) {
+      chunksFailed++;
+      console.error(`[B4] chunk ${i + 1}/${numChunks} failed:`, e instanceof Error ? e.message : e);
+    }
+
+    // Delay between chunks to avoid rate limiting
+    if (i < numChunks - 1) await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+  }
+
+  if (firstOrderId) return { orderId: firstOrderId, chunksPlaced, chunksFailed };
+  return { skipReason: `all ${numChunks} chunks failed`, chunksFailed };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,9 +149,9 @@ interface WindowState {
   signalResult: SignalOutput | null;
   orderId: string | null;
   direction: 'up' | 'down' | null;
+  betSize: number;
 }
 
-// Track last 10 window outcomes for trend signal
 const recentOutcomes: boolean[] = [];
 
 function recordWindowOutcome(outcome: boolean): void {
@@ -119,6 +165,7 @@ function recordWindowOutcome(outcome: boolean): void {
 
 const TICK_INTERVAL_MS = 5_000;
 const INITIAL_BANKROLL = parseFloat(process.env.B4_INITIAL_BANKROLL || '30');
+const PERSIST_INTERVAL_TICKS = 12; // persist state every ~60 seconds
 
 async function runOneTick(
   feed: PriceFeed,
@@ -127,7 +174,30 @@ async function runOneTick(
   now: Date,
   tickCount: number,
 ): Promise<WindowState> {
-  // Check emergency off
+  // -----------------------------------------------------------------------
+  // $1M target check
+  // -----------------------------------------------------------------------
+  if (isTargetReached(risk)) {
+    console.log(`[B4] TARGET REACHED: $${risk.bankroll.toFixed(2)} >= $1,000,000`);
+    try {
+      await setEmergencyOff(true);
+      await logPosition({
+        bot: 'B4',
+        asset: 'BTC',
+        venue: 'polymarket',
+        strike_spread_pct: 0,
+        position_size: 0,
+        raw: { event: 'target_reached', bankroll: risk.bankroll },
+      });
+      await saveB4State(serializeRiskState(risk));
+      await logError(new Error('B4 TARGET REACHED — $1M'), { bankroll: risk.bankroll, phase: getPhase(risk.bankroll) });
+    } catch { /* best effort */ }
+    process.exit(0);
+  }
+
+  // -----------------------------------------------------------------------
+  // Emergency off check
+  // -----------------------------------------------------------------------
   if (tickCount % 12 === 0) {
     try {
       if (await isEmergencyOff()) {
@@ -142,18 +212,20 @@ async function runOneTick(
   const windowStartMs = getWindowStart(now).getTime();
   const secIntoWindow = secondsIntoWindow(now);
 
-  // New window? Reset state.
+  // -----------------------------------------------------------------------
+  // New window? Resolve previous trade and reset.
+  // -----------------------------------------------------------------------
   if (windowStartMs !== windowState.startMs) {
-    // If we had a trade in the previous window, check outcome
     if (windowState.direction && windowState.orderId && windowState.windowOpenPrice) {
       try {
         const spotNow = await feed.getSpotPrice();
         const wasUp = spotNow >= windowState.windowOpenPrice;
         const won = (windowState.direction === 'up' && wasUp) || (windowState.direction === 'down' && !wasUp);
         recordWindowOutcome(wasUp);
-        const betSize = getBetSize(risk);
-        recordResult(risk, won, betSize);
+        recordResult(risk, won, windowState.betSize);
         console.log(`[B4] window resolved: bet ${windowState.direction}, outcome ${wasUp ? 'up' : 'down'}, ${won ? 'WIN' : 'LOSS'} | ${getRiskSummary(risk)}`);
+        // Persist after every trade result
+        try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
       } catch (e) {
         console.error('[B4] outcome check failed:', e instanceof Error ? e.message : e);
       }
@@ -166,9 +238,9 @@ async function runOneTick(
       signalResult: null,
       orderId: null,
       direction: null,
+      betSize: 0,
     };
 
-    // Set window open price
     feed.setWindowOpen(windowStartMs);
   }
 
@@ -179,6 +251,11 @@ async function runOneTick(
   if (windowState.windowOpenPrice == null && secIntoWindow >= 5) {
     windowState.windowOpenPrice = await feed.getWindowOpen();
     if (tickCount % 60 === 0) console.log(`[B4] window open: $${windowState.windowOpenPrice?.toFixed(2)} | slug: ${getPolySlug5m(now)}`);
+  }
+
+  // Periodic state persistence
+  if (tickCount % PERSIST_INTERVAL_TICKS === 0) {
+    try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
   }
 
   // Already traded this window? Skip.
@@ -192,7 +269,7 @@ async function runOneTick(
     return windowState;
   }
 
-  // Risk checks
+  // Risk checks (includes drawdown, daily loss, circuit breaker, cooldown)
   const { ok, reason } = shouldTrade(risk, now);
   if (!ok) {
     if (tickCount % 12 === 0) console.log(`[B4] skip: ${reason}`);
@@ -209,7 +286,7 @@ async function runOneTick(
     return windowState;
   }
 
-  const lastChangePct = recentOutcomes.length > 0 ? 0 : 0; // Simplified; the signal engine handles trends
+  const lastChangePct = recentOutcomes.length > 0 ? 0 : 0;
   const signals = computeSignals({
     priorCandles,
     intraCandles,
@@ -231,21 +308,25 @@ async function runOneTick(
     return windowState;
   }
 
-  // Place order
+  // -----------------------------------------------------------------------
+  // Place order (with splitting for large bets)
+  // -----------------------------------------------------------------------
   const betSize = getBetSize(risk);
   const slug = getPolySlug5m(now);
   const side = signals.direction === 'up' ? 'yes' : 'no';
-  const contracts = Math.max(10, Math.round(betSize / 0.50)); // at ~50c each
+  const phase = getPhase(risk.bankroll);
 
-  console.log(`[B4] SIGNAL: ${signals.direction} (composite=${signals.composite.toFixed(3)}) | bet $${betSize} (${contracts} contracts) | slug: ${slug}`);
+  console.log(`[B4] SIGNAL: ${signals.direction} (composite=${signals.composite.toFixed(3)}) | bet $${betSize} (Phase ${phase}) | slug: ${slug}`);
 
   try {
-    const result = await placePolyOrder(slug, side, contracts);
+    const result = await placePolyOrder(slug, side, betSize);
     if (result.orderId) {
       windowState.enteredThisWindow = true;
       windowState.orderId = result.orderId;
       windowState.direction = signals.direction;
-      console.log(`[B4] ORDER PLACED: ${side} ${contracts}x @ ~50c | orderId=${result.orderId}`);
+      windowState.betSize = betSize;
+      const chunkInfo = (result.chunksPlaced ?? 0) > 1 ? ` | ${result.chunksPlaced} chunks ok, ${result.chunksFailed ?? 0} failed` : '';
+      console.log(`[B4] ORDER PLACED: ${side} $${betSize} @ ~50c | orderId=${result.orderId}${chunkInfo}`);
       try {
         await logPosition({
           bot: 'B4',
@@ -264,8 +345,10 @@ async function runOneTick(
             rsiSignal: signals.rsiSignal,
             trend: signals.trend,
             volatility: signals.volatility,
-            phase: risk.bankroll < 200 ? 1 : risk.bankroll < 5000 ? 2 : 3,
+            phase: String(phase),
             bankroll: risk.bankroll,
+            chunksPlaced: result.chunksPlaced,
+            chunksFailed: result.chunksFailed,
           },
         });
       } catch { /* don't fail the trade on log error */ }
@@ -275,9 +358,8 @@ async function runOneTick(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[B4] order failed: ${msg}`);
-    // Mark as entered to prevent retry-spam on the same window
     windowState.enteredThisWindow = true;
-    try { await logError(e, { bot: 'B4', slug, side, contracts }); } catch { /* ignore */ }
+    try { await logError(e, { bot: 'B4', slug, side, betSize }); } catch { /* ignore */ }
   }
 
   return windowState;
@@ -287,9 +369,19 @@ async function runOneTick(
 // Main loop
 // ---------------------------------------------------------------------------
 
-export function startB4Loop(): void {
+export async function startB4Loop(): Promise<void> {
+  // Load persisted state or fall back to initial bankroll
+  let risk: RiskState;
+  const saved = await loadB4State();
+  if (saved && saved.bankroll > 0) {
+    risk = restoreRiskState(saved);
+    console.log(`[B4] Restored state: ${getRiskSummary(risk)}`);
+  } else {
+    risk = createRiskState(INITIAL_BANKROLL);
+    console.log(`[B4] Fresh start: bankroll $${INITIAL_BANKROLL}`);
+  }
+
   const feed = new PriceFeed();
-  const risk = createRiskState(INITIAL_BANKROLL);
   let windowState: WindowState = {
     startMs: 0,
     enteredThisWindow: false,
@@ -297,12 +389,14 @@ export function startB4Loop(): void {
     signalResult: null,
     orderId: null,
     direction: null,
+    betSize: 0,
   };
   let tickCount = 0;
 
-  console.log(`[B4] Starting 5-minute BTC bot | bankroll: $${INITIAL_BANKROLL}`);
+  console.log(`[B4] Starting 5-minute BTC bot | ${getRiskSummary(risk)}`);
   console.log(`[B4] Strategy: intra-window momentum + multi-signal ensemble`);
   console.log(`[B4] Entry: 90-150s into each 5m window`);
+  console.log(`[B4] Target: $1,000,000`);
 
   const runTick = async () => {
     tickCount++;
@@ -324,8 +418,9 @@ export function startB4Loop(): void {
 
   runTick();
 
-  const shutdown = () => {
+  const shutdown = async () => {
     console.log(`[B4] shutting down | ${getRiskSummary(risk)}`);
+    try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

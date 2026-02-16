@@ -89,6 +89,7 @@ export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
+  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; results_json: boolean[]; updated_at: string } | null>(null);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -116,6 +117,7 @@ export default function Dashboard() {
     setLoadError(null);
     try {
       const spreadPromise = getSupabase().from('spread_thresholds').select('bot, asset, threshold_pct');
+      const b4StatePromise = getSupabase().from('b4_state').select('*').eq('id', 'default').maybeSingle();
       const [
         { data: configData },
         { data: posData },
@@ -125,6 +127,7 @@ export default function Dashboard() {
         spreadResult,
         { data: botSizesData },
         { data: claimLogData },
+        b4StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').neq('bot', 'B4').order('entered_at', { ascending: false }).limit(200),
@@ -134,10 +137,13 @@ export default function Dashboard() {
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
         getSupabase().from('polymarket_claim_log').select('message, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
+        Promise.resolve(b4StatePromise).catch(() => ({ data: null })),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setB4Positions((b4PosData ?? []) as Position[]);
+      const b4Row = (b4StateResult as { data: unknown }).data as typeof b4State;
+      setB4State(b4Row ?? null);
       setErrors((errData ?? []) as ErrorLog[]);
       setPolySkips((polySkipData ?? []) as PolySkipRow[]);
       const claimRow = claimLogData as { message: string; created_at: string } | null;
@@ -580,9 +586,67 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>B4 — 5-Minute BTC Bot (last 50)</h2>
+        <h2 style={headingStyle}>B4 — 5-Minute BTC Bot</h2>
+
+        {b4State && (() => {
+          const bankroll = Number(b4State.bankroll) || 0;
+          const maxBankroll = Number(b4State.max_bankroll) || 0;
+          const dailyStart = Number(b4State.daily_start_bankroll) || bankroll;
+          const dailyPnl = bankroll - dailyStart;
+          const dd = maxBankroll > 0 ? ((maxBankroll - bankroll) / maxBankroll * 100) : 0;
+          const results = Array.isArray(b4State.results_json) ? b4State.results_json : [];
+          const wr = results.length >= 10 ? (results.slice(-50).filter(Boolean).length / Math.min(50, results.length) * 100) : 0;
+          const phase = bankroll < 200 ? '1' : bankroll < 5000 ? '2' : bankroll < 30000 ? '3' : bankroll < 200000 ? '4a' : '4b';
+          const target = 1_000_000;
+          const progressPct = Math.min(100, Math.max(0, (Math.log(bankroll) - Math.log(30)) / (Math.log(target) - Math.log(30)) * 100));
+          return (
+            <div style={{ marginBottom: 16, padding: 12, border: '1px solid #333', borderRadius: 8, background: '#111' }}>
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 10 }}>
+                <div>
+                  <span style={{ fontSize: 12, color: '#888' }}>Bankroll</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#0D9488' }}>${bankroll.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, color: '#888' }}>Phase</span>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{phase}</div>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, color: '#888' }}>Today P&L</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: dailyPnl >= 0 ? '#16a34a' : '#dc2626' }}>{dailyPnl >= 0 ? '+' : ''}{dailyPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</div>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, color: '#888' }}>Win Rate</span>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{results.length >= 10 ? `${wr.toFixed(1)}%` : `${results.length} trades`}</div>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, color: '#888' }}>Drawdown</span>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: dd > 10 ? '#dc2626' : '#888' }}>{dd.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, color: '#888' }}>Trades</span>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{results.length}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>Progress to $1,000,000 (log scale)</div>
+              <div style={{ background: '#222', borderRadius: 4, height: 20, overflow: 'hidden', position: 'relative' }}>
+                <div style={{ background: 'linear-gradient(90deg, #0D9488, #16a34a)', height: '100%', width: `${progressPct}%`, borderRadius: 4, transition: 'width 0.5s' }} />
+                <span style={{ position: 'absolute', right: 6, top: 2, fontSize: 11, color: '#ccc' }}>{progressPct.toFixed(1)}%</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#555', marginTop: 2 }}>
+                <span>$30</span>
+                <span>$200</span>
+                <span>$5K</span>
+                <span>$30K</span>
+                <span>$200K</span>
+                <span>$1M</span>
+              </div>
+              {b4State.updated_at && <div style={{ fontSize: 11, color: '#555', marginTop: 6 }}>Last updated: {formatMst(b4State.updated_at, true)}</div>}
+            </div>
+          );
+        })()}
+
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Momentum scalper trades on Polymarket 5m BTC Up/Down markets.</span>
+          <span style={{ fontSize: 13, color: '#666' }}>Last 50 trades.</span>
           <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
         </p>
         {b4Positions.length === 0 ? (
