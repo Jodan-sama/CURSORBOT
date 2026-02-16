@@ -1,10 +1,103 @@
 /**
- * Live price feed for B4: fetches 1-minute BTCUSDT klines from Binance REST.
- * Maintains a rolling buffer of recent candles for signal computation.
- * Falls back across multiple Binance endpoints (geo-block resilience).
+ * Live price feed for B4.
+ *
+ * Two sources:
+ * 1. **Chainlink via Polymarket RTDS** — real-time BTC/USD price that Polymarket
+ *    uses to resolve 5-minute markets. Used for window open/close and win/loss
+ *    determination. Free WebSocket, no auth, no proxy.
+ * 2. **Binance REST** — 1-minute BTCUSDT klines for signal computation (momentum,
+ *    RSI, volume). Not used for resolution.
  */
 
+import WebSocket from 'ws';
 import type { Candle1m } from './download-candles.js';
+
+// ---------------------------------------------------------------------------
+// Chainlink price via Polymarket RTDS WebSocket
+// ---------------------------------------------------------------------------
+
+const RTDS_URL = 'wss://ws-live-data.polymarket.com';
+const PING_INTERVAL_MS = 5_000;
+const RECONNECT_DELAY_MS = 3_000;
+
+let chainlinkPrice: number | null = null;
+let chainlinkTimestamp = 0;
+let ws: WebSocket | null = null;
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+let reconnecting = false;
+
+function connectRTDS(): void {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  reconnecting = false;
+
+  try {
+    ws = new WebSocket(RTDS_URL);
+  } catch (e) {
+    console.error('[RTDS] WebSocket constructor failed:', e instanceof Error ? e.message : e);
+    scheduleReconnect();
+    return;
+  }
+
+  ws.on('open', () => {
+    console.log('[RTDS] connected to Polymarket Chainlink feed');
+    ws!.send(JSON.stringify({
+      action: 'subscribe',
+      subscriptions: [{
+        topic: 'crypto_prices_chainlink',
+        type: '*',
+        filters: '{"symbol":"btc/usd"}',
+      }],
+    }));
+    // Ping every 5s to keep connection alive
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: 'ping' }));
+      }
+    }, PING_INTERVAL_MS);
+  });
+
+  ws.on('message', (raw: WebSocket.Data) => {
+    try {
+      const msg = JSON.parse(raw.toString()) as {
+        topic?: string;
+        payload?: { symbol?: string; value?: number; timestamp?: number };
+      };
+      if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol === 'btc/usd' && msg.payload.value) {
+        chainlinkPrice = msg.payload.value;
+        chainlinkTimestamp = msg.payload.timestamp ?? Date.now();
+      }
+    } catch { /* ignore non-JSON pings/acks */ }
+  });
+
+  ws.on('close', () => {
+    console.warn('[RTDS] disconnected');
+    scheduleReconnect();
+  });
+
+  ws.on('error', (err: Error) => {
+    console.error('[RTDS] error:', err.message);
+    try { ws?.close(); } catch { /* ignore */ }
+    scheduleReconnect();
+  });
+}
+
+function scheduleReconnect(): void {
+  if (reconnecting) return;
+  reconnecting = true;
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  setTimeout(connectRTDS, RECONNECT_DELAY_MS);
+}
+
+/** Get the latest Chainlink BTC/USD price (the oracle Polymarket uses). */
+export function getChainlinkPrice(): { price: number; ageMs: number } | null {
+  if (chainlinkPrice == null) return null;
+  return { price: chainlinkPrice, ageMs: Date.now() - chainlinkTimestamp };
+}
+
+// ---------------------------------------------------------------------------
+// Binance REST — 1-minute candles for signal engine
+// ---------------------------------------------------------------------------
 
 const BINANCE_ENDPOINTS = [
   'https://api.binance.com/api/v3/klines',
@@ -13,7 +106,7 @@ const BINANCE_ENDPOINTS = [
 ];
 
 const SYMBOL = 'BTCUSDT';
-const BUFFER_SIZE = 30; // keep last 30 one-minute candles
+const BUFFER_SIZE = 30;
 
 let workingEndpoint: string | null = null;
 
@@ -49,44 +142,27 @@ async function fetchRecentKlines(limit: number = BUFFER_SIZE): Promise<Candle1m[
   throw new Error('All Binance endpoints failed');
 }
 
-/** Get current BTC spot price. */
-async function fetchSpotPrice(): Promise<number> {
-  const endpoints = [
-    'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
-    'https://api.binance.us/api/v3/ticker/price?symbol=BTCUSDT',
-    'https://api1.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
-  ];
-  for (const url of endpoints) {
-    try {
-      const res = await fetch(url);
-      if (res.status === 451 || res.status === 403) continue;
-      if (!res.ok) continue;
-      const data = (await res.json()) as { price: string };
-      return parseFloat(data.price);
-    } catch {
-      continue;
-    }
-  }
-  // Fallback: CoinGecko
-  const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-  const data = (await res.json()) as { bitcoin: { usd: number } };
-  return data.bitcoin.usd;
-}
-
 // ---------------------------------------------------------------------------
-// PriceFeed class — maintains rolling buffer
+// PriceFeed class
 // ---------------------------------------------------------------------------
 
 export class PriceFeed {
   private buffer: Candle1m[] = [];
   private lastFetchMs = 0;
-  private windowOpenPrice: number | null = null;
+
+  /** Chainlink price captured at the window boundary. */
+  private windowOpenChainlink: number | null = null;
   private currentWindowStart = 0;
 
-  /** Fetch latest candles and update buffer. Call every ~10-15 seconds. */
+  constructor() {
+    // Start the RTDS WebSocket on creation
+    connectRTDS();
+  }
+
+  /** Fetch latest Binance candles and update buffer. */
   async refresh(): Promise<void> {
     const now = Date.now();
-    if (now - this.lastFetchMs < 5_000) return; // debounce
+    if (now - this.lastFetchMs < 5_000) return;
     this.lastFetchMs = now;
 
     try {
@@ -97,43 +173,65 @@ export class PriceFeed {
     }
   }
 
-  /** Get the rolling buffer of recent 1-min candles. */
   getBuffer(): Candle1m[] {
     return [...this.buffer];
   }
 
-  /** Get candles that fall BEFORE the given timestamp. */
   getCandlesBefore(timestampMs: number, count: number): Candle1m[] {
     return this.buffer.filter((c) => c.openTime < timestampMs).slice(-count);
   }
 
-  /** Get candles that fall WITHIN the given time range. */
   getCandlesInRange(startMs: number, endMs: number): Candle1m[] {
     return this.buffer.filter((c) => c.openTime >= startMs && c.openTime < endMs);
   }
 
-  /** Record the open price at the start of a new 5-min window. */
+  /**
+   * Record the window open price from Chainlink at the window boundary.
+   * Called when a new 5-minute window starts.
+   */
   setWindowOpen(windowStartMs: number): void {
     if (this.currentWindowStart === windowStartMs) return;
     this.currentWindowStart = windowStartMs;
-    // Use the close of the last candle before the window as the "open"
-    const prior = this.buffer.filter((c) => c.closeTime <= windowStartMs);
-    this.windowOpenPrice = prior.length > 0 ? prior[prior.length - 1].close : null;
-  }
 
-  /** Get the window open price (or fetch spot as fallback). */
-  async getWindowOpen(): Promise<number> {
-    if (this.windowOpenPrice != null) return this.windowOpenPrice;
-    return fetchSpotPrice();
-  }
-
-  /** Get current spot price. */
-  async getSpotPrice(): Promise<number> {
-    // Use the most recent candle close if fresh enough
-    if (this.buffer.length > 0) {
-      const last = this.buffer[this.buffer.length - 1];
-      if (Date.now() - last.closeTime < 90_000) return last.close;
+    // Capture the current Chainlink price as the window open
+    const cl = getChainlinkPrice();
+    if (cl && cl.ageMs < 10_000) {
+      this.windowOpenChainlink = cl.price;
+      console.log(`[PriceFeed] window open (Chainlink): $${cl.price.toFixed(2)} (age ${cl.ageMs}ms)`);
+    } else {
+      // Chainlink not yet available — fall back to last Binance candle close
+      const prior = this.buffer.filter((c) => c.closeTime <= windowStartMs);
+      this.windowOpenChainlink = prior.length > 0 ? prior[prior.length - 1].close : null;
+      console.warn(`[PriceFeed] window open fallback (Binance): $${this.windowOpenChainlink?.toFixed(2) ?? 'null'}`);
     }
-    return fetchSpotPrice();
+  }
+
+  /** Get the window open price (Chainlink preferred). */
+  async getWindowOpen(): Promise<number> {
+    if (this.windowOpenChainlink != null) return this.windowOpenChainlink;
+    // Fallback: fetch Binance spot
+    const candles = await fetchRecentKlines(1);
+    return candles.length > 0 ? candles[0].close : 0;
+  }
+
+  /**
+   * Get current spot price for resolution — uses Chainlink (same as Polymarket oracle).
+   * Only falls back to Binance if Chainlink is stale (>15 seconds).
+   */
+  async getSpotPrice(): Promise<number> {
+    const cl = getChainlinkPrice();
+    if (cl && cl.ageMs < 15_000) return cl.price;
+
+    // Chainlink stale — warn and fall back to fresh Binance spot
+    console.warn(`[PriceFeed] Chainlink stale (age ${cl?.ageMs ?? 'null'}ms), falling back to Binance`);
+    const candles = await fetchRecentKlines(1);
+    if (candles.length > 0) return candles[candles.length - 1].close;
+    return 0;
+  }
+
+  /** Is the Chainlink feed connected and fresh? */
+  isChainlinkLive(): boolean {
+    const cl = getChainlinkPrice();
+    return cl != null && cl.ageMs < 15_000;
   }
 }

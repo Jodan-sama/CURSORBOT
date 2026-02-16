@@ -1,53 +1,150 @@
 /**
- * B4 5-Minute BTC Bot — main runner.
- * Trades Polymarket btc-updown-5m markets using intra-window momentum signals.
+ * B4 5-Minute BTC Momentum Scalper — v2
  *
- * Loop: every 5 seconds, check timing → collect data → compute signals → place order.
- * Entry window: 90-150 seconds into the 5-min window (after seeing 2 min of price action).
+ * Strategy:
+ *   Entry:  1-minute BTC momentum > 0.03%  → buy Up contracts
+ *           1-minute BTC momentum < -0.03% → buy Down contracts
+ *   Size:   $5 per trade (fixed)
+ *   Exit:   +3% take profit OR -5% stop loss on contract price (early close)
+ *   Limit:  Max 3 trades per 5-minute window, 1 open position at a time
+ *   Poll:   Every 3 seconds
+ *   Price:  Chainlink BTC/USD via Polymarket RTDS WebSocket (same oracle as resolution)
  *
- * Features: bankroll persistence, 5-phase Kelly, order splitting, $1M auto-stop.
+ * Orders are placed via Polymarket CLOB through the HTTP proxy.
+ * Contract mid-price monitoring uses the public CLOB endpoint (no auth).
  */
 
 import 'dotenv/config';
-import { JsonRpcProvider, Contract } from 'ethers';
-import { PriceFeed } from './price-feed.js';
-import { computeSignals, type SignalOutput } from './signals.js';
-import {
-  createRiskState,
-  restoreRiskState,
-  serializeRiskState,
-  shouldTrade,
-  getConfidenceThreshold,
-  getBetSize,
-  getPhase,
-  recordResult,
-  getRiskSummary,
-  isTargetReached,
-  type RiskState,
-} from './risk.js';
+import { PriceFeed, getChainlinkPrice } from './price-feed.js';
 import {
   getWindowStart,
-  getWindowEnd,
-  secondsIntoWindow,
-  isEntryWindow,
+  msUntilWindowEnd,
   getPolySlug5m,
-  getWindowStartUnix,
+  secondsIntoWindow,
 } from './clock.js';
 import {
   isEmergencyOff,
-  setEmergencyOff,
   logError,
   logPosition,
   loadB4State,
   saveB4State,
 } from '../db/supabase.js';
-import type { Candle1m } from './download-candles.js';
+import {
+  createPolyClobClient,
+  getPolyClobConfigFromEnv,
+  getOrCreateDerivedPolyClient,
+} from '../polymarket/clob.js';
+import { getPolyMarketBySlug } from '../polymarket/gamma.js';
+import {
+  Side,
+  OrderType,
+  type ClobClient,
+  type UserOrder,
+  type CreateOrderOptions,
+} from '@polymarket/clob-client';
 
 // ---------------------------------------------------------------------------
-// Polymarket 5m order placement (uses existing CLOB infrastructure + proxy)
+// Configuration
 // ---------------------------------------------------------------------------
 
-/** Wrap fn with HTTP proxy for Polymarket CLOB calls (axios + undici). */
+const POSITION_SIZE_USD = parseFloat(process.env.B4_POSITION_SIZE || '5');
+const MAX_TRADES_PER_WINDOW = 3;
+const MOMENTUM_THRESHOLD = 0.0003;   // 0.03%
+const TAKE_PROFIT_PCT = 0.03;        // +3% contract price
+const STOP_LOSS_PCT = 0.05;          // -5% contract price
+const TICK_INTERVAL_MS = 3_000;      // 3 seconds
+const FORCED_EXIT_SEC = 25;          // force-exit this many seconds before window end
+const MIN_ENTRY_SEC_LEFT = 60;       // need at least 60s left for entry
+const PRICE_HISTORY_SEC = 90;        // keep 90s of Chainlink prices
+const CLOB_HOST = 'https://clob.polymarket.com';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface Position {
+  direction: 'up' | 'down';
+  tokenId: string;
+  entryContractPrice: number;
+  contracts: number;
+  entryBtcPrice: number;
+  entryTime: number;
+  windowStart: number;
+  orderId: string;
+  slug: string;
+  negRisk: boolean;
+  tickSize: CreateOrderOptions['tickSize'];
+}
+
+interface PricePoint {
+  time: number;
+  price: number;
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let bankroll = 0;
+let peakBankroll = 0;
+let totalTrades = 0;
+let totalWins = 0;
+let totalLosses = 0;
+const priceHistory: PricePoint[] = [];
+let openPosition: Position | null = null;
+let tradesThisWindow = 0;
+let currentWindowStart = 0;
+
+// ---------------------------------------------------------------------------
+// Chainlink price history → momentum
+// ---------------------------------------------------------------------------
+
+function recordPrice(price: number): void {
+  const now = Date.now();
+  priceHistory.push({ time: now, price });
+  const cutoff = now - PRICE_HISTORY_SEC * 1000;
+  while (priceHistory.length > 0 && priceHistory[0].time < cutoff) {
+    priceHistory.shift();
+  }
+}
+
+function getMomentum1m(): number | null {
+  if (priceHistory.length < 2) return null;
+  const now = Date.now();
+  if (now - priceHistory[0].time < 60_000) return null; // need 60s of data
+
+  const target = now - 60_000;
+  let closest = priceHistory[0];
+  for (const p of priceHistory) {
+    if (Math.abs(p.time - target) < Math.abs(closest.time - target)) {
+      closest = p;
+    }
+  }
+
+  const current = priceHistory[priceHistory.length - 1];
+  return (current.price - closest.price) / closest.price;
+}
+
+// ---------------------------------------------------------------------------
+// Contract mid-price (public CLOB endpoint — no auth, no proxy)
+// ---------------------------------------------------------------------------
+
+async function getContractMidPrice(tokenId: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${CLOB_HOST}/midpoint?token_id=${tokenId}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { mid?: string };
+    const mid = parseFloat(data.mid ?? '0');
+    return mid > 0 && mid < 1 ? mid : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proxy wrapper (for order placement only)
+// ---------------------------------------------------------------------------
+
 async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
   if (!proxy) return fn();
@@ -69,323 +166,298 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-const ORDER_CHUNK_SIZE = 500; // split orders into ~$500 chunks
-const CHUNK_DELAY_MS = 1_500; // 1.5s between chunks
-
-/**
- * Place order on Polymarket. Splits into chunks if betSize > ORDER_CHUNK_SIZE.
- * Returns the first successful orderId.
- */
-async function placePolyOrder(
-  slug: string,
-  side: 'yes' | 'no',
-  totalSize: number,
-): Promise<{ orderId?: string; skipReason?: string; chunksPlaced?: number; chunksFailed?: number }> {
-  const { getPolyMarketBySlug } = await import('../polymarket/gamma.js');
-  const {
-    createPolyClobClient,
-    getPolyClobConfigFromEnv,
-    getOrCreateDerivedPolyClient,
-    createAndPostPolyOrder,
-    orderParamsFromParsedMarket,
-  } = await import('../polymarket/clob.js');
-
-  const market = await getPolyMarketBySlug(slug);
-  if (!market) return { skipReason: `market not found: ${slug}` };
-
-  // Calculate chunks: each chunk is ~ORDER_CHUNK_SIZE contracts
-  const contractsTotal = Math.max(10, Math.round(totalSize / 0.50));
-  const chunkContracts = Math.max(10, Math.round(ORDER_CHUNK_SIZE / 0.50));
-  const numChunks = totalSize > ORDER_CHUNK_SIZE ? Math.ceil(contractsTotal / chunkContracts) : 1;
-  const contractsPerChunk = numChunks === 1 ? contractsTotal : chunkContracts;
-
-  let firstOrderId: string | undefined;
-  let chunksPlaced = 0;
-  let chunksFailed = 0;
-
-  for (let i = 0; i < numChunks; i++) {
-    const chunkSize = i === numChunks - 1 ? contractsTotal - contractsPerChunk * i : contractsPerChunk;
-    if (chunkSize <= 0) break;
-
-    try {
-      const orderId = await withPolyProxy(async () => {
-        const cfg = getPolyClobConfigFromEnv();
-        const client = cfg != null
-          ? createPolyClobClient(cfg)
-          : await getOrCreateDerivedPolyClient();
-        const price = 0.50;
-        const params = orderParamsFromParsedMarket(market, price, chunkSize, side);
-        const result = await createAndPostPolyOrder(client, params);
-        return result.orderID ?? (result as Record<string, unknown>).orderId as string | undefined;
-      });
-
-      if (orderId) {
-        if (!firstOrderId) firstOrderId = orderId;
-        chunksPlaced++;
-        if (numChunks > 1) console.log(`[B4] chunk ${i + 1}/${numChunks}: ${chunkSize} contracts | orderId=${orderId}`);
-      } else {
-        chunksFailed++;
-      }
-    } catch (e) {
-      chunksFailed++;
-      console.error(`[B4] chunk ${i + 1}/${numChunks} failed:`, e instanceof Error ? e.message : e);
-    }
-
-    // Delay between chunks to avoid rate limiting
-    if (i < numChunks - 1) await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
-  }
-
-  if (firstOrderId) return { orderId: firstOrderId, chunksPlaced, chunksFailed };
-  return { skipReason: `all ${numChunks} chunks failed`, chunksFailed };
+async function getClobClient(): Promise<ClobClient> {
+  const cfg = getPolyClobConfigFromEnv();
+  return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
 }
 
 // ---------------------------------------------------------------------------
-// Wallet balance (reads USDC on Polygon via RPC — no proxy, free)
+// Buy contracts
 // ---------------------------------------------------------------------------
 
-const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const ERC20_BALANCE_ABI = ['function balanceOf(address) view returns (uint256)'];
+interface TradeResult {
+  orderId?: string;
+  tokenId?: string;
+  contractPrice?: number;
+  contracts?: number;
+  negRisk?: boolean;
+  tickSize?: CreateOrderOptions['tickSize'];
+  error?: string;
+}
 
-async function getWalletUsdcBalance(): Promise<number | null> {
+async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResult> {
   try {
-    const rpc = process.env.POLYGON_RPC_URL;
-    const funder = process.env.POLYMARKET_FUNDER;
-    if (!rpc || !funder) return null;
-    const provider = new JsonRpcProvider(rpc);
-    const usdc = new Contract(USDC_POLYGON, ERC20_BALANCE_ABI, provider);
-    const raw: bigint = await usdc.balanceOf(funder);
-    return Number(raw) / 1e6; // USDC has 6 decimals
+    return await withPolyProxy(async () => {
+      const market = await getPolyMarketBySlug(slug);
+      if (!market) return { error: `Market not found: ${slug}` };
+
+      const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
+      if (!tokenId) return { error: `No ${side} token for ${slug}` };
+
+      const client = await getClobClient();
+
+      // Get current mid-price for entry
+      const midRaw = await client.getMidpoint(tokenId);
+      const mid = parseFloat(typeof midRaw === 'string' ? midRaw : (midRaw as { mid?: string })?.mid ?? '0');
+      if (mid <= 0.05 || mid >= 0.95) return { error: `Mid-price out of range: ${mid}` };
+
+      const tickSize: CreateOrderOptions['tickSize'] =
+        (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
+      const tickVal = parseFloat(tickSize);
+
+      // Buy slightly above mid (cross the spread for immediate fill)
+      const buyPrice = Math.min(
+        Math.round((mid + tickVal * 2) / tickVal) * tickVal,
+        0.99,
+      );
+      const contracts = Math.max(1, Math.floor(POSITION_SIZE_USD / buyPrice));
+
+      const userOrder: UserOrder = {
+        tokenID: tokenId,
+        price: Number(buyPrice.toFixed(4)),
+        size: contracts,
+        side: Side.BUY,
+      };
+
+      console.log(`[B4] BUY ${side} ${contracts}x @ ${buyPrice.toFixed(3)} (mid=${mid.toFixed(3)}) | ${slug}`);
+
+      const result = await client.createAndPostOrder(
+        userOrder,
+        { tickSize, negRisk: market.negRisk ?? false },
+        OrderType.GTC,
+      );
+
+      const orderId = (result as { orderID?: string; orderId?: string })?.orderID
+        ?? (result as { orderId?: string })?.orderId;
+      if (!orderId) return { error: `No orderId: ${JSON.stringify(result)}` };
+
+      return {
+        orderId,
+        tokenId,
+        contractPrice: buyPrice,
+        contracts,
+        negRisk: market.negRisk ?? false,
+        tickSize,
+      };
+    });
   } catch (e) {
-    console.error('[B4] wallet balance read failed:', e instanceof Error ? e.message : e);
-    return null;
+    return { error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Window state tracking
+// Sell contracts (early exit)
 // ---------------------------------------------------------------------------
 
-interface WindowState {
-  startMs: number;
-  enteredThisWindow: boolean;
-  windowOpenPrice: number | null;
-  signalResult: SignalOutput | null;
-  orderId: string | null;
-  direction: 'up' | 'down' | null;
-  betSize: number;
-}
+async function sellContracts(pos: Position): Promise<{ orderId?: string; sellPrice?: number; error?: string }> {
+  try {
+    return await withPolyProxy(async () => {
+      const client = await getClobClient();
 
-const recentOutcomes: boolean[] = [];
+      // Get current mid to place aggressive sell
+      const midRaw = await client.getMidpoint(pos.tokenId);
+      const mid = parseFloat(typeof midRaw === 'string' ? midRaw : (midRaw as { mid?: string })?.mid ?? '0');
+      const tickVal = parseFloat(pos.tickSize);
 
-function recordWindowOutcome(outcome: boolean): void {
-  recentOutcomes.push(outcome);
-  if (recentOutcomes.length > 10) recentOutcomes.shift();
+      // Sell slightly below mid for immediate fill
+      const sellPrice = Math.max(
+        Math.round((mid - tickVal * 2) / tickVal) * tickVal,
+        tickVal,
+      );
+
+      const userOrder: UserOrder = {
+        tokenID: pos.tokenId,
+        price: Number(sellPrice.toFixed(4)),
+        size: pos.contracts,
+        side: Side.SELL,
+      };
+
+      console.log(`[B4] SELL ${pos.contracts}x @ ${sellPrice.toFixed(3)} (mid=${mid.toFixed(3)})`);
+
+      const result = await client.createAndPostOrder(
+        userOrder,
+        { tickSize: pos.tickSize, negRisk: pos.negRisk },
+        OrderType.GTC,
+      );
+
+      const orderId = (result as { orderID?: string; orderId?: string })?.orderID
+        ?? (result as { orderId?: string })?.orderId;
+      return { orderId: orderId ?? undefined, sellPrice };
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Main tick
 // ---------------------------------------------------------------------------
 
-const TICK_INTERVAL_MS = 5_000;
-const INITIAL_BANKROLL = parseFloat(process.env.B4_INITIAL_BANKROLL || '30');
-const PERSIST_INTERVAL_TICKS = 12; // persist state every ~60 seconds
+async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
+  const now = new Date();
+  const windowStartMs = getWindowStart(now).getTime();
+  const secInWindow = secondsIntoWindow(now);
+  const msLeft = msUntilWindowEnd(now);
 
-async function runOneTick(
-  feed: PriceFeed,
-  risk: RiskState,
-  windowState: WindowState,
-  now: Date,
-  tickCount: number,
-): Promise<WindowState> {
-  // -----------------------------------------------------------------------
-  // $1M target check
-  // -----------------------------------------------------------------------
-  if (isTargetReached(risk)) {
-    console.log(`[B4] TARGET REACHED: $${risk.bankroll.toFixed(2)} >= $1,000,000`);
-    try {
-      await setEmergencyOff(true);
-      await logPosition({
-        bot: 'B4',
-        asset: 'BTC',
-        venue: 'polymarket',
-        strike_spread_pct: 0,
-        position_size: 0,
-        raw: { event: 'target_reached', bankroll: risk.bankroll },
-      });
-      await saveB4State(serializeRiskState(risk));
-      await logError(new Error('B4 TARGET REACHED — $1M'), { bankroll: risk.bankroll, phase: getPhase(risk.bankroll) });
-    } catch { /* best effort */ }
-    process.exit(0);
+  // --- Record Chainlink price ---
+  const cl = getChainlinkPrice();
+  if (cl && cl.ageMs < 10_000) {
+    recordPrice(cl.price);
   }
 
-  // -----------------------------------------------------------------------
-  // Emergency off check
-  // -----------------------------------------------------------------------
-  if (tickCount % 12 === 0) {
+  // --- New window → reset trade count ---
+  if (windowStartMs !== currentWindowStart) {
+    currentWindowStart = windowStartMs;
+    tradesThisWindow = 0;
+  }
+
+  // --- Emergency off check (every ~30s) ---
+  if (tickCount % 10 === 0) {
     try {
       if (await isEmergencyOff()) {
-        if (tickCount % 60 === 0) console.log('[B4] emergency off — paused');
-        return windowState;
+        if (tickCount % 100 === 0) console.log('[B4] emergency off — paused');
+        return;
       }
-    } catch {
-      // Supabase might not be configured; continue
-    }
+    } catch { /* Supabase may not be configured */ }
   }
 
-  const windowStartMs = getWindowStart(now).getTime();
-  const secIntoWindow = secondsIntoWindow(now);
+  // --- Monitor open position for TP / SL / forced exit ---
+  if (openPosition) {
+    const mid = await getContractMidPrice(openPosition.tokenId);
+    if (mid != null) {
+      const pctChange = (mid - openPosition.entryContractPrice) / openPosition.entryContractPrice;
+      const forceExit = msLeft < FORCED_EXIT_SEC * 1000;
 
-  // -----------------------------------------------------------------------
-  // New window? Resolve previous trade and reset.
-  // -----------------------------------------------------------------------
-  if (windowStartMs !== windowState.startMs) {
-    if (windowState.direction && windowState.orderId && windowState.windowOpenPrice) {
-      try {
-        const spotNow = await feed.getSpotPrice();
-        const wasUp = spotNow >= windowState.windowOpenPrice;
-        const won = (windowState.direction === 'up' && wasUp) || (windowState.direction === 'down' && !wasUp);
-        recordWindowOutcome(wasUp);
-        recordResult(risk, won, windowState.betSize);
-        console.log(`[B4] window resolved: bet ${windowState.direction}, outcome ${wasUp ? 'up' : 'down'}, ${won ? 'WIN' : 'LOSS'} | ${getRiskSummary(risk)}`);
+      let exitReason: string | null = null;
+      if (pctChange >= TAKE_PROFIT_PCT) exitReason = 'TP';
+      else if (pctChange <= -STOP_LOSS_PCT) exitReason = 'SL';
+      else if (forceExit) exitReason = 'WINDOW_END';
 
-        try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
-      } catch (e) {
-        console.error('[B4] outcome check failed:', e instanceof Error ? e.message : e);
+      if (exitReason) {
+        const sellResult = await sellContracts(openPosition);
+        const exitPrice = sellResult.sellPrice ?? mid;
+        const pnl = (exitPrice - openPosition.entryContractPrice) * openPosition.contracts;
+        const won = pnl > 0;
+
+        bankroll += pnl;
+        if (bankroll > peakBankroll) peakBankroll = bankroll;
+        totalTrades++;
+        if (won) totalWins++;
+        else totalLosses++;
+
+        console.log(
+          `[B4] EXIT ${exitReason}: ${openPosition.direction} ` +
+          `| entry=${openPosition.entryContractPrice.toFixed(3)} exit=${exitPrice.toFixed(3)} ` +
+          `| change=${(pctChange * 100).toFixed(2)}% ` +
+          `| PnL=$${pnl.toFixed(3)} (${won ? 'WIN' : 'LOSS'}) ` +
+          `| bankroll=$${bankroll.toFixed(2)} W/L=${totalWins}/${totalLosses}`,
+        );
+
+        if (sellResult.error) {
+          console.error(`[B4] sell error (position may still be open): ${sellResult.error}`);
+        }
+
+        // Log to Supabase
+        try {
+          await logPosition({
+            bot: 'B4',
+            asset: 'BTC',
+            venue: 'polymarket',
+            strike_spread_pct: pctChange * 100,
+            position_size: POSITION_SIZE_USD,
+            ticker_or_slug: openPosition.slug,
+            order_id: sellResult.orderId ?? openPosition.orderId,
+            raw: {
+              direction: openPosition.direction,
+              exitReason,
+              entryContractPrice: openPosition.entryContractPrice,
+              exitContractPrice: exitPrice,
+              contracts: openPosition.contracts,
+              pnl,
+              bankroll,
+              entryBtcPrice: openPosition.entryBtcPrice,
+              exitBtcPrice: cl?.price ?? 0,
+            },
+          });
+        } catch { /* best effort */ }
+
+        // Persist state
+        try {
+          await saveB4State({
+            bankroll,
+            max_bankroll: peakBankroll,
+            consecutive_losses: won ? 0 : (totalLosses - totalWins),
+            cooldown_until_ms: 0,
+            results_json: [],
+            daily_start_bankroll: bankroll,
+            daily_start_date: '',
+            half_kelly_trades_left: 0,
+          });
+        } catch { /* best effort */ }
+
+        openPosition = null;
+      } else if (tickCount % 10 === 0) {
+        // Periodic position status log
+        console.log(
+          `[B4] holding ${openPosition.direction} ` +
+          `| entry=${openPosition.entryContractPrice.toFixed(3)} mid=${mid.toFixed(3)} ` +
+          `| change=${(pctChange * 100).toFixed(2)}% ` +
+          `| TP@+${(TAKE_PROFIT_PCT * 100).toFixed(0)}% SL@-${(STOP_LOSS_PCT * 100).toFixed(0)}%`,
+        );
       }
     }
-
-    windowState = {
-      startMs: windowStartMs,
-      enteredThisWindow: false,
-      windowOpenPrice: null,
-      signalResult: null,
-      orderId: null,
-      direction: null,
-      betSize: 0,
-    };
-
-    feed.setWindowOpen(windowStartMs);
+    return; // don't enter while holding a position
   }
 
-  // Refresh price data
-  await feed.refresh();
+  // --- Entry checks ---
+  if (tradesThisWindow >= MAX_TRADES_PER_WINDOW) return;
+  if (bankroll < POSITION_SIZE_USD) {
+    if (tickCount % 100 === 0) console.log(`[B4] bankroll $${bankroll.toFixed(2)} < $${POSITION_SIZE_USD} — cannot trade`);
+    return;
+  }
+  if (msLeft < MIN_ENTRY_SEC_LEFT * 1000) return; // not enough time for TP/SL
+  if (secInWindow < 15) return; // let the window settle for ~15s
 
-  // Record window open price at ~5 seconds in
-  if (windowState.windowOpenPrice == null && secIntoWindow >= 5) {
-    windowState.windowOpenPrice = await feed.getWindowOpen();
-    if (tickCount % 60 === 0) console.log(`[B4] window open: $${windowState.windowOpenPrice?.toFixed(2)} | slug: ${getPolySlug5m(now)}`);
+  // --- Momentum signal ---
+  const momentum = getMomentum1m();
+  if (momentum == null) {
+    if (tickCount % 20 === 0) console.log('[B4] waiting for 60s of Chainlink data...');
+    return;
   }
 
-  // Periodic state persistence
-  if (tickCount % PERSIST_INTERVAL_TICKS === 0) {
-    try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
-  }
+  if (Math.abs(momentum) < MOMENTUM_THRESHOLD) return; // no signal
 
-  // Already traded this window? Skip.
-  if (windowState.enteredThisWindow) return windowState;
-
-  // Not in entry window yet? (90-150 seconds in)
-  if (!isEntryWindow(now)) {
-    if (tickCount % 60 === 0 && secIntoWindow < 90) {
-      console.log(`[B4] waiting for entry window (${secIntoWindow.toFixed(0)}s / 90-150s)`);
-    }
-    return windowState;
-  }
-
-  // Risk checks (includes drawdown, daily loss, circuit breaker, cooldown)
-  const { ok, reason } = shouldTrade(risk, now);
-  if (!ok) {
-    if (tickCount % 12 === 0) console.log(`[B4] skip: ${reason}`);
-    return windowState;
-  }
-
-  // Compute signals
-  const priorCandles = feed.getCandlesBefore(windowStartMs, 20);
-  const intraCandles = feed.getCandlesInRange(windowStartMs, windowStartMs + 2 * 60 * 1000);
-  const windowOpen = windowState.windowOpenPrice ?? 0;
-
-  if (priorCandles.length < 10 || windowOpen === 0) {
-    if (tickCount % 12 === 0) console.log(`[B4] not enough data: ${priorCandles.length} prior candles, open=$${windowOpen}`);
-    return windowState;
-  }
-
-  const lastChangePct = recentOutcomes.length > 0 ? 0 : 0;
-  const signals = computeSignals({
-    priorCandles,
-    intraCandles,
-    windowOpen,
-    lastWindowOutcomes: recentOutcomes.slice(-3),
-    lastWindowChangePct: lastChangePct,
-  });
-
-  windowState.signalResult = signals;
-
-  if (signals.direction === 'skip') {
-    if (tickCount % 12 === 0) console.log(`[B4] skip: composite ${signals.composite.toFixed(3)} (below threshold)`);
-    return windowState;
-  }
-
-  const threshold = getConfidenceThreshold(risk);
-  if (Math.abs(signals.composite) < threshold) {
-    if (tickCount % 12 === 0) console.log(`[B4] skip: |${signals.composite.toFixed(3)}| < ${threshold}`);
-    return windowState;
-  }
-
-  // -----------------------------------------------------------------------
-  // Place order (with splitting for large bets)
-  // -----------------------------------------------------------------------
-  const betSize = getBetSize(risk);
+  const direction: 'up' | 'down' = momentum > 0 ? 'up' : 'down';
+  const side: 'yes' | 'no' = direction === 'up' ? 'yes' : 'no';
   const slug = getPolySlug5m(now);
-  const side = signals.direction === 'up' ? 'yes' : 'no';
-  const phase = getPhase(risk.bankroll);
 
-  console.log(`[B4] SIGNAL: ${signals.direction} (composite=${signals.composite.toFixed(3)}) | bet $${betSize} (Phase ${phase}) | slug: ${slug}`);
+  console.log(`[B4] SIGNAL: ${direction} | momentum=${(momentum * 100).toFixed(4)}% | slug=${slug}`);
 
-  try {
-    const result = await placePolyOrder(slug, side, betSize);
-    if (result.orderId) {
-      windowState.enteredThisWindow = true;
-      windowState.orderId = result.orderId;
-      windowState.direction = signals.direction;
-      windowState.betSize = betSize;
-      const chunkInfo = (result.chunksPlaced ?? 0) > 1 ? ` | ${result.chunksPlaced} chunks ok, ${result.chunksFailed ?? 0} failed` : '';
-      console.log(`[B4] ORDER PLACED: ${side} $${betSize} @ ~50c | orderId=${result.orderId}${chunkInfo}`);
-      try {
-        await logPosition({
-          bot: 'B4',
-          asset: 'BTC',
-          venue: 'polymarket',
-          strike_spread_pct: signals.composite,
-          position_size: betSize,
-          ticker_or_slug: slug,
-          order_id: result.orderId,
-          raw: {
-            direction: signals.direction,
-            composite: signals.composite,
-            intraWindow: signals.intraWindow,
-            momentum: signals.momentum,
-            volume: signals.volume,
-            rsiSignal: signals.rsiSignal,
-            trend: signals.trend,
-            volatility: signals.volatility,
-            phase: String(phase),
-            bankroll: risk.bankroll,
-            chunksPlaced: result.chunksPlaced,
-            chunksFailed: result.chunksFailed,
-          },
-        });
-      } catch { /* don't fail the trade on log error */ }
-    } else {
-      console.log(`[B4] order skip: ${result.skipReason}`);
-    }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[B4] order failed: ${msg}`);
-    windowState.enteredThisWindow = true;
-    try { await logError(e, { bot: 'B4', slug, side, betSize }); } catch { /* ignore */ }
+  const result = await buyContracts(slug, side);
+
+  if (result.orderId && result.tokenId && result.contractPrice && result.contracts) {
+    openPosition = {
+      direction,
+      tokenId: result.tokenId,
+      entryContractPrice: result.contractPrice,
+      contracts: result.contracts,
+      entryBtcPrice: cl?.price ?? 0,
+      entryTime: Date.now(),
+      windowStart: windowStartMs,
+      orderId: result.orderId,
+      slug,
+      negRisk: result.negRisk ?? false,
+      tickSize: result.tickSize ?? '0.01',
+    };
+    tradesThisWindow++;
+    console.log(
+      `[B4] OPENED: ${direction} ${result.contracts}x @ ${result.contractPrice.toFixed(3)} ` +
+      `| trades=${tradesThisWindow}/${MAX_TRADES_PER_WINDOW} | bankroll=$${bankroll.toFixed(2)}`,
+    );
+  } else {
+    console.log(`[B4] order failed: ${result.error}`);
+    try { await logError(new Error(result.error ?? 'order failed'), { bot: 'B4', slug, side }); } catch { /* ignore */ }
   }
-
-  return windowState;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,50 +465,58 @@ async function runOneTick(
 // ---------------------------------------------------------------------------
 
 export async function startB4Loop(): Promise<void> {
-  // Load persisted state or fall back to initial bankroll
-  let risk: RiskState;
+  // Load persisted state
   const saved = await loadB4State();
   if (saved && saved.bankroll > 0) {
-    risk = restoreRiskState(saved);
-    console.log(`[B4] Restored state: ${getRiskSummary(risk)}`);
+    bankroll = saved.bankroll;
+    peakBankroll = saved.max_bankroll;
+    console.log(`[B4] Restored: bankroll=$${bankroll.toFixed(2)} peak=$${peakBankroll.toFixed(2)}`);
   } else {
-    risk = createRiskState(INITIAL_BANKROLL);
-    console.log(`[B4] Fresh start: bankroll $${INITIAL_BANKROLL}`);
-  }
-
-  // Log wallet balance for reference (don't override — wallet lags due to unclaimed wins)
-  const startupBal = await getWalletUsdcBalance();
-  if (startupBal != null) {
-    console.log(`[B4] wallet USDC: $${startupBal.toFixed(2)} (internal bankroll: $${risk.bankroll.toFixed(2)})`);
+    bankroll = parseFloat(process.env.B4_INITIAL_BANKROLL || '10');
+    peakBankroll = bankroll;
+    console.log(`[B4] Fresh start: bankroll=$${bankroll.toFixed(2)}`);
   }
 
   const feed = new PriceFeed();
-  let windowState: WindowState = {
-    startMs: 0,
-    enteredThisWindow: false,
-    windowOpenPrice: null,
-    signalResult: null,
-    orderId: null,
-    direction: null,
-    betSize: 0,
-  };
+
+  // Wait for Chainlink WebSocket to connect
+  await new Promise((r) => setTimeout(r, 5_000));
+  if (feed.isChainlinkLive()) {
+    const cl = getChainlinkPrice();
+    console.log(`[B4] Chainlink LIVE — BTC=$${cl?.price.toFixed(2) ?? '?'}`);
+  } else {
+    console.warn('[B4] Chainlink not connected yet — will keep trying');
+  }
+
   let tickCount = 0;
 
-  console.log(`[B4] Starting 5-minute BTC bot | ${getRiskSummary(risk)}`);
-  console.log(`[B4] Strategy: intra-window momentum + multi-signal ensemble`);
-  console.log(`[B4] Entry: 90-150s into each 5m window`);
-  console.log(`[B4] Target: $1,000,000`);
+  console.log('');
+  console.log('[B4] ═══ Momentum Scalper v2 ═══');
+  console.log(`[B4] Position size: $${POSITION_SIZE_USD}`);
+  console.log(`[B4] Max trades/window: ${MAX_TRADES_PER_WINDOW}`);
+  console.log(`[B4] Take profit: +${(TAKE_PROFIT_PCT * 100).toFixed(0)}% | Stop loss: -${(STOP_LOSS_PCT * 100).toFixed(0)}%`);
+  console.log(`[B4] Momentum threshold: ${(MOMENTUM_THRESHOLD * 100).toFixed(2)}%`);
+  console.log(`[B4] Bankroll: $${bankroll.toFixed(2)}`);
+  console.log('');
 
   const runTick = async () => {
     tickCount++;
-    const now = new Date();
 
-    if (tickCount % 60 === 0) {
-      console.log(`[B4] alive | ${now.toISOString()} | ${getRiskSummary(risk)}`);
+    if (tickCount % 100 === 0) {
+      const cl = getChainlinkPrice();
+      const mom = getMomentum1m();
+      console.log(
+        `[B4] alive | ${new Date().toISOString()} ` +
+        `| BTC=$${cl?.price.toFixed(2) ?? '?'} ` +
+        `| mom=${mom != null ? (mom * 100).toFixed(4) + '%' : 'n/a'} ` +
+        `| bankroll=$${bankroll.toFixed(2)} W/L=${totalWins}/${totalLosses} ` +
+        `| pos=${openPosition ? openPosition.direction : 'none'}`,
+      );
     }
 
     try {
-      windowState = await runOneTick(feed, risk, windowState, now, tickCount);
+      await feed.refresh();
+      await runOneTick(feed, tickCount);
     } catch (e) {
       console.error('[B4] tick error:', e instanceof Error ? e.message : e);
       try { await logError(e, { bot: 'B4', stage: 'tick' }); } catch { /* ignore */ }
@@ -448,8 +528,19 @@ export async function startB4Loop(): Promise<void> {
   runTick();
 
   const shutdown = async () => {
-    console.log(`[B4] shutting down | ${getRiskSummary(risk)}`);
-    try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
+    console.log(`[B4] shutting down | bankroll=$${bankroll.toFixed(2)} W/L=${totalWins}/${totalLosses}`);
+    try {
+      await saveB4State({
+        bankroll,
+        max_bankroll: peakBankroll,
+        consecutive_losses: 0,
+        cooldown_until_ms: 0,
+        results_json: [],
+        daily_start_bankroll: bankroll,
+        daily_start_date: '',
+        half_kelly_trades_left: 0,
+      });
+    } catch { /* best effort */ }
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
