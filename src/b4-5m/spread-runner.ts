@@ -108,9 +108,10 @@ let t2BlockedUntil = 0;
 // ---------------------------------------------------------------------------
 
 const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const SAFE_ADDRESS = process.env.POLYGUN_CLAIM_SAFE_ADDRESS?.trim()
-  ?? process.env.POLYMARKET_SAFE_ADDRESS?.trim()
-  ?? '0xBDD5AD35435bAb6b3AdF6A8E7e639D0393263932';
+const WALLET_ADDRESS = process.env.POLYMARKET_PROXY_WALLET?.trim()
+  ?? process.env.POLYMARKET_FUNDER?.trim()
+  ?? process.env.POLYGUN_CLAIM_SAFE_ADDRESS?.trim()
+  ?? '0x25695dB083FeF07d6C1CA0f5E0cbbff915C5613D';
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
 const BALANCE_POLL_MS = 15 * 60_000; // 15 minutes
 let lastBalancePoll = 0;
@@ -123,7 +124,7 @@ async function pollWalletBalance(): Promise<void> {
     const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || 'https://polygon-mainnet.g.alchemy.com/v2/J6wjUKfJUdYzPD5QNDd-i';
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const usdc = new ethers.Contract(USDC_POLYGON, ERC20_ABI, provider);
-    const raw = await usdc.balanceOf(SAFE_ADDRESS);
+    const raw = await usdc.balanceOf(WALLET_ADDRESS);
     const balance = Number(ethers.formatUnits(raw, 6));
     console.log(`[B4] wallet balance: $${balance.toFixed(2)}`);
     await getDb().from('b4_state').update({
