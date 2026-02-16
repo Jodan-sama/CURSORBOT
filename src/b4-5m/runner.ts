@@ -251,6 +251,8 @@ async function runOneTick(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[B4] order failed: ${msg}`);
+    // Mark as entered to prevent retry-spam on the same window
+    windowState.enteredThisWindow = true;
     try { await logError(e, { bot: 'B4', slug, side, contracts }); } catch { /* ignore */ }
   }
 
