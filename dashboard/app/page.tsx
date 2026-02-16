@@ -293,18 +293,20 @@ export default function Dashboard() {
 
   function downloadB4Csv() {
     setB4CsvLoading(true);
-    const headers = ['entered_at', 'direction', 'composite', 'position_size', 'bankroll', 'phase', 'slug', 'order_id'];
-    const rows = b4Positions.map((p) => {
+    const headers = ['time', 'bet', 'bankroll', 'phase', 'pnl'];
+    const rows = b4Positions.map((p, idx) => {
       const raw = (p.raw ?? {}) as Record<string, unknown>;
+      const bankroll = Number(raw.bankroll ?? 0);
+      const nextRow = b4Positions[idx - 1];
+      const nextRaw = nextRow ? ((nextRow.raw ?? {}) as Record<string, unknown>) : null;
+      const nextBankroll = nextRaw ? Number(nextRaw.bankroll ?? 0) : null;
+      const pnl = nextBankroll != null && bankroll > 0 ? nextBankroll - bankroll : '';
       return [
         escapeCsv(p.entered_at),
-        escapeCsv(String(raw.direction ?? '')),
-        escapeCsv(String(raw.composite ?? p.strike_spread_pct)),
         escapeCsv(String(p.position_size)),
-        escapeCsv(String(raw.bankroll ?? '')),
+        escapeCsv(bankroll.toFixed(2)),
         escapeCsv(String(raw.phase ?? '')),
-        escapeCsv(p.ticker_or_slug ?? ''),
-        escapeCsv(p.order_id ?? ''),
+        escapeCsv(pnl !== '' ? pnl.toFixed(2) : ''),
       ].join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
@@ -656,27 +658,28 @@ export default function Dashboard() {
             <thead>
               <tr>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Direction</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Composite</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bet $</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bet</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bankroll</th>
                 <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc' }}>Phase</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Slug</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>P&L</th>
               </tr>
             </thead>
             <tbody>
-              {b4Positions.map((p) => {
+              {b4Positions.map((p, idx) => {
                 const raw = (p.raw ?? {}) as Record<string, unknown>;
-                const dir = String(raw.direction ?? '');
+                const bankroll = Number(raw.bankroll ?? 0);
+                const bet = p.position_size;
+                const nextRow = b4Positions[idx - 1];
+                const nextRaw = nextRow ? ((nextRow.raw ?? {}) as Record<string, unknown>) : null;
+                const nextBankroll = nextRaw ? Number(nextRaw.bankroll ?? 0) : null;
+                const pnl = nextBankroll != null && bankroll > 0 ? nextBankroll - bankroll : null;
                 return (
                   <tr key={p.id}>
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
-                    <td style={{ borderBottom: '1px solid #eee', fontWeight: 600, color: dir === 'up' ? '#16a34a' : dir === 'down' ? '#dc2626' : undefined }}>{dir || '—'}</td>
-                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{(Number(raw.composite) || p.strike_spread_pct)?.toFixed(3)}</td>
-                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${p.position_size}</td>
-                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${Number(raw.bankroll ?? 0).toFixed(2)}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${bet}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${bankroll.toFixed(2)}</td>
                     <td style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>{String(raw.phase ?? '')}</td>
-                    <td style={{ borderBottom: '1px solid #eee', fontSize: 11, color: '#888' }}>{p.ticker_or_slug ?? ''}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', fontWeight: 600, color: pnl != null ? (pnl >= 0 ? '#16a34a' : '#dc2626') : '#888' }}>{pnl != null ? (pnl >= 0 ? `+$${pnl.toFixed(0)}` : `-$${Math.abs(pnl).toFixed(0)}`) : '—'}</td>
                   </tr>
                 );
               })}
