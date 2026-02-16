@@ -9,6 +9,7 @@
  */
 
 import 'dotenv/config';
+import { JsonRpcProvider, Contract } from 'ethers';
 import { PriceFeed } from './price-feed.js';
 import { computeSignals, type SignalOutput } from './signals.js';
 import {
@@ -139,6 +140,28 @@ async function placePolyOrder(
 }
 
 // ---------------------------------------------------------------------------
+// Wallet balance (reads USDC on Polygon via RPC — no proxy, free)
+// ---------------------------------------------------------------------------
+
+const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const ERC20_BALANCE_ABI = ['function balanceOf(address) view returns (uint256)'];
+
+async function getWalletUsdcBalance(): Promise<number | null> {
+  try {
+    const rpc = process.env.POLYGON_RPC_URL;
+    const funder = process.env.POLYMARKET_FUNDER;
+    if (!rpc || !funder) return null;
+    const provider = new JsonRpcProvider(rpc);
+    const usdc = new Contract(USDC_POLYGON, ERC20_BALANCE_ABI, provider);
+    const raw: bigint = await usdc.balanceOf(funder);
+    return Number(raw) / 1e6; // USDC has 6 decimals
+  } catch (e) {
+    console.error('[B4] wallet balance read failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Window state tracking
 // ---------------------------------------------------------------------------
 
@@ -224,7 +247,18 @@ async function runOneTick(
         recordWindowOutcome(wasUp);
         recordResult(risk, won, windowState.betSize);
         console.log(`[B4] window resolved: bet ${windowState.direction}, outcome ${wasUp ? 'up' : 'down'}, ${won ? 'WIN' : 'LOSS'} | ${getRiskSummary(risk)}`);
-        // Persist after every trade result
+
+        // Sync bankroll from actual wallet balance (1 free RPC call, no proxy)
+        const walletBal = await getWalletUsdcBalance();
+        if (walletBal != null && walletBal > 0) {
+          const drift = Math.abs(walletBal - risk.bankroll);
+          if (drift > 0.01) {
+            console.log(`[B4] bankroll sync: internal $${risk.bankroll.toFixed(2)} → wallet $${walletBal.toFixed(2)} (drift $${drift.toFixed(2)})`);
+            risk.bankroll = walletBal;
+            if (walletBal > risk.maxBankroll) risk.maxBankroll = walletBal;
+          }
+        }
+
         try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
       } catch (e) {
         console.error('[B4] outcome check failed:', e instanceof Error ? e.message : e);
@@ -379,6 +413,18 @@ export async function startB4Loop(): Promise<void> {
   } else {
     risk = createRiskState(INITIAL_BANKROLL);
     console.log(`[B4] Fresh start: bankroll $${INITIAL_BANKROLL}`);
+  }
+
+  // Sync bankroll from actual wallet balance on startup
+  const startupBal = await getWalletUsdcBalance();
+  if (startupBal != null && startupBal > 0) {
+    const drift = Math.abs(startupBal - risk.bankroll);
+    if (drift > 0.01) {
+      console.log(`[B4] startup wallet sync: $${risk.bankroll.toFixed(2)} → $${startupBal.toFixed(2)}`);
+      risk.bankroll = startupBal;
+      if (startupBal > risk.maxBankroll) risk.maxBankroll = startupBal;
+      try { await saveB4State(serializeRiskState(risk)); } catch { /* best effort */ }
+    }
   }
 
   const feed = new PriceFeed();
