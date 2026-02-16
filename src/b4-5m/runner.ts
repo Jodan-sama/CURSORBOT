@@ -247,11 +247,28 @@ async function sellContracts(pos: Position): Promise<{ orderId?: string; error?:
     return await withPolyProxy(async () => {
       const client = await getClobClient();
 
-      console.log(`[B4] SELL ${pos.contracts} contracts (FOK market) | ${pos.tokenId.slice(0, 20)}…`);
+      // Query actual token balance so we sell EVERYTHING (not the rounded estimate)
+      let sellAmount = pos.contracts;
+      try {
+        const bal = await client.getBalanceAllowance({
+          asset_type: 'CONDITIONAL' as unknown as import('@polymarket/clob-client').AssetType,
+          token_id: pos.tokenId,
+        });
+        const actualBalance = parseFloat(bal.balance);
+        if (actualBalance > 0) {
+          sellAmount = actualBalance;
+          if (actualBalance !== pos.contracts) {
+            console.log(`[B4] actual token balance: ${actualBalance} (estimated: ${pos.contracts})`);
+          }
+        }
+      } catch {
+        // Fall back to estimated contracts if balance query fails
+      }
 
-      // FOK market sell: sells at best available bids, or fails entirely
+      console.log(`[B4] SELL ${sellAmount} contracts (FOK market) | ${pos.tokenId.slice(0, 20)}…`);
+
       const result = await client.createAndPostMarketOrder(
-        { tokenID: pos.tokenId, amount: pos.contracts, side: Side.SELL },
+        { tokenID: pos.tokenId, amount: sellAmount, side: Side.SELL },
         { tickSize: pos.tickSize, negRisk: pos.negRisk },
         OrderType.FOK,
       );
