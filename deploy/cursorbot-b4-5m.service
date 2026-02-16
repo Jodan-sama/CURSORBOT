@@ -1,15 +1,18 @@
 [Unit]
-Description=Cursorbot B4 5-Minute BTC Bot
-After=network.target
+Description=Cursorbot B4 Spread Runner (5-min BTC, Polymarket)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
 WorkingDirectory=/root/cursorbot
-EnvironmentFile=/root/cursorbot/.env
-ExecStart=/usr/bin/node /root/cursorbot/dist/b4-5m/run.js
-Restart=on-failure
+ExecStart=/usr/bin/node dist/b4-5m/spread-run.js
+Restart=always
 RestartSec=10
+EnvironmentFile=/root/cursorbot/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cursorbot-b4
 
 [Install]
 WantedBy=multi-user.target

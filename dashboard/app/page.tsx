@@ -89,7 +89,10 @@ export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
-  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: boolean[]; updated_at: string } | null>(null);
+  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
+  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string }>({
+    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5',
+  });
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -144,6 +147,18 @@ export default function Dashboard() {
       setB4Positions((b4PosData ?? []) as Position[]);
       const b4Row = (b4StateResult as { data: unknown }).data as typeof b4State;
       setB4State(b4Row ?? null);
+      // Parse B4 tier config from results_json
+      if (b4Row?.results_json && typeof b4Row.results_json === 'object' && !Array.isArray(b4Row.results_json)) {
+        const cfg = b4Row.results_json as Record<string, unknown>;
+        setB4Config({
+          t1_spread: cfg.t1_spread != null ? String(cfg.t1_spread) : '0.10',
+          t2_spread: cfg.t2_spread != null ? String(cfg.t2_spread) : '0.21',
+          t3_spread: cfg.t3_spread != null ? String(cfg.t3_spread) : '0.45',
+          t2_block_min: cfg.t2_block_min != null ? String(cfg.t2_block_min) : '5',
+          t3_block_min: cfg.t3_block_min != null ? String(cfg.t3_block_min) : '15',
+          position_size: cfg.position_size != null ? String(cfg.position_size) : '5',
+        });
+      }
       setErrors((errData ?? []) as ErrorLog[]);
       setPolySkips((polySkipData ?? []) as PolySkipRow[]);
       const claimRow = claimLogData as { message: string; created_at: string } | null;
@@ -202,6 +217,56 @@ export default function Dashboard() {
   async function setB4EmergencyOff(off: boolean) {
     setSaving(true);
     await getSupabase().from('b4_state').update({ cooldown_until_ms: off ? 1 : 0, updated_at: new Date().toISOString() }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function saveB4TierConfig(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    const config = {
+      t1_spread: parseFloat(b4Config.t1_spread) || 0.10,
+      t2_spread: parseFloat(b4Config.t2_spread) || 0.21,
+      t3_spread: parseFloat(b4Config.t3_spread) || 0.45,
+      t2_block_min: parseInt(b4Config.t2_block_min, 10) || 5,
+      t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
+      position_size: parseFloat(b4Config.position_size) || 5,
+    };
+    await getSupabase().from('b4_state').update({
+      results_json: config,
+      updated_at: new Date().toISOString(),
+    }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function resetB4() {
+    if (!confirm('Reset B4 bankroll and counters? This clears all B4 stats.')) return;
+    setSaving(true);
+    const config = {
+      t1_spread: parseFloat(b4Config.t1_spread) || 0.10,
+      t2_spread: parseFloat(b4Config.t2_spread) || 0.21,
+      t3_spread: parseFloat(b4Config.t3_spread) || 0.45,
+      t2_block_min: parseInt(b4Config.t2_block_min, 10) || 5,
+      t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
+      position_size: parseFloat(b4Config.position_size) || 5,
+    };
+    const startBankroll = 11;
+    const today = new Date().toISOString().slice(0, 10);
+    await getSupabase().from('b4_state').upsert({
+      id: 'default',
+      bankroll: startBankroll,
+      max_bankroll: startBankroll,
+      consecutive_losses: 0,
+      cooldown_until_ms: 0,
+      results_json: config,
+      daily_start_bankroll: startBankroll,
+      daily_start_date: today,
+      half_kelly_trades_left: 0,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+    // Delete old B4 positions (momentum strategy data)
+    await getSupabase().from('positions').delete().eq('bot', 'B4');
     await load();
     setSaving(false);
   }
@@ -300,20 +365,19 @@ export default function Dashboard() {
 
   function downloadB4Csv() {
     setB4CsvLoading(true);
-    const headers = ['time', 'bet', 'bankroll', 'phase', 'pnl'];
-    const rows = b4Positions.map((p, idx) => {
+    const headers = ['time', 'bot', 'asset', 'venue', 'price_source', 'spread_pct', 'size', 'tier', 'direction'];
+    const rows = b4Positions.map((p) => {
       const raw = (p.raw ?? {}) as Record<string, unknown>;
-      const bankroll = Number(raw.bankroll ?? 0);
-      const nextRow = b4Positions[idx - 1];
-      const nextRaw = nextRow ? ((nextRow.raw ?? {}) as Record<string, unknown>) : null;
-      const nextBankroll = nextRaw ? Number(nextRaw.bankroll ?? 0) : null;
-      const pnl = nextBankroll != null && bankroll > 0 ? nextBankroll - bankroll : '';
       return [
         escapeCsv(p.entered_at),
+        escapeCsv(p.bot),
+        escapeCsv(p.asset),
+        escapeCsv(p.venue),
+        escapeCsv(String(raw.price_source ?? '')),
+        escapeCsv(String(p.strike_spread_pct)),
         escapeCsv(String(p.position_size)),
-        escapeCsv(bankroll.toFixed(2)),
-        escapeCsv(String(raw.phase ?? '')),
-        escapeCsv(pnl !== '' ? pnl.toFixed(2) : ''),
+        escapeCsv(String(raw.tier ?? '')),
+        escapeCsv(String(raw.direction ?? '')),
       ].join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
@@ -595,7 +659,7 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>B4 — 5-Minute BTC Bot</h2>
+        <h2 style={headingStyle}>B4 — 5-Minute BTC Spread Bot</h2>
 
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
           <p style={{ margin: 0, marginBottom: 8 }}>
@@ -613,71 +677,85 @@ export default function Dashboard() {
             type="button"
             onClick={() => setB4EmergencyOff(false)}
             disabled={saving || b4State?.cooldown_until_ms !== 1}
-            style={saving || b4State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }}
+            style={{ marginRight: 8, ...(saving || b4State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}
           >
             Resume B4
           </button>
+          <button
+            type="button"
+            onClick={resetB4}
+            disabled={saving}
+            style={{ ...buttonStyle, background: '#7c3aed' }}
+          >
+            Reset B4
+          </button>
+          {b4State && (
+            <span style={{ marginLeft: 12, fontSize: 13, color: '#aaa' }}>
+              Bankroll: <strong style={{ color: '#0D9488' }}>${Number(b4State.bankroll).toFixed(2)}</strong>
+              {' | '}Trades: {b4Positions.length}
+              {b4State.updated_at && <> | Last: {formatMst(b4State.updated_at, true)}</>}
+            </span>
+          )}
         </div>
 
-        {b4State && (() => {
-          const bankroll = Number(b4State.bankroll) || 0;
-          const maxBankroll = Number(b4State.max_bankroll) || 0;
-          const dailyStart = Number(b4State.daily_start_bankroll) || bankroll;
-          const dailyPnl = bankroll - dailyStart;
-          const dd = maxBankroll > 0 ? ((maxBankroll - bankroll) / maxBankroll * 100) : 0;
-          const results = Array.isArray(b4State.results_json) ? b4State.results_json : [];
-          const wr = results.length >= 10 ? (results.slice(-50).filter(Boolean).length / Math.min(50, results.length) * 100) : 0;
-          const phase = bankroll < 200 ? '1' : bankroll < 5000 ? '2' : bankroll < 30000 ? '3' : bankroll < 200000 ? '4a' : '4b';
-          const target = 1_000_000;
-          const progressPct = Math.min(100, Math.max(0, (Math.log(bankroll) - Math.log(30)) / (Math.log(target) - Math.log(30)) * 100));
-          return (
-            <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 10 }}>
-                <div>
-                  <span style={{ fontSize: 12, color: '#aaa' }}>Bankroll</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: '#0D9488' }}>${bankroll.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                </div>
-                <div>
-                  <span style={{ fontSize: 12, color: '#aaa' }}>Phase</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: '#e5e5e5' }}>{phase}</div>
-                </div>
-                <div>
-                  <span style={{ fontSize: 12, color: '#aaa' }}>Today P&L</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: dailyPnl >= 0 ? '#22c55e' : '#ef4444' }}>{dailyPnl >= 0 ? '+' : ''}{dailyPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}</div>
-                </div>
-                <div>
-                  <span style={{ fontSize: 12, color: '#aaa' }}>Win Rate</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: '#e5e5e5' }}>{results.length >= 10 ? `${wr.toFixed(1)}%` : `${results.length} trades`}</div>
-                </div>
-                <div>
-                  <span style={{ fontSize: 12, color: '#aaa' }}>Drawdown</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: dd > 10 ? '#ef4444' : '#e5e5e5' }}>{dd.toFixed(1)}%</div>
-                </div>
-                <div>
-                  <span style={{ fontSize: 12, color: '#aaa' }}>Trades</span>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: '#e5e5e5' }}>{results.length}</div>
-                </div>
-              </div>
-              <div style={{ fontSize: 12, color: '#bbb', marginBottom: 4 }}>Progress to $1,000,000 (log scale)</div>
-              <div style={{ background: '#222', borderRadius: 4, height: 20, overflow: 'hidden', position: 'relative' }}>
-                <div style={{ background: 'linear-gradient(90deg, #0D9488, #22c55e)', height: '100%', width: `${progressPct}%`, borderRadius: 4, transition: 'width 0.5s' }} />
-                <span style={{ position: 'absolute', right: 6, top: 2, fontSize: 11, color: '#e5e5e5' }}>{progressPct.toFixed(1)}%</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#999', marginTop: 2 }}>
-                <span>$30</span>
-                <span>$200</span>
-                <span>$5K</span>
-                <span>$30K</span>
-                <span>$200K</span>
-                <span>$1M</span>
-              </div>
-              {b4State.updated_at && <div style={{ fontSize: 11, color: '#999', marginTop: 6 }}>Last updated: {formatMst(b4State.updated_at, true)}</div>}
-            </div>
-          );
-        })()}
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111' }}>
+          <h3 style={{ ...headingStyle, margin: '0 0 12px', fontSize: 16 }}>B4 Spread Tier Config</h3>
+          <p style={{ fontSize: 13, color: '#888', marginBottom: 12 }}>
+            T1: last 50s, T2: last 100s (blocks T1), T3: last 160s (blocks T1+T2). Saved to Supabase, picked up by bot within ~90s.
+          </p>
+          <form onSubmit={saveB4TierConfig}>
+            <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#bbb' }}>Setting</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#bbb' }}>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T1 spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="0" value={b4Config.t1_spread} onChange={(e) => setB4Config((p) => ({ ...p, t1_spread: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T2 spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="0" value={b4Config.t2_spread} onChange={(e) => setB4Config((p) => ({ ...p, t2_spread: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T3 spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="0" value={b4Config.t3_spread} onChange={(e) => setB4Config((p) => ({ ...p, t3_spread: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T2 → blocks T1 (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" min="1" value={b4Config.t2_block_min} onChange={(e) => setB4Config((p) => ({ ...p, t2_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>T3 → blocks T1+T2 (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" min="1" value={b4Config.t3_block_min} onChange={(e) => setB4Config((p) => ({ ...p, t3_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>Position size ($)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="1" value={b4Config.position_size} onChange={(e) => setB4Config((p) => ({ ...p, position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save B4 config</button>
+          </form>
+        </div>
 
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Last 50 trades.</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 50).</span>
           <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
         </p>
         {b4Positions.length === 0 ? (
@@ -687,28 +765,27 @@ export default function Dashboard() {
             <thead>
               <tr>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bet</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Bankroll</th>
-                <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc' }}>Phase</th>
-                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>P&L</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Venue</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
               </tr>
             </thead>
             <tbody>
-              {b4Positions.map((p, idx) => {
+              {b4Positions.map((p) => {
                 const raw = (p.raw ?? {}) as Record<string, unknown>;
-                const bankroll = Number(raw.bankroll ?? 0);
-                const bet = p.position_size;
-                const nextRow = b4Positions[idx - 1];
-                const nextRaw = nextRow ? ((nextRow.raw ?? {}) as Record<string, unknown>) : null;
-                const nextBankroll = nextRaw ? Number(nextRaw.bankroll ?? 0) : null;
-                const pnl = nextBankroll != null && bankroll > 0 ? nextBankroll - bankroll : null;
+                const tier = String(raw.tier ?? 'B4');
                 return (
                   <tr key={p.id}>
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
-                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${bet}</td>
-                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>${bankroll.toFixed(2)}</td>
-                    <td style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>{String(raw.phase ?? '')}</td>
-                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee', fontWeight: 600, color: pnl != null ? (pnl >= 0 ? '#16a34a' : '#dc2626') : '#888' }}>{pnl != null ? (pnl >= 0 ? `+$${pnl.toFixed(0)}` : `-$${Math.abs(pnl).toFixed(0)}`) : '—'}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{tier}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{String(raw.price_source ?? '—')}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
                   </tr>
                 );
               })}

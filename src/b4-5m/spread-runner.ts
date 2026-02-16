@@ -1,14 +1,16 @@
 /**
- * B5 Spread Runner — Live 5-Minute BTC Spread Strategy
+ * B4 Spread Runner — Live 5-Minute BTC Spread Strategy
  *
  * Adapted from B1/B2/B3 (15-min Kalshi) for Polymarket 5-minute markets.
  * Uses spread between current Chainlink BTC price and window open price.
  *
- * Three tiers (scaled from 15-min to 5-min via sqrt(5/15) ≈ 0.577):
+ * Three tiers (configurable from dashboard via b4_state.results_json):
  *
- *   B5-T1: spread > 0.12%, entry after 250s (last 50s), limit 96c
- *   B5-T2: spread > 0.33%, entry after 200s (last 100s), limit 97c
- *   B5-T3: spread > 0.58%, entry after 140s (last 160s), limit 97c
+ *   B4-T1: spread > 0.10%, entry in last 50s (after 250s), limit 96c
+ *   B4-T2: spread > 0.21%, entry in last 100s (after 200s), limit 97c
+ *          → BLOCKS T1 for 5 minutes after entry
+ *   B4-T3: spread > 0.45%, entry in last 160s (after 140s), limit 97c
+ *          → BLOCKS T1 AND T2 for 15 minutes after entry
  *
  * Positions resolve at window end (no early exit). Hold until $1 or $0.
  * Orders placed via Polymarket CLOB (GTC limit orders).
@@ -26,6 +28,9 @@ import {
   isB4EmergencyOff,
   logError,
   logPosition,
+  loadB4Config,
+  saveB4State,
+  loadB4State,
 } from '../db/supabase.js';
 import {
   createPolyClobClient,
@@ -41,18 +46,28 @@ import {
 } from '@polymarket/clob-client';
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Configuration (defaults — overridden by Supabase b4_state.results_json)
 // ---------------------------------------------------------------------------
 
-const POSITION_SIZE_USD = parseFloat(process.env.B5_POSITION_SIZE || '5');
+interface TierConfig {
+  name: string;
+  spreadPct: number;
+  entryAfterSec: number;
+  limitPrice: number;
+}
+
+let activeTiers: TierConfig[] = [
+  { name: 'B4-T1', spreadPct: 0.10, entryAfterSec: 250, limitPrice: 0.96 },
+  { name: 'B4-T2', spreadPct: 0.21, entryAfterSec: 200, limitPrice: 0.97 },
+  { name: 'B4-T3', spreadPct: 0.45, entryAfterSec: 140, limitPrice: 0.97 },
+];
+
+let positionSize = parseFloat(process.env.B4_POSITION_SIZE || '5');
 const TICK_INTERVAL_MS = 3_000;
 
-// Spread tiers (adapted from B1/B2/B3 for 5-minute windows)
-const TIERS = [
-  { name: 'B5-T1', spreadPct: 0.12, entryAfterSec: 250, limitPrice: 0.96 },
-  { name: 'B5-T2', spreadPct: 0.33, entryAfterSec: 200, limitPrice: 0.97 },
-  { name: 'B5-T3', spreadPct: 0.58, entryAfterSec: 140, limitPrice: 0.97 },
-] as const;
+// Blocking durations (configurable)
+let t2BlockMs = 5 * 60_000;   // T2 → blocks T1 for 5 min
+let t3BlockMs = 15 * 60_000;  // T3 → blocks T1 + T2 for 15 min
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,6 +84,7 @@ interface OpenOrder {
   slug: string;
   windowStart: number;
   spreadAtEntry: number;
+  signedSpread: number;
   btcPriceAtEntry: number;
   windowOpenPrice: number;
   negRisk: boolean;
@@ -86,6 +102,10 @@ let totalTrades = 0;
 let totalWins = 0;
 let totalLosses = 0;
 let totalPnl = 0;
+
+// Blocking timestamps
+let t1BlockedUntil = 0;
+let t2BlockedUntil = 0;
 
 // ---------------------------------------------------------------------------
 // Proxy wrapper
@@ -115,6 +135,26 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
 async function getClobClient(): Promise<ClobClient> {
   const cfg = getPolyClobConfigFromEnv();
   return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+}
+
+// ---------------------------------------------------------------------------
+// Refresh config from Supabase
+// ---------------------------------------------------------------------------
+
+async function refreshConfig(): Promise<void> {
+  try {
+    const cfg = await loadB4Config();
+    activeTiers = [
+      { name: 'B4-T1', spreadPct: cfg.t1_spread, entryAfterSec: 250, limitPrice: 0.96 },
+      { name: 'B4-T2', spreadPct: cfg.t2_spread, entryAfterSec: 200, limitPrice: 0.97 },
+      { name: 'B4-T3', spreadPct: cfg.t3_spread, entryAfterSec: 140, limitPrice: 0.97 },
+    ];
+    positionSize = cfg.position_size;
+    t2BlockMs = cfg.t2_block_min * 60_000;
+    t3BlockMs = cfg.t3_block_min * 60_000;
+  } catch (e) {
+    console.warn('[B4] config refresh failed, using current values:', e instanceof Error ? e.message : e);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +189,7 @@ async function placeLimitOrder(
       const shares = Math.max(1, Math.floor(size / price));
 
       console.log(
-        `[B5] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`,
+        `[B4] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`,
       );
 
       const result = await client.createAndPostOrder(
@@ -170,7 +210,7 @@ async function placeLimitOrder(
 }
 
 // ---------------------------------------------------------------------------
-// Resolve positions at window end
+// Resolve positions at window end (internal tracking only)
 // ---------------------------------------------------------------------------
 
 async function resolveWindowEnd(btcPrice: number): Promise<void> {
@@ -180,8 +220,7 @@ async function resolveWindowEnd(btcPrice: number): Promise<void> {
     const won = (order.direction === 'up' && resolvedUp) || (order.direction === 'down' && !resolvedUp);
     const resolvePrice = won ? 1.0 : 0.0;
 
-    // PnL: bought at limitPrice, resolved at 1.0 or 0.0
-    const contracts = POSITION_SIZE_USD / order.limitPrice;
+    const contracts = order.size / order.limitPrice;
     const pnl = (resolvePrice - order.limitPrice) * contracts;
 
     totalTrades++;
@@ -189,39 +228,25 @@ async function resolveWindowEnd(btcPrice: number): Promise<void> {
     totalPnl += pnl;
 
     console.log(
-      `[B5] RESOLVED ${order.tier}: ${order.direction} → ${resolvedUp ? 'UP' : 'DOWN'} → ${won ? 'WIN' : 'LOSS'} ` +
+      `[B4] RESOLVED ${order.tier}: ${order.direction} → ${resolvedUp ? 'UP' : 'DOWN'} → ${won ? 'WIN' : 'LOSS'} ` +
       `| BTC=$${btcPrice.toFixed(2)} vs open=$${order.windowOpenPrice.toFixed(2)} ` +
-      `| PnL=$${pnl.toFixed(3)} | total=$${totalPnl.toFixed(2)} W/L=${totalWins}/${totalLosses}`,
+      `| PnL=$${pnl.toFixed(3)} | cumPnl=$${totalPnl.toFixed(2)} W/L=${totalWins}/${totalLosses}`,
     );
 
-    // Log to Supabase
+    // Update bankroll in b4_state
     try {
-      await logPosition({
-        bot: 'B4',
-        asset: 'BTC',
-        venue: 'polymarket',
-        strike_spread_pct: order.spreadAtEntry,
-        position_size: POSITION_SIZE_USD,
-        ticker_or_slug: order.slug,
-        order_id: order.orderId,
-        raw: {
-          strategy: 'spread-live',
-          tier: order.tier,
-          direction: order.direction,
-          exitReason: won ? 'RESOLVED_WIN' : 'RESOLVED_LOSS',
-          entryPrice: order.limitPrice,
-          resolvePrice,
-          pnl,
-          won,
-          entryBtcPrice: order.btcPriceAtEntry,
-          exitBtcPrice: btcPrice,
-          windowOpenPrice: order.windowOpenPrice,
-          spreadAtEntry: order.spreadAtEntry,
-          cumPnl: totalPnl,
-          cumWins: totalWins,
-          cumTrades: totalTrades,
-        },
-      });
+      const state = await loadB4State();
+      if (state) {
+        const newBankroll = state.bankroll + pnl;
+        const newMaxBankroll = Math.max(state.max_bankroll, newBankroll);
+        await saveB4State({
+          ...state,
+          bankroll: newBankroll,
+          max_bankroll: newMaxBankroll,
+          consecutive_losses: won ? 0 : state.consecutive_losses + 1,
+          // Keep existing results_json (tier config)
+        });
+      }
     } catch { /* best effort */ }
 
     // Remove from tracking
@@ -253,42 +278,73 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   // Resolve old-window positions
   await resolveWindowEnd(btcPrice);
 
-  // B4-specific emergency off check (shared with B4 momentum bot)
+  // B4 emergency off check
   if (tickCount % 10 === 0) {
     try {
       if (await isB4EmergencyOff()) {
-        if (tickCount % 100 === 0) console.log('[B5] emergency off — paused');
+        if (tickCount % 100 === 0) console.log('[B4] emergency off — paused');
         return;
       }
     } catch { /* Supabase may not be configured */ }
+  }
+
+  // Refresh config from Supabase every ~30 ticks (~90 seconds)
+  if (tickCount % 30 === 0) {
+    await refreshConfig();
   }
 
   // Calculate spread
   const windowOpenPrice = await feed.getWindowOpen();
   if (windowOpenPrice <= 0) return;
 
-  const spreadPct = Math.abs((btcPrice - windowOpenPrice) / btcPrice * 100);
+  const signedSpread = (btcPrice - windowOpenPrice) / btcPrice * 100;
+  const absSpread = Math.abs(signedSpread);
   const spreadDir: 'up' | 'down' = btcPrice > windowOpenPrice ? 'up' : 'down';
   const slug = getPolySlug5m(now);
+  const nowMs = Date.now();
 
-  // Check each tier for entry
-  for (const tier of TIERS) {
+  // Check tiers from HIGHEST to LOWEST (T3 first → T2 → T1)
+  // This ensures higher tier blocks take effect before lower tiers are checked
+  for (let i = activeTiers.length - 1; i >= 0; i--) {
+    const tier = activeTiers[i];
     const tierKey = `${tier.name}-${windowStartMs}`;
+
+    // Already placed this tier this window
     if (placedThisWindow.has(tierKey)) continue;
+
+    // Time check: must be past entryAfterSec
     if (secInWindow < tier.entryAfterSec) continue;
-    if (spreadPct < tier.spreadPct) continue;
+
+    // Spread check
+    if (absSpread < tier.spreadPct) continue;
 
     // Already have this tier open for this window
     if (openOrders.some(o => o.tier === tier.name && o.windowStart === windowStartMs)) continue;
 
+    // Blocking check
+    if (tier.name === 'B4-T1' && nowMs < t1BlockedUntil) {
+      if (tickCount % 20 === 0) {
+        const remainSec = Math.ceil((t1BlockedUntil - nowMs) / 1000);
+        console.log(`[B4] T1 blocked for ${remainSec}s more`);
+      }
+      continue;
+    }
+    if (tier.name === 'B4-T2' && nowMs < t2BlockedUntil) {
+      if (tickCount % 20 === 0) {
+        const remainSec = Math.ceil((t2BlockedUntil - nowMs) / 1000);
+        console.log(`[B4] T2 blocked for ${remainSec}s more`);
+      }
+      continue;
+    }
+
     const side: 'yes' | 'no' = spreadDir === 'up' ? 'yes' : 'no';
 
     console.log(
-      `[B5] SIGNAL ${tier.name}: spread=${spreadPct.toFixed(4)}% (threshold ${tier.spreadPct}%) ` +
+      `[B4] SIGNAL ${tier.name}: spread=${absSpread.toFixed(4)}% (threshold ${tier.spreadPct}%) ` +
       `| dir=${spreadDir} | limit=${tier.limitPrice} | ${secInWindow.toFixed(0)}s into window`,
     );
 
-    const result = await placeLimitOrder(slug, side, tier.limitPrice, POSITION_SIZE_USD);
+    const result = await placeLimitOrder(slug, side, tier.limitPrice, positionSize);
 
     if (result.orderId && result.tokenId) {
       placedThisWindow.add(tierKey);
@@ -299,10 +355,11 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         tokenId: result.tokenId,
         orderId: result.orderId,
         limitPrice: tier.limitPrice,
-        size: POSITION_SIZE_USD,
+        size: positionSize,
         slug,
         windowStart: windowStartMs,
-        spreadAtEntry: spreadPct,
+        spreadAtEntry: absSpread,
+        signedSpread,
         btcPriceAtEntry: btcPrice,
         windowOpenPrice,
         negRisk: result.negRisk ?? false,
@@ -310,33 +367,71 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       });
 
       console.log(
-        `[B5] PLACED ${tier.name}: ${spreadDir} at ${tier.limitPrice} ` +
+        `[B4] PLACED ${tier.name}: ${spreadDir} at ${tier.limitPrice} ` +
         `| orderId=${result.orderId.slice(0, 12)}… ` +
-        `| spread=${spreadPct.toFixed(4)}%`,
+        `| spread=${signedSpread.toFixed(4)}%`,
       );
-    } else {
-      console.log(`[B5] ${tier.name} order failed: ${result.error}`);
+
+      // Log entry to Supabase positions table (for dashboard)
       try {
-        await logError(new Error(result.error ?? 'order failed'), { bot: 'B5', tier: tier.name, slug, side });
+        await logPosition({
+          bot: 'B4',
+          asset: 'BTC',
+          venue: 'polymarket',
+          strike_spread_pct: signedSpread,
+          position_size: positionSize,
+          ticker_or_slug: slug,
+          order_id: result.orderId,
+          raw: {
+            strategy: 'spread',
+            tier: tier.name,
+            direction: spreadDir,
+            limitPrice: tier.limitPrice,
+            btcPrice,
+            windowOpenPrice,
+            price_source: 'chainlink',
+          },
+        });
+      } catch { /* best effort */ }
+
+      // Apply blocking rules
+      if (tier.name === 'B4-T2') {
+        t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t2BlockMs);
+        console.log(`[B4] T2 entered → T1 blocked for ${t2BlockMs / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
+      }
+      if (tier.name === 'B4-T3') {
+        t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlockMs);
+        t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlockMs);
+        console.log(`[B4] T3 entered → T1+T2 blocked for ${t3BlockMs / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
+      }
+    } else {
+      console.log(`[B4] ${tier.name} order failed: ${result.error}`);
+      try {
+        await logError(new Error(result.error ?? 'order failed'), { bot: 'B4', tier: tier.name, slug, side });
       } catch { /* ignore */ }
     }
   }
 
   // Periodic status log
-  if (tickCount % 20 === 0 && spreadPct > 0.01) {
+  if (tickCount % 20 === 0 && absSpread > 0.01) {
     console.log(
-      `[B5] spread: ${spreadPct.toFixed(4)}% ${spreadDir} ` +
+      `[B4] spread: ${signedSpread.toFixed(4)}% ${spreadDir} ` +
       `| BTC=$${btcPrice.toFixed(2)} open=$${windowOpenPrice.toFixed(2)} ` +
-      `| ${secInWindow.toFixed(0)}s in | open orders: ${openOrders.length}`,
+      `| ${secInWindow.toFixed(0)}s in | open orders: ${openOrders.length}` +
+      (t1BlockedUntil > nowMs ? ` | T1 blocked ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s` : '') +
+      (t2BlockedUntil > nowMs ? ` | T2 blocked ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s` : ''),
     );
   }
 
   if (tickCount % 100 === 0) {
     console.log('');
-    console.log(`[B5] ═══ Status @ ${new Date().toISOString()} ═══`);
-    console.log(`[B5] BTC=$${btcPrice.toFixed(2)} | spread=${spreadPct.toFixed(4)}% ${spreadDir}`);
-    console.log(`[B5] Trades: ${totalTrades} | W/L: ${totalWins}/${totalLosses} | PnL: $${totalPnl.toFixed(2)}`);
-    console.log(`[B5] Open orders: ${openOrders.length}`);
+    console.log(`[B4] ═══ Status @ ${new Date().toISOString()} ═══`);
+    console.log(`[B4] BTC=$${btcPrice.toFixed(2)} | spread=${signedSpread.toFixed(4)}% ${spreadDir}`);
+    console.log(`[B4] Tiers: T1>${activeTiers[0].spreadPct}% T2>${activeTiers[1].spreadPct}% T3>${activeTiers[2].spreadPct}%`);
+    console.log(`[B4] Trades: ${totalTrades} | W/L: ${totalWins}/${totalLosses} | PnL: $${totalPnl.toFixed(2)}`);
+    console.log(`[B4] Open orders: ${openOrders.length}`);
+    if (t1BlockedUntil > nowMs) console.log(`[B4] T1 blocked for ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s`);
+    if (t2BlockedUntil > nowMs) console.log(`[B4] T2 blocked for ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s`);
     console.log('');
   }
 }
@@ -347,13 +442,18 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
 export async function startSpreadRunner(): Promise<void> {
   console.log('');
-  console.log('[B5] ═══ Spread Runner Starting ═══');
-  console.log(`[B5] Position size: $${POSITION_SIZE_USD}`);
-  console.log('[B5] Tiers:');
-  for (const t of TIERS) {
-    console.log(`[B5]   ${t.name}: spread>${t.spreadPct}%, entry after ${t.entryAfterSec}s, limit ${t.limitPrice}`);
+  console.log('[B4] ═══ Spread Runner Starting ═══');
+
+  // Load config from Supabase
+  await refreshConfig();
+
+  console.log(`[B4] Position size: $${positionSize}`);
+  console.log('[B4] Tiers:');
+  for (const t of activeTiers) {
+    console.log(`[B4]   ${t.name}: spread>${t.spreadPct}%, entry after ${t.entryAfterSec}s, limit ${t.limitPrice}`);
   }
-  console.log('[B5] Strategy: buy at limit, hold to window resolution ($1 or $0)');
+  console.log(`[B4] Blocking: T2→T1 for ${t2BlockMs / 60_000}min | T3→T1+T2 for ${t3BlockMs / 60_000}min`);
+  console.log('[B4] Strategy: buy at limit, hold to window resolution ($1 or $0)');
   console.log('');
 
   const feed = new PriceFeed();
@@ -362,9 +462,9 @@ export async function startSpreadRunner(): Promise<void> {
   await new Promise((r) => setTimeout(r, 5_000));
   if (feed.isChainlinkLive()) {
     const cl = getChainlinkPrice();
-    console.log(`[B5] Chainlink LIVE — BTC=$${cl?.price.toFixed(2) ?? '?'}`);
+    console.log(`[B4] Chainlink LIVE — BTC=$${cl?.price.toFixed(2) ?? '?'}`);
   } else {
-    console.warn('[B5] Chainlink not connected yet — will keep trying');
+    console.warn('[B4] Chainlink not connected yet — will keep trying');
   }
 
   let tickCount = 0;
@@ -375,8 +475,8 @@ export async function startSpreadRunner(): Promise<void> {
       await feed.refresh();
       await runOneTick(feed, tickCount);
     } catch (e) {
-      console.error('[B5] tick error:', e instanceof Error ? e.message : e);
-      try { await logError(e, { bot: 'B5', stage: 'tick' }); } catch { /* ignore */ }
+      console.error('[B4] tick error:', e instanceof Error ? e.message : e);
+      try { await logError(e, { bot: 'B4', stage: 'tick' }); } catch { /* ignore */ }
     }
     setTimeout(runTick, TICK_INTERVAL_MS);
   };
@@ -385,9 +485,9 @@ export async function startSpreadRunner(): Promise<void> {
 
   const shutdown = () => {
     console.log('');
-    console.log('[B5] ═══ Final Results ═══');
-    console.log(`[B5] Trades: ${totalTrades} | W/L: ${totalWins}/${totalLosses} | PnL: $${totalPnl.toFixed(2)}`);
-    console.log(`[B5] Open orders at shutdown: ${openOrders.length} (will resolve when market settles)`);
+    console.log('[B4] ═══ Final Results ═══');
+    console.log(`[B4] Trades: ${totalTrades} | W/L: ${totalWins}/${totalLosses} | PnL: $${totalPnl.toFixed(2)}`);
+    console.log(`[B4] Open orders at shutdown: ${openOrders.length} (will resolve when market settles)`);
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

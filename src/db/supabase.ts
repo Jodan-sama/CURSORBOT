@@ -274,12 +274,30 @@ export async function logPolySkip(entry: {
 // B4 state persistence
 // ---------------------------------------------------------------------------
 
+export interface B4TierConfig {
+  t1_spread: number;
+  t2_spread: number;
+  t3_spread: number;
+  t2_block_min: number;
+  t3_block_min: number;
+  position_size: number;
+}
+
+export const DEFAULT_B4_CONFIG: B4TierConfig = {
+  t1_spread: 0.10,
+  t2_spread: 0.21,
+  t3_spread: 0.45,
+  t2_block_min: 5,
+  t3_block_min: 15,
+  position_size: 5,
+};
+
 export interface B4StateRow {
   bankroll: number;
   max_bankroll: number;
   consecutive_losses: number;
   cooldown_until_ms: number;
-  results_json: boolean[];
+  results_json: B4TierConfig | boolean[];
   daily_start_bankroll: number;
   daily_start_date: string;
   half_kelly_trades_left: number;
@@ -365,6 +383,60 @@ export async function loadB4OpenPosition(): Promise<Record<string, unknown> | nu
   } catch {
     return null;
   }
+}
+
+/** Load B4 tier config from b4_state.results_json. Returns defaults if not found. */
+export async function loadB4Config(): Promise<B4TierConfig> {
+  try {
+    const { data } = await getDb()
+      .from('b4_state')
+      .select('results_json')
+      .eq('id', 'default')
+      .maybeSingle();
+    if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
+      const cfg = data.results_json as Record<string, unknown>;
+      if (cfg.t1_spread != null) {
+        return {
+          t1_spread: Number(cfg.t1_spread) || DEFAULT_B4_CONFIG.t1_spread,
+          t2_spread: Number(cfg.t2_spread) || DEFAULT_B4_CONFIG.t2_spread,
+          t3_spread: Number(cfg.t3_spread) || DEFAULT_B4_CONFIG.t3_spread,
+          t2_block_min: Number(cfg.t2_block_min) || DEFAULT_B4_CONFIG.t2_block_min,
+          t3_block_min: Number(cfg.t3_block_min) || DEFAULT_B4_CONFIG.t3_block_min,
+          position_size: Number(cfg.position_size) || DEFAULT_B4_CONFIG.position_size,
+        };
+      }
+    }
+  } catch { /* ignore */ }
+  return { ...DEFAULT_B4_CONFIG };
+}
+
+/** Save B4 tier config to b4_state.results_json. */
+export async function saveB4Config(config: B4TierConfig): Promise<void> {
+  try {
+    await getDb().from('b4_state').update({
+      results_json: config as unknown as Record<string, unknown>,
+      updated_at: new Date().toISOString(),
+    }).eq('id', 'default');
+  } catch (e) {
+    console.error('[saveB4Config] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+/** Reset B4 state for fresh start with new strategy. */
+export async function resetB4State(startingBankroll: number, config: B4TierConfig): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  await getDb().from('b4_state').upsert({
+    id: 'default',
+    bankroll: startingBankroll,
+    max_bankroll: startingBankroll,
+    consecutive_losses: 0,
+    cooldown_until_ms: 0,
+    results_json: config as unknown as Record<string, unknown>,
+    daily_start_bankroll: startingBankroll,
+    daily_start_date: today,
+    half_kelly_trades_left: 0,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'id' });
 }
 
 /** Set emergency_off flag in bot_config. */
