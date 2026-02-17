@@ -27,6 +27,7 @@ import {
 } from './clock.js';
 import {
   isB4EmergencyOff,
+  setB4TimedCooldown,
   logError,
   logPosition,
   loadB4Config,
@@ -68,6 +69,13 @@ const TICK_INTERVAL_MS = 3_000;
 // Blocking durations (configurable)
 let t2BlockMs = 5 * 60_000;   // T2 → blocks T1 for 5 min
 let t3BlockMs = 15 * 60_000;  // T3 → blocks T1 + T2 for 15 min
+
+// Early-window high-spread guard: check every 15s during first 100s,
+// if spread > 0.6% → 1-hour cooldown on ALL B4-droplet bots
+const EARLY_GUARD_WINDOW_SEC = 100;
+const EARLY_GUARD_SPREAD_PCT = 0.6;
+const EARLY_GUARD_COOLDOWN_MS = 60 * 60_000; // 1 hour
+const EARLY_GUARD_CHECK_TICKS = 5;           // every 5 ticks = 15s at 3s/tick
 
 // ---------------------------------------------------------------------------
 // Types
@@ -303,6 +311,23 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const spreadDir: 'up' | 'down' = btcPrice > windowOpenPrice ? 'up' : 'down';
   const slug = getPolySlug5m(now);
   const nowMs = Date.now();
+
+  // --- Early-window high-spread guard ---
+  // During first 100s, check every ~15s: if spread > 0.6% → 1hr cooldown on ALL B4 bots
+  if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
+    if (absSpread >= EARLY_GUARD_SPREAD_PCT) {
+      console.log(
+        `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${EARLY_GUARD_SPREAD_PCT}% ` +
+        `at ${secInWindow.toFixed(0)}s — activating 1hr cooldown on ALL B4 bots`,
+      );
+      try {
+        await setB4TimedCooldown(EARLY_GUARD_COOLDOWN_MS);
+      } catch (e) {
+        console.error('[B4] Failed to set timed cooldown:', e instanceof Error ? e.message : e);
+      }
+      return; // skip this tick entirely
+    }
+  }
 
   // Check tiers from HIGHEST to LOWEST (T3 first → T2 → T1)
   // This ensures higher tier blocks take effect before lower tiers are checked
