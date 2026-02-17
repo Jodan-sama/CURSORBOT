@@ -90,8 +90,8 @@ export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
   const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
-  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string; b123c_position_size: string }>({
-    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5',
+  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string; b123c_position_size: string; early_guard_spread_pct: string; early_guard_cooldown_min: string }>({
+    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60',
   });
   const [b123cPositions, setB123cPositions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
@@ -161,6 +161,8 @@ export default function Dashboard() {
           t3_block_min: cfg.t3_block_min != null ? String(cfg.t3_block_min) : '15',
           position_size: cfg.position_size != null ? String(cfg.position_size) : '5',
           b123c_position_size: cfg.b123c_position_size != null ? String(cfg.b123c_position_size) : '5',
+          early_guard_spread_pct: cfg.early_guard_spread_pct != null ? String(cfg.early_guard_spread_pct) : '0.6',
+          early_guard_cooldown_min: cfg.early_guard_cooldown_min != null ? String(cfg.early_guard_cooldown_min) : '60',
         });
       }
       setErrors((errData ?? []) as ErrorLog[]);
@@ -236,6 +238,8 @@ export default function Dashboard() {
       t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
       position_size: parseFloat(b4Config.position_size) || 5,
       b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
+      early_guard_spread_pct: parseFloat(b4Config.early_guard_spread_pct) || 0.6,
+      early_guard_cooldown_min: parseInt(b4Config.early_guard_cooldown_min, 10) || 60,
     };
     await getSupabase().from('b4_state').update({
       results_json: config,
@@ -256,6 +260,8 @@ export default function Dashboard() {
       t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
       position_size: parseFloat(b4Config.position_size) || 5,
       b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
+      early_guard_spread_pct: parseFloat(b4Config.early_guard_spread_pct) || 0.6,
+      early_guard_cooldown_min: parseInt(b4Config.early_guard_cooldown_min, 10) || 60,
     };
     const startBankroll = 11;
     const today = new Date().toISOString().slice(0, 10);
@@ -758,6 +764,18 @@ export default function Dashboard() {
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>B1c/B2c/B3c position size ($)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="1" value={b4Config.b123c_position_size} onChange={(e) => setB4Config((p) => ({ ...p, b123c_position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard spread threshold (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="0" value={b4Config.early_guard_spread_pct} onChange={(e) => setB4Config((p) => ({ ...p, early_guard_spread_pct: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard cooldown (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" min="1" value={b4Config.early_guard_cooldown_min} onChange={(e) => setB4Config((p) => ({ ...p, early_guard_cooldown_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
               </tbody>

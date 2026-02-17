@@ -282,6 +282,8 @@ export interface B4TierConfig {
   t3_block_min: number;
   position_size: number;
   b123c_position_size: number;
+  early_guard_spread_pct: number;
+  early_guard_cooldown_min: number;
 }
 
 export const DEFAULT_B4_CONFIG: B4TierConfig = {
@@ -292,6 +294,8 @@ export const DEFAULT_B4_CONFIG: B4TierConfig = {
   t3_block_min: 15,
   position_size: 5,
   b123c_position_size: 5,
+  early_guard_spread_pct: 0.6,
+  early_guard_cooldown_min: 60,
 };
 
 export interface B4StateRow {
@@ -406,6 +410,8 @@ export async function loadB4Config(): Promise<B4TierConfig> {
           t3_block_min: Number(cfg.t3_block_min) || DEFAULT_B4_CONFIG.t3_block_min,
           position_size: Number(cfg.position_size) || DEFAULT_B4_CONFIG.position_size,
           b123c_position_size: Number(cfg.b123c_position_size) || DEFAULT_B4_CONFIG.b123c_position_size,
+          early_guard_spread_pct: Number(cfg.early_guard_spread_pct) || DEFAULT_B4_CONFIG.early_guard_spread_pct,
+          early_guard_cooldown_min: Number(cfg.early_guard_cooldown_min) || DEFAULT_B4_CONFIG.early_guard_cooldown_min,
         };
       }
     }

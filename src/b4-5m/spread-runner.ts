@@ -70,11 +70,11 @@ let t2BlockMs = 5 * 60_000;   // T2 → blocks T1 for 5 min
 let t3BlockMs = 15 * 60_000;  // T3 → blocks T1 + T2 for 15 min
 
 // Early-window high-spread guard: check every 15s during first 100s,
-// if spread > 0.6% → 1-hour cooldown on ALL B4-droplet bots
+// if spread > threshold → cooldown on B4 spread bot only
 const EARLY_GUARD_WINDOW_SEC = 100;
-const EARLY_GUARD_SPREAD_PCT = 0.6;
-const EARLY_GUARD_COOLDOWN_MS = 60 * 60_000; // 1 hour
 const EARLY_GUARD_CHECK_TICKS = 5;           // every 5 ticks = 15s at 3s/tick
+let earlyGuardSpreadPct = 0.6;               // configurable from dashboard
+let earlyGuardCooldownMs = 60 * 60_000;      // configurable from dashboard
 
 // ---------------------------------------------------------------------------
 // Types
@@ -192,6 +192,8 @@ async function refreshConfig(): Promise<void> {
     positionSize = cfg.position_size;
     t2BlockMs = cfg.t2_block_min * 60_000;
     t3BlockMs = cfg.t3_block_min * 60_000;
+    earlyGuardSpreadPct = cfg.early_guard_spread_pct;
+    earlyGuardCooldownMs = cfg.early_guard_cooldown_min * 60_000;
   } catch (e) {
     console.warn('[B4] config refresh failed, using current values:', e instanceof Error ? e.message : e);
   }
@@ -324,13 +326,14 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const nowMs = Date.now();
 
   // --- Early-window high-spread guard (B4 only, in-memory) ---
-  // During first 100s, check every ~15s: if spread > 0.6% → 1hr cooldown on B4 spread bot
+  // During first 100s, check every ~15s: if spread > threshold → cooldown on B4 spread bot
   if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
-    if (absSpread >= EARLY_GUARD_SPREAD_PCT) {
-      earlyGuardCooldownUntil = Date.now() + EARLY_GUARD_COOLDOWN_MS;
+    if (absSpread >= earlyGuardSpreadPct) {
+      earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;
+      const cooldownMin = Math.round(earlyGuardCooldownMs / 60_000);
       console.log(
-        `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${EARLY_GUARD_SPREAD_PCT}% ` +
-        `at ${secInWindow.toFixed(0)}s — B4 cooldown for 1hr (until ${new Date(earlyGuardCooldownUntil).toISOString()})`,
+        `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${earlyGuardSpreadPct}% ` +
+        `at ${secInWindow.toFixed(0)}s — B4 cooldown for ${cooldownMin}min (until ${new Date(earlyGuardCooldownUntil).toISOString()})`,
       );
       return;
     }
@@ -480,6 +483,7 @@ export async function startSpreadRunner(): Promise<void> {
     console.log(`[B4]   ${t.name}: spread>${t.spreadPct}%, entry after ${t.entryAfterSec}s, limit ${t.limitPrice}`);
   }
   console.log(`[B4] Blocking: T2→T1 for ${t2BlockMs / 60_000}min | T3→T1+T2 for ${t3BlockMs / 60_000}min`);
+  console.log(`[B4] Early guard: spread>${earlyGuardSpreadPct}% in first ${EARLY_GUARD_WINDOW_SEC}s → ${earlyGuardCooldownMs / 60_000}min cooldown`);
   console.log('[B4] Strategy: buy at limit, hold to window resolution ($1 or $0)');
   console.log('');
 
