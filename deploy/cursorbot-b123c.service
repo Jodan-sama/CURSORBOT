@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/CURSORBOT
+WorkingDirectory=/root/cursorbot
 ExecStart=/usr/bin/node dist/b4-5m/b123c-run.js
-EnvironmentFile=/root/CURSORBOT/.env
+EnvironmentFile=/root/cursorbot/.env
 Restart=always
 RestartSec=10
 SyslogIdentifier=cursorbot-b123c

@@ -78,12 +78,10 @@ function connectRTDS(): void {
 
   rtdsWs.on('open', () => {
     console.log('[B123c] RTDS connected');
-    for (const symbol of Object.keys(SYMBOL_MAP)) {
-      rtdsWs!.send(JSON.stringify({
-        action: 'subscribe',
-        subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: `{"symbol":"${symbol}"}` }],
-      }));
-    }
+    rtdsWs!.send(JSON.stringify({
+      action: 'subscribe',
+      subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*' }],
+    }));
     if (rtdsPing) clearInterval(rtdsPing);
     rtdsPing = setInterval(() => {
       if (rtdsWs?.readyState === WebSocket.OPEN) rtdsWs.send(JSON.stringify({ action: 'ping' }));
