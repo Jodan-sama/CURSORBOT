@@ -669,27 +669,21 @@ export default function Dashboard() {
 
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
           <p style={{ margin: 0, marginBottom: 8, color: '#e5e5e5' }}>
-            B4 Status: <strong style={{ color: (b4State?.cooldown_until_ms === 1 || (b4State?.cooldown_until_ms ?? 0) > Date.now()) ? '#ef4444' : '#22c55e' }}>
-              {b4State?.cooldown_until_ms === 1
-                ? 'OFF (paused)'
-                : (b4State?.cooldown_until_ms ?? 0) > Date.now()
-                  ? `COOLDOWN (until ${formatMst(new Date(b4State!.cooldown_until_ms).toISOString(), true)})`
-                  : 'Running'}
-            </strong>
+            B4 Status: <strong style={{ color: b4State?.cooldown_until_ms === 1 ? '#ef4444' : '#22c55e' }}>{b4State?.cooldown_until_ms === 1 ? 'OFF (paused)' : 'Running'}</strong>
           </p>
           <button
             type="button"
             onClick={() => setB4EmergencyOff(true)}
-            disabled={saving || (b4State?.cooldown_until_ms ?? 0) > 0}
-            style={{ marginRight: 8, ...(saving || (b4State?.cooldown_until_ms ?? 0) > 0 ? buttonDisabledStyle : { ...buttonStyle, background: '#dc2626' }) }}
+            disabled={saving || b4State?.cooldown_until_ms === 1}
+            style={{ marginRight: 8, ...(saving || b4State?.cooldown_until_ms === 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#dc2626' }) }}
           >
             Pause B4
           </button>
           <button
             type="button"
             onClick={() => setB4EmergencyOff(false)}
-            disabled={saving || (b4State?.cooldown_until_ms ?? 0) === 0}
-            style={{ marginRight: 8, ...(saving || (b4State?.cooldown_until_ms ?? 0) === 0 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}
+            disabled={saving || b4State?.cooldown_until_ms !== 1}
+            style={{ marginRight: 8, ...(saving || b4State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}
           >
             Resume B4
           </button>

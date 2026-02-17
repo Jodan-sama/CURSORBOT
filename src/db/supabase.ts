@@ -74,12 +74,6 @@ export async function isEmergencyOff(): Promise<boolean> {
 }
 
 /** Check if B4 is paused (uses cooldown_until_ms in b4_state: 1 = off, 0 = running). */
-/**
- * B4 emergency-off / timed-cooldown check.
- *   cooldown_until_ms === 0  → running
- *   cooldown_until_ms === 1  → manual pause (dashboard button)
- *   cooldown_until_ms > 1    → timed cooldown (epoch ms); paused while Date.now() < value
- */
 export async function isB4EmergencyOff(): Promise<boolean> {
   try {
     const { data } = await getDb()
@@ -87,10 +81,7 @@ export async function isB4EmergencyOff(): Promise<boolean> {
       .select('cooldown_until_ms')
       .eq('id', 'default')
       .maybeSingle();
-    const v = data?.cooldown_until_ms ?? 0;
-    if (v === 1) return true;               // manual pause
-    if (v > 1 && v > Date.now()) return true; // timed cooldown still active
-    return false;
+    return data?.cooldown_until_ms === 1;
   } catch {
     return false;
   }
@@ -100,15 +91,6 @@ export async function isB4EmergencyOff(): Promise<boolean> {
 export async function setB4EmergencyOff(off: boolean): Promise<void> {
   await getDb().from('b4_state').update({
     cooldown_until_ms: off ? 1 : 0,
-    updated_at: new Date().toISOString(),
-  }).eq('id', 'default');
-}
-
-/** Set a timed cooldown on ALL B4-droplet bots (B4 + B1c/B2c/B3c). */
-export async function setB4TimedCooldown(durationMs: number): Promise<void> {
-  const until = Date.now() + durationMs;
-  await getDb().from('b4_state').update({
-    cooldown_until_ms: until,
     updated_at: new Date().toISOString(),
   }).eq('id', 'default');
 }

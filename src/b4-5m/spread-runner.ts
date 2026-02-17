@@ -27,7 +27,6 @@ import {
 } from './clock.js';
 import {
   isB4EmergencyOff,
-  setB4TimedCooldown,
   logError,
   logPosition,
   loadB4Config,
@@ -110,6 +109,9 @@ const placedThisWindow = new Set<string>();
 // Blocking timestamps
 let t1BlockedUntil = 0;
 let t2BlockedUntil = 0;
+
+// Early-guard cooldown (in-memory only — does NOT affect B1c/B2c/B3c)
+let earlyGuardCooldownUntil = 0;
 
 // ---------------------------------------------------------------------------
 // Wallet balance polling (every ~15 min → updates b4_state.bankroll)
@@ -284,7 +286,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   // Clean up orders from previous windows
   cleanupOldOrders();
 
-  // B4 emergency off check
+  // B4 emergency off check (manual pause from dashboard)
   if (tickCount % 10 === 0) {
     try {
       if (await isB4EmergencyOff()) {
@@ -292,6 +294,15 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         return;
       }
     } catch { /* Supabase may not be configured */ }
+  }
+
+  // Early-guard cooldown check (in-memory, B4 only)
+  if (earlyGuardCooldownUntil > Date.now()) {
+    if (tickCount % 20 === 0) {
+      const remainMin = Math.ceil((earlyGuardCooldownUntil - Date.now()) / 60_000);
+      console.log(`[B4] early-guard cooldown active — ${remainMin}min remaining`);
+    }
+    return;
   }
 
   // Poll wallet balance every ~15 min
@@ -312,20 +323,16 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const slug = getPolySlug5m(now);
   const nowMs = Date.now();
 
-  // --- Early-window high-spread guard ---
-  // During first 100s, check every ~15s: if spread > 0.6% → 1hr cooldown on ALL B4 bots
+  // --- Early-window high-spread guard (B4 only, in-memory) ---
+  // During first 100s, check every ~15s: if spread > 0.6% → 1hr cooldown on B4 spread bot
   if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
     if (absSpread >= EARLY_GUARD_SPREAD_PCT) {
+      earlyGuardCooldownUntil = Date.now() + EARLY_GUARD_COOLDOWN_MS;
       console.log(
         `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${EARLY_GUARD_SPREAD_PCT}% ` +
-        `at ${secInWindow.toFixed(0)}s — activating 1hr cooldown on ALL B4 bots`,
+        `at ${secInWindow.toFixed(0)}s — B4 cooldown for 1hr (until ${new Date(earlyGuardCooldownUntil).toISOString()})`,
       );
-      try {
-        await setB4TimedCooldown(EARLY_GUARD_COOLDOWN_MS);
-      } catch (e) {
-        console.error('[B4] Failed to set timed cooldown:', e instanceof Error ? e.message : e);
-      }
-      return; // skip this tick entirely
+      return;
     }
   }
 
