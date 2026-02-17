@@ -64,6 +64,8 @@ type Position = {
   ticker_or_slug: string | null;
   order_id: string | null;
   raw?: { price_source?: string } | null;
+  outcome?: 'win' | 'loss' | null;
+  resolved_at?: string | null;
 };
 
 type SpreadRow = { bot: string; asset: string; threshold_pct: number };
@@ -801,12 +803,15 @@ export default function Dashboard() {
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Result</th>
               </tr>
             </thead>
             <tbody>
               {b4Positions.map((p) => {
                 const raw = (p.raw ?? {}) as Record<string, unknown>;
                 const tier = String(raw.tier ?? 'B4');
+                const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : 'Pending';
+                const resultColor = p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : '#888';
                 return (
                   <tr key={p.id}>
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
@@ -816,6 +821,7 @@ export default function Dashboard() {
                     <td style={{ borderBottom: '1px solid #eee' }}>{String(raw.price_source ?? '—')}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                    <td style={{ borderBottom: '1px solid #eee', color: resultColor, fontWeight: result !== 'Pending' ? 600 : undefined }}>{result}</td>
                   </tr>
                 );
               })}
@@ -842,11 +848,14 @@ export default function Dashboard() {
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Result</th>
               </tr>
             </thead>
             <tbody>
               {b123cPositions.map((p) => {
                 const raw = (p.raw ?? {}) as Record<string, unknown>;
+                const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : 'Pending';
+                const resultColor = p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : '#888';
                 return (
                   <tr key={p.id}>
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
@@ -856,6 +865,7 @@ export default function Dashboard() {
                     <td style={{ borderBottom: '1px solid #eee' }}>{String(raw.price_source ?? '—')}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                    <td style={{ borderBottom: '1px solid #eee', color: resultColor, fontWeight: result !== 'Pending' ? 600 : undefined }}>{result}</td>
                   </tr>
                 );
               })}

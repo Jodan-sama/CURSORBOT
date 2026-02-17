@@ -134,3 +134,7 @@ insert into spread_thresholds (bot, asset, threshold_pct) values
   ('B2', 'BTC', 0.57), ('B2', 'ETH', 0.57), ('B2', 'SOL', 0.62), ('B2', 'XRP', 0.62),
   ('B3', 'BTC', 1.0),  ('B3', 'ETH', 1.0),  ('B3', 'SOL', 1.0),  ('B3', 'XRP', 1.0)
 on conflict (bot, asset) do nothing;
+
+-- Resolution outcome for Polymarket positions (B4, B1c/B2c/B3c). Set once by resolver job.
+alter table positions add column if not exists outcome text check (outcome is null or outcome in ('win', 'loss'));
+alter table positions add column if not exists resolved_at timestamptz;
