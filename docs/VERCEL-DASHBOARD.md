@@ -58,6 +58,7 @@ If you prefer to keep RLS off for a private project, you can leave policies perm
    |------|--------|
    | `NEXT_PUBLIC_SUPABASE_URL` | Your Supabase project URL (e.g. `https://xxxxx.supabase.co`) |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon (public) key |
+   | `DASHBOARD_PASSWORD` | Password required to open the dashboard (e.g. a strong secret). If unset, the dashboard is open to anyone with the URL. |
 
 6. Click **Deploy**.
 
@@ -71,6 +72,9 @@ Then save and redeploy.
 ## 4. Open the dashboard
 
 When the deploy finishes, Vercel shows a URL like `https://cursorbot-xxx.vercel.app`. Open it.
+
+- If you set **DASHBOARD_PASSWORD** in env vars, you’ll see a login page first; enter that password to reach the dashboard.
+- If you didn’t set it, the dashboard opens without a password (anyone with the URL can access it).
 
 You should see:
 

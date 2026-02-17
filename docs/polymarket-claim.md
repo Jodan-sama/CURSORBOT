@@ -104,18 +104,18 @@ crontab -e
 If asked, choose `nano`. Add this **single line** at the end of the file (replace with your path if different):
 
 ```
-5,20,35,50 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js
+6,21,36,51 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js
 ```
 
 Save (`Ctrl+O`, `Enter`) and exit (`Ctrl+X`).  
-Cron will run the script at **:05, :20, :35, :50** every hour (~ every 15 minutes).
+Cron will run the script at **:06, :21, :36, :51** every hour (6 minutes into each 15-minute window).
 
 **Deploy updates:** After pulling or copying new code, run `npm run build` on the droplet so `claim-polymarket.js` and `check-safe-balance.js` are compiled.
 
 **Optional:** To log each run (date, time, status only), use:
 
 ```
-5,20,35,50 * * * * cd /root/cursorbot && mkdir -p logs && /usr/bin/node dist/scripts/claim-polymarket.js >> logs/claim-polymarket.log 2>&1
+6,21,36,51 * * * * cd /root/cursorbot && mkdir -p logs && /usr/bin/node dist/scripts/claim-polymarket.js >> logs/claim-polymarket.log 2>&1
 ```
 
 The script also writes a **one-line summary** (date, time, message) to `logs/claim-polymarket.log` and to Supabase `polymarket_claim_log`. The dashboard shows the latest status: **ALL ITEMS CLAIMED**, **NEED MORE POL**, or **CLAIM INCOMPLETE**.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Cursorbot B1c/B2c/B3c Chainlink Runner (15-min, Polymarket)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/CURSORBOT
+ExecStart=/usr/bin/node dist/b4-5m/b123c-run.js
+EnvironmentFile=/root/CURSORBOT/.env
+Restart=always
+RestartSec=10
+SyslogIdentifier=cursorbot-b123c
+
+[Install]
+WantedBy=multi-user.target

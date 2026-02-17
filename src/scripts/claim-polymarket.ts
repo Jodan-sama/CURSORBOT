@@ -12,7 +12,7 @@
  *   node dist/scripts/claim-polymarket.js [conditionId1] [conditionId2] ...
  *   Or set CONDITION_IDS=id1,id2 in .env. Or run with no args for auto-discovery.
  *
- * Cron runs at :05, :20, :35, :50 each hour; uses proxy if HTTP_PROXY/HTTPS_PROXY set.
+ * Cron runs at :06, :21, :36, :51 each hour.
  *
  * Logs: date, time, and status (ALL ITEMS CLAIMED | NEED MORE POL | CLAIM INCOMPLETE) to
  *   logs/claim-polymarket.log and Supabase polymarket_claim_log.
@@ -90,7 +90,7 @@ function getConditionIdsFromEnvOrArgs(): string[] {
 
 type PositionRow = { conditionId?: string; redeemable?: boolean; proxyWallet?: string };
 
-/** Fetch positions from Data API (optionally with redeemable filter). Uses HTTP_PROXY/HTTPS_PROXY if set. */
+/** Fetch positions from Data API (optionally with redeemable filter). */
 async function fetchPositions(user: string, redeemableOnly: boolean): Promise<PositionRow[]> {
   const params = new URLSearchParams({ user, limit: '500' });
   if (redeemableOnly) params.set('redeemable', 'true');
@@ -117,7 +117,7 @@ function conditionIdsFromRows(rows: PositionRow[], requireRedeemable: boolean): 
 
 type PositionWithProxy = { conditionId: string; proxyWallet: string };
 
-/** Fetch redeemable positions with proxyWallet (actual holder). Uses proxyWallet from API; falls back to user if missing. */
+/** Fetch redeemable positions with proxyWallet (actual holder). */
 async function fetchRedeemablePositionsWithProxy(user: string): Promise<PositionWithProxy[]> {
   let rows: PositionRow[];
   const withFilter = await fetchPositions(user, true);

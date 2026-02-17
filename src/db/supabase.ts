@@ -6,7 +6,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { BOT_SPREAD_THRESHOLD_PCT, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 
 export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
-export type BotId = 'B1' | 'B2' | 'B3' | 'B4';
+export type BotId = 'B1' | 'B2' | 'B3' | 'B4' | 'B1c' | 'B2c' | 'B3c';
 export type Venue = 'kalshi' | 'polymarket';
 
 export interface BotConfigRow {
@@ -281,6 +281,7 @@ export interface B4TierConfig {
   t2_block_min: number;
   t3_block_min: number;
   position_size: number;
+  b123c_position_size: number;
 }
 
 export const DEFAULT_B4_CONFIG: B4TierConfig = {
@@ -290,6 +291,7 @@ export const DEFAULT_B4_CONFIG: B4TierConfig = {
   t2_block_min: 5,
   t3_block_min: 15,
   position_size: 5,
+  b123c_position_size: 5,
 };
 
 export interface B4StateRow {
@@ -403,6 +405,7 @@ export async function loadB4Config(): Promise<B4TierConfig> {
           t2_block_min: Number(cfg.t2_block_min) || DEFAULT_B4_CONFIG.t2_block_min,
           t3_block_min: Number(cfg.t3_block_min) || DEFAULT_B4_CONFIG.t3_block_min,
           position_size: Number(cfg.position_size) || DEFAULT_B4_CONFIG.position_size,
+          b123c_position_size: Number(cfg.b123c_position_size) || DEFAULT_B4_CONFIG.b123c_position_size,
         };
       }
     }

@@ -1,21 +1,15 @@
-# B4 Kalshi 46/50 (BTC only)
+# B4 Kalshi 46/50 (BTC, ETH, SOL)
 
-**BTC only, Kalshi only.** No Polymarket. No B4 paper logging.
+**BTC, ETH, SOL. Kalshi only.** No Polymarket. Results logged to `b4_paper_log` and shown on the dashboard.
 
 ## Strategy
 
-1. At the start of each 15m window, place **two** resting limit **buys** at **46¢**:
-   - One **YES** @ 46¢  
-   - One **NO** @ 46¢  
-   (Position size **$1** (1 contract per side).)
+1. At the start of each 15m window, place **one** resting limit **buy** per asset: **YES @ 46¢** (position size **$1** = 1 contract per asset). So one resting order per asset per round; only one can fill.
 
-2. **Poll every 1 second**: check both orders (fill count).
-   - As soon as **one** has a fill:
-     - **Cancel** the other order (so it doesn’t fill later).
-     - **Place** a resting limit **sell** at **50¢** for the side that filled (same count as filled).
-   - That gives at least a **4¢** spread (buy 46, sell 50).
+2. **Poll every 1 second**: check the order (fill count).
+   - When it fills: **place** a resting limit **sell** at **50¢** for YES (same count). That gives a **4¢** spread (buy 46, sell 50).
 
-3. Near end of window (e.g. &lt; 1 min left), if neither filled, cancel both resting orders. On the next window, place a fresh pair of 46¢ orders.
+3. Near end of window (e.g. &lt; 1 min left), if not filled, cancel the resting order and log no_fill. On the next window, place a fresh 46¢ YES order per asset.
 
 ## Run
 

@@ -38,14 +38,18 @@ ENABLE_POLYMARKET=true
 
 If this is missing or not `true`, the bot trades **Kalshi only**.
 
+**This is read from the server’s `.env` only.** It is not stored in the database or changed by the dashboard. Turning emergency off/on or “resetting” bots does not affect it; only editing `.env` on the droplet (and restarting the bot) does.
+
 ---
 
 ## 4. Proxy (only if needed)
 
-**All Polymarket HTTP runs through the proxy when set:** Gamma API (market data) and CLOB (getTickSize + place order) both use the proxy when `HTTP_PROXY`/`HTTPS_PROXY` are set. Key derive/create calls also go through the proxy when it is set. Polygon RPC (signing) uses **Alchemy** via `POLYGON_RPC_URL` (no proxy, avoids timeouts). **For reliable key setup, prefer manually generated static L2 keys** from the Builder UI; derive can fail if the proxy does not support L1 signing for key endpoints.
+**Only CLOB (order placement) uses the proxy** when set. Gamma API (market data) runs direct to reduce proxy cost. Key derive/create (if using `POLYMARKET_DERIVE_KEY`) also goes through the proxy. Polygon RPC (signing) uses **Alchemy** via `POLYGON_RPC_URL` (no proxy).
 
-- If the droplet is in a **non‑restricted region** (e.g. Amsterdam), **omit** `HTTP_PROXY` and `HTTPS_PROXY`; the bot will call Gamma and CLOB directly.
-- If you see redirect/geo errors, set **HTTP_PROXY** and **HTTPS_PROXY**; then every Polymarket HTTP call (Gamma + CLOB) goes through the proxy.
+- If the droplet is in a **non‑restricted region** (e.g. Amsterdam), **omit** `HTTP_PROXY` and `HTTPS_PROXY`; the bot will call CLOB directly.
+- If you see redirect/geo errors, set **HTTP_PROXY** and **HTTPS_PROXY**; only order placement (and key derive if used) will go through the proxy.
+
+**Traffic estimate (per hour):** With proxy, only CLOB order placement uses it. Each placement ≈ 2–4 KB (request + response). Typical: 2–8 placements/hour → **~10–30 KB/hour**. Peak: up to ~50 KB/hour. Gamma (market data) no longer uses the proxy.
 
 ---
 

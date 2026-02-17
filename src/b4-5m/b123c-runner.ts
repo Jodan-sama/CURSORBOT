@@ -1,0 +1,446 @@
+/**
+ * B1c/B2c/B3c — Chainlink-only clone of B1/B2/B3 for 15-minute Polymarket markets.
+ *
+ * Runs on the B4 droplet with the B4 wallet. Same spread thresholds, timing
+ * windows, and blocking rules as the original B1/B2/B3, but:
+ *   1. Chainlink RTDS prices ONLY (no Binance, no CoinGecko)
+ *   2. Polymarket only (no Kalshi)
+ *   3. Separate position sizing
+ *   4. All blocking in-memory (does NOT touch asset_blocks table)
+ *   5. Uses B4 pause button (isB4EmergencyOff)
+ *
+ * Bot IDs: B1c, B2c, B3c — completely isolated from B1/B2/B3.
+ */
+
+import 'dotenv/config';
+import WebSocket from 'ws';
+import {
+  minutesLeftInWindow,
+  isB1Window,
+  isB2Window,
+  isB3Window,
+  isB1LimitOrderWindow,
+  isB1MarketOrderWindow,
+  getCurrentPolySlug,
+  isBlackoutWindow,
+} from '../clock.js';
+import {
+  isB4EmergencyOff,
+  logError,
+  logPosition,
+  loadB4Config,
+  getSpreadThresholds,
+  getBotDelays,
+  hasBotPositionThisWindow,
+  type BotId,
+  type Asset,
+} from '../db/supabase.js';
+import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
+import {
+  createPolyClobClient,
+  getPolyClobConfigFromEnv,
+  getOrCreateDerivedPolyClient,
+} from '../polymarket/clob.js';
+import { getPolyMarketBySlug } from '../polymarket/gamma.js';
+import {
+  Side,
+  OrderType,
+  type ClobClient,
+  type CreateOrderOptions,
+} from '@polymarket/clob-client';
+
+// ---------------------------------------------------------------------------
+// Chainlink RTDS — multi-asset price feed
+// ---------------------------------------------------------------------------
+
+const RTDS_URL = 'wss://ws-live-data.polymarket.com';
+const PING_MS = 5_000;
+const RECONNECT_MS = 3_000;
+const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
+
+const SYMBOL_MAP: Record<string, Asset> = {
+  'btc/usd': 'BTC', 'eth/usd': 'ETH', 'sol/usd': 'SOL', 'xrp/usd': 'XRP',
+};
+
+const chainlinkPrices: Record<Asset, { price: number; ts: number }> = {
+  BTC: { price: 0, ts: 0 }, ETH: { price: 0, ts: 0 },
+  SOL: { price: 0, ts: 0 }, XRP: { price: 0, ts: 0 },
+};
+
+let rtdsWs: WebSocket | null = null;
+let rtdsPing: ReturnType<typeof setInterval> | null = null;
+let rtdsReconnecting = false;
+
+function connectRTDS(): void {
+  if (rtdsWs && (rtdsWs.readyState === WebSocket.OPEN || rtdsWs.readyState === WebSocket.CONNECTING)) return;
+  rtdsReconnecting = false;
+  try { rtdsWs = new WebSocket(RTDS_URL); } catch { scheduleReconnect(); return; }
+
+  rtdsWs.on('open', () => {
+    console.log('[B123c] RTDS connected');
+    for (const symbol of Object.keys(SYMBOL_MAP)) {
+      rtdsWs!.send(JSON.stringify({
+        action: 'subscribe',
+        subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: `{"symbol":"${symbol}"}` }],
+      }));
+    }
+    if (rtdsPing) clearInterval(rtdsPing);
+    rtdsPing = setInterval(() => {
+      if (rtdsWs?.readyState === WebSocket.OPEN) rtdsWs.send(JSON.stringify({ action: 'ping' }));
+    }, PING_MS);
+  });
+
+  rtdsWs.on('message', (raw: WebSocket.Data) => {
+    try {
+      const msg = JSON.parse(raw.toString()) as {
+        topic?: string; payload?: { symbol?: string; value?: number; timestamp?: number };
+      };
+      if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol && msg.payload.value) {
+        const asset = SYMBOL_MAP[msg.payload.symbol];
+        if (asset) chainlinkPrices[asset] = { price: msg.payload.value, ts: msg.payload.timestamp ?? Date.now() };
+      }
+    } catch { /* ignore */ }
+  });
+
+  rtdsWs.on('close', () => { console.warn('[B123c] RTDS disconnected'); scheduleReconnect(); });
+  rtdsWs.on('error', (e: Error) => { console.error('[B123c] RTDS error:', e.message); try { rtdsWs?.close(); } catch {} scheduleReconnect(); });
+}
+
+function scheduleReconnect(): void {
+  if (rtdsReconnecting) return;
+  rtdsReconnecting = true;
+  if (rtdsPing) { clearInterval(rtdsPing); rtdsPing = null; }
+  setTimeout(connectRTDS, RECONNECT_MS);
+}
+
+function getPrice(asset: Asset): number | null {
+  const p = chainlinkPrices[asset];
+  if (p.price <= 0 || Date.now() - p.ts > 30_000) return null;
+  return p.price;
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+let positionSize = 5;
+const TICK_MS = 5_000;
+
+// ---------------------------------------------------------------------------
+// State — 15-minute window tracking
+// ---------------------------------------------------------------------------
+
+const WINDOW_MS = 15 * 60 * 1000;
+
+function getWindowEndMs(now: Date = new Date()): number {
+  const ms = now.getTime();
+  return ms - (ms % WINDOW_MS) + WINDOW_MS;
+}
+
+let currentWindowEndMs = 0;
+const windowOpenPrices: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
+const enteredThisWindow = new Set<string>();
+
+function windowKey(bot: string, asset: Asset, windowEnd: number): string {
+  return `${windowEnd}-${bot}-${asset}`;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory blocking (completely separate from B1/B2/B3 asset_blocks table)
+// ---------------------------------------------------------------------------
+
+const b3cBlockUntil = new Map<Asset, number>();       // B3c placed → block B1c/B2c
+const b2cHighSpreadAt = new Map<Asset, number>();      // B2c saw high spread → block B1c
+const b3cEarlyHighAt = new Map<Asset, number>();       // B3c early high spread → block B3c
+
+function isB1cBlocked(asset: Asset, now: number, b2BlockMs: number): boolean {
+  const b3t = b3cBlockUntil.get(asset);
+  if (b3t && now < b3t) return true;
+  const b2t = b2cHighSpreadAt.get(asset);
+  if (b2t && now - b2t < b2BlockMs) return true;
+  return false;
+}
+
+function isB2cBlocked(asset: Asset, now: number): boolean {
+  const b3t = b3cBlockUntil.get(asset);
+  return !!(b3t && now < b3t);
+}
+
+// ---------------------------------------------------------------------------
+// Proxy wrapper + CLOB client
+// ---------------------------------------------------------------------------
+
+async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (!proxy) return fn();
+  const axios = (await import('axios')).default;
+  const { HttpsProxyAgent } = await import('https-proxy-agent');
+  const prevUndici = (await import('undici')).getGlobalDispatcher();
+  const { setGlobalDispatcher, ProxyAgent } = await import('undici');
+  const prevAxiosAgent = axios.defaults.httpsAgent;
+  const prevAxiosProxy = axios.defaults.proxy;
+  try {
+    setGlobalDispatcher(new ProxyAgent(proxy));
+    axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
+    axios.defaults.proxy = false;
+    return await fn();
+  } finally {
+    setGlobalDispatcher(prevUndici);
+    axios.defaults.httpsAgent = prevAxiosAgent;
+    axios.defaults.proxy = prevAxiosProxy;
+  }
+}
+
+async function getClobClient(): Promise<ClobClient> {
+  const cfg = getPolyClobConfigFromEnv();
+  return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+}
+
+// ---------------------------------------------------------------------------
+// Place Polymarket GTC limit order
+// ---------------------------------------------------------------------------
+
+async function placeLimitOrder(
+  slug: string, side: 'yes' | 'no', limitPrice: number, size: number,
+): Promise<{ orderId?: string; error?: string }> {
+  try {
+    return await withPolyProxy(async () => {
+      const market = await getPolyMarketBySlug(slug);
+      if (!market) return { error: `Market not found: ${slug}` };
+      const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
+      if (!tokenId) return { error: `No ${side} token for ${slug}` };
+      const client = await getClobClient();
+      const tickSize: CreateOrderOptions['tickSize'] =
+        (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
+      const tickDec = String(tickSize).split('.')[1]?.length ?? 2;
+      const factor = 10 ** tickDec;
+      const price = Math.round(limitPrice * factor) / factor;
+      const shares = Math.max(1, Math.floor(size / price));
+      console.log(`[B123c] LIMIT BUY ${side} price=${price} shares=${shares} ($${size}) | ${slug}`);
+      const result = await client.createAndPostOrder(
+        { tokenID: tokenId, price, size: shares, side: Side.BUY },
+        { tickSize, negRisk: market.negRisk ?? false },
+        OrderType.GTC,
+      );
+      const orderId = (result as { orderID?: string; orderId?: string })?.orderID
+        ?? (result as { orderId?: string })?.orderId;
+      if (!orderId) return { error: `No orderId: ${JSON.stringify(result)}` };
+      return { orderId };
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Place for a specific bot/tier and log result
+// ---------------------------------------------------------------------------
+
+async function tryPlace(
+  bot: BotId, asset: Asset, slug: string, limitPrice: number,
+  signedSpread: number, side: 'yes' | 'no',
+): Promise<boolean> {
+  const result = await placeLimitOrder(slug, side, limitPrice, positionSize);
+  if (result.orderId) {
+    console.log(`[B123c] ${bot} ${asset} ${side} ${limitPrice * 100}c placed | orderId=${result.orderId.slice(0, 12)}… spread=${signedSpread.toFixed(3)}%`);
+    try {
+      await logPosition({
+        bot, asset, venue: 'polymarket',
+        strike_spread_pct: signedSpread,
+        position_size: positionSize,
+        ticker_or_slug: slug,
+        order_id: result.orderId,
+        raw: { price_source: 'chainlink', limitPrice, direction: side },
+      });
+    } catch { /* best effort */ }
+    return true;
+  }
+  console.log(`[B123c] ${bot} ${asset} order failed: ${result.error}`);
+  try { await logError(new Error(result.error ?? 'order failed'), { bot, asset, slug, side }); } catch {}
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Main tick
+// ---------------------------------------------------------------------------
+
+async function runOneTick(now: Date, tickCount: number): Promise<void> {
+  // Emergency off
+  if (tickCount % 10 === 0) {
+    try { if (await isB4EmergencyOff()) { if (tickCount % 100 === 0) console.log('[B123c] paused'); return; } } catch {}
+  }
+  if (isBlackoutWindow(now)) return;
+
+  const minLeft = minutesLeftInWindow(now);
+  const windowEnd = getWindowEndMs(now);
+  const nowMs = now.getTime();
+
+  // New window → capture open prices, clear tracking
+  if (windowEnd !== currentWindowEndMs) {
+    currentWindowEndMs = windowEnd;
+    enteredThisWindow.clear();
+    for (const a of ASSETS) {
+      const p = getPrice(a);
+      if (p) {
+        windowOpenPrices[a] = p;
+        if (tickCount > 1) console.log(`[B123c] window open ${a}: $${p.toFixed(2)}`);
+      }
+    }
+  }
+
+  // Refresh config every ~30 ticks
+  if (tickCount % 30 === 0) {
+    try {
+      const cfg = await loadB4Config();
+      positionSize = cfg.b123c_position_size;
+    } catch {}
+  }
+
+  // Load spread thresholds and delay config
+  let spreadThresholds: SpreadThresholdsMatrix;
+  let delays: { b3BlockMin: number; b2HighSpreadThresholdPct: number; b2HighSpreadBlockMin: number; b3EarlyHighSpreadPct: number; b3EarlyHighSpreadBlockMin: number };
+  try {
+    [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
+  } catch { return; }
+
+  const b3BlockMs = delays.b3BlockMin * 60_000;
+  const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
+
+  for (const asset of ASSETS) {
+    const price = getPrice(asset);
+    const openPrice = windowOpenPrices[asset];
+    if (!price || !openPrice || openPrice <= 0) continue;
+
+    const signedSpread = ((price - openPrice) / price) * 100;
+    const abSpread = Math.abs(signedSpread);
+    if (abSpread === 0) continue;
+    if (abSpread > 2) { if (tickCount % 20 === 0) console.log(`[B123c] ${asset} skip: |spread| ${abSpread.toFixed(2)}% > 2% failsafe`); continue; }
+    const side: 'yes' | 'no' = signedSpread >= 0 ? 'yes' : 'no';
+    const slug = getCurrentPolySlug(asset, now);
+    const windowStartMs = windowEnd - WINDOW_MS;
+
+    // --- B3c early high spread check (first 7 min of window) ---
+    if (minLeft > 8 && tickCount % 12 === 0 && abSpread > delays.b3EarlyHighSpreadPct) {
+      b3cEarlyHighAt.set(asset, nowMs);
+      b3cBlockUntil.set(asset, nowMs + b3BlockMs);
+      console.log(`[B123c] B3c ${asset} early spread ${abSpread.toFixed(2)}% > ${delays.b3EarlyHighSpreadPct}% → block B1c/B2c ${delays.b3BlockMin}min, skip B3c ${delays.b3EarlyHighSpreadBlockMin}min`);
+    }
+
+    // --- B1c: last 2.5 min ---
+    if (isB1Window(minLeft) && !isB1cBlocked(asset, nowMs, b2HighSpreadBlockMs)) {
+      const key = windowKey('B1c', asset, windowEnd);
+      if (!enteredThisWindow.has(key)) {
+        if (await hasBotPositionThisWindow('B1c' as BotId, asset, windowStartMs)) {
+          enteredThisWindow.add(key);
+        } else if (isOutsideSpreadThreshold('B1', asset, abSpread, spreadThresholds)) {
+          const useMarket = isB1MarketOrderWindow(minLeft);
+          const priceB1 = useMarket ? 0.99 : 0.96;
+          const placed = await tryPlace('B1c', asset, slug, priceB1, signedSpread, side);
+          if (placed) enteredThisWindow.add(key);
+        }
+      }
+    }
+
+    // --- B2c: last 5 min ---
+    if (isB2Window(minLeft) && !isB2cBlocked(asset, nowMs)) {
+      if (abSpread > delays.b2HighSpreadThresholdPct) b2cHighSpreadAt.set(asset, nowMs);
+      const key = windowKey('B2c', asset, windowEnd);
+      if (!enteredThisWindow.has(key)) {
+        if (await hasBotPositionThisWindow('B2c' as BotId, asset, windowStartMs)) {
+          enteredThisWindow.add(key);
+        } else if (isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds)) {
+          const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side);
+          if (placed) enteredThisWindow.add(key);
+        }
+      }
+    }
+
+    // --- B3c: last 8 min ---
+    if (isB3Window(minLeft)) {
+      const earlyT = b3cEarlyHighAt.get(asset);
+      const earlyBlockMs = delays.b3EarlyHighSpreadBlockMin * 60_000;
+      if (earlyT && nowMs - earlyT < earlyBlockMs) continue;
+
+      const key = windowKey('B3c', asset, windowEnd);
+      if (!enteredThisWindow.has(key)) {
+        if (await hasBotPositionThisWindow('B3c' as BotId, asset, windowStartMs)) {
+          enteredThisWindow.add(key);
+        } else if (isOutsideSpreadThreshold('B3', asset, abSpread, spreadThresholds)) {
+          const placed = await tryPlace('B3c', asset, slug, 0.97, signedSpread, side);
+          if (placed) {
+            enteredThisWindow.add(key);
+            b3cBlockUntil.set(asset, nowMs + b3BlockMs);
+            console.log(`[B123c] B3c ${asset} placed → block B1c/B2c for ${delays.b3BlockMin}min`);
+          }
+        }
+      }
+    }
+  }
+
+  // Periodic log
+  if (tickCount % 12 === 0) {
+    const parts: string[] = [];
+    for (const a of ASSETS) {
+      const p = getPrice(a);
+      const o = windowOpenPrices[a];
+      if (p && o) {
+        const s = ((p - o) / p * 100);
+        parts.push(`${a}:${s.toFixed(3)}%`);
+      } else {
+        parts.push(`${a}:—`);
+      }
+    }
+    console.log(`[B123c] ${minLeft.toFixed(1)}min left | ${parts.join(' ')} | size=$${positionSize}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+
+export async function startB123cRunner(): Promise<void> {
+  console.log('');
+  console.log('[B123c] ═══ B1c/B2c/B3c Chainlink Runner Starting ═══');
+  console.log('[B123c] Strategy: clone of B1/B2/B3 with Chainlink prices, Polymarket only');
+  console.log('[B123c] Price source: Chainlink RTDS only (no Binance/CoinGecko)');
+  console.log('[B123c] Blocking: in-memory only (no shared tables)');
+  console.log(`[B123c] Position size: $${positionSize}`);
+  console.log('[B123c] Tiers: B1c(last 2.5min,96c/99c) B2c(last 5min,97c) B3c(last 8min,97c)');
+  console.log('');
+
+  connectRTDS();
+  await new Promise(r => setTimeout(r, 5_000));
+
+  const live = ASSETS.filter(a => getPrice(a) != null);
+  console.log(`[B123c] Chainlink live: ${live.length > 0 ? live.join(', ') : 'none yet (will retry)'}`);
+  for (const a of live) console.log(`[B123c]   ${a}: $${getPrice(a)!.toFixed(2)}`);
+
+  // Refresh config
+  try {
+    const cfg = await loadB4Config();
+    positionSize = cfg.b123c_position_size;
+    console.log(`[B123c] Position size from config: $${positionSize}`);
+  } catch {}
+
+  let tickCount = 0;
+
+  const runTick = async () => {
+    tickCount++;
+    try {
+      await runOneTick(new Date(), tickCount);
+    } catch (e) {
+      console.error('[B123c] tick error:', e instanceof Error ? e.message : e);
+      try { await logError(e, { bot: 'B1c', stage: 'tick' }); } catch {}
+    }
+    setTimeout(runTick, TICK_MS);
+  };
+
+  runTick();
+
+  const shutdown = () => {
+    console.log('[B123c] shutting down');
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}

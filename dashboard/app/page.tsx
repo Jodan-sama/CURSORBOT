@@ -90,9 +90,10 @@ export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
   const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
-  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string }>({
-    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5',
+  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string; b123c_position_size: string }>({
+    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5',
   });
+  const [b123cPositions, setB123cPositions] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -125,6 +126,7 @@ export default function Dashboard() {
         { data: configData },
         { data: posData },
         { data: b4PosData },
+        { data: b123cPosData },
         { data: errData },
         { data: polySkipData },
         spreadResult,
@@ -133,8 +135,9 @@ export default function Dashboard() {
         b4StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').neq('bot', 'B4').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').order('entered_at', { ascending: false }).limit(50),
+        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
@@ -145,9 +148,9 @@ export default function Dashboard() {
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setB4Positions((b4PosData ?? []) as Position[]);
+      setB123cPositions((b123cPosData ?? []) as Position[]);
       const b4Row = (b4StateResult as { data: unknown }).data as typeof b4State;
       setB4State(b4Row ?? null);
-      // Parse B4 tier config from results_json
       if (b4Row?.results_json && typeof b4Row.results_json === 'object' && !Array.isArray(b4Row.results_json)) {
         const cfg = b4Row.results_json as Record<string, unknown>;
         setB4Config({
@@ -157,6 +160,7 @@ export default function Dashboard() {
           t2_block_min: cfg.t2_block_min != null ? String(cfg.t2_block_min) : '5',
           t3_block_min: cfg.t3_block_min != null ? String(cfg.t3_block_min) : '15',
           position_size: cfg.position_size != null ? String(cfg.position_size) : '5',
+          b123c_position_size: cfg.b123c_position_size != null ? String(cfg.b123c_position_size) : '5',
         });
       }
       setErrors((errData ?? []) as ErrorLog[]);
@@ -231,6 +235,7 @@ export default function Dashboard() {
       t2_block_min: parseInt(b4Config.t2_block_min, 10) || 5,
       t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
       position_size: parseFloat(b4Config.position_size) || 5,
+      b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
     };
     await getSupabase().from('b4_state').update({
       results_json: config,
@@ -250,6 +255,7 @@ export default function Dashboard() {
       t2_block_min: parseInt(b4Config.t2_block_min, 10) || 5,
       t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
       position_size: parseFloat(b4Config.position_size) || 5,
+      b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
     };
     const startBankroll = 11;
     const today = new Date().toISOString().slice(0, 10);
@@ -743,9 +749,15 @@ export default function Dashboard() {
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Position size ($)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>B4 position size ($)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="1" value={b4Config.position_size} onChange={(e) => setB4Config((p) => ({ ...p, position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>B1c/B2c/B3c position size ($)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="1" value={b4Config.b123c_position_size} onChange={(e) => setB4Config((p) => ({ ...p, b123c_position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
               </tbody>
@@ -781,6 +793,46 @@ export default function Dashboard() {
                   <tr key={p.id}>
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
                     <td style={{ borderBottom: '1px solid #eee' }}>{tier}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{String(raw.price_source ?? '—')}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 100)</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+          Chainlink-only clone of B1/B2/B3 on the B4 droplet. Uses same spread thresholds and blocking rules. Paused/resumed with the B4 button above.
+        </p>
+        {b123cPositions.length === 0 ? (
+          <p style={{ color: '#666' }}>No B1c/B2c/B3c trades yet.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Venue</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b123cPositions.map((p) => {
+                const raw = (p.raw ?? {}) as Record<string, unknown>;
+                return (
+                  <tr key={p.id}>
+                    <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
                     <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
                     <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
                     <td style={{ borderBottom: '1px solid #eee' }}>{String(raw.price_source ?? '—')}</td>

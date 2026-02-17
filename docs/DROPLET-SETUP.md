@@ -195,6 +195,73 @@ Exit logs with `Ctrl+C`.
 
 ---
 
+## Security (recommended)
+
+By default the droplet only has **SSH (22)** open; the bot makes outbound requests only (Kalshi, Polymarket, Binance/CoinGecko, Supabase) and does not listen on any port. You can harden it further:
+
+**1. Firewall (ufw)** — allow SSH, block everything else:
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw enable
+sudo ufw status
+```
+
+If you ever add a web server or API on the droplet, open that port with `ufw allow <port>`.
+
+**2. Fail2ban** — limits SSH brute-force (temporarily bans IPs after failed logins):
+
+```bash
+sudo apt-get update && sudo apt-get install -y fail2ban
+sudo systemctl enable fail2ban && sudo systemctl start fail2ban
+```
+
+**3. SSH: prefer keys over password** — If you use an SSH key, keep it; use password only for recovery console. To disable password login again after fixing key access: in `/etc/ssh/sshd_config` set `PasswordAuthentication no`, then `sudo systemctl restart sshd`.
+
+**4. Updates** — Optional: `sudo apt-get install -y unattended-upgrades` and enable it so security updates apply automatically.
+
+---
+
+## Fix SSH from your Mac (Permission denied (publickey))
+
+If `ssh root@YOUR_DROPLET_IP` from your Mac fails with **Permission denied (publickey)**, the droplet isn’t accepting your Mac’s SSH key. Add your key using the **DigitalOcean web console** (Access → Launch Droplet Console), then SSH will work from the Mac.
+
+**1. On your Mac — get your public key**
+
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+If that file doesn’t exist, create a key first:
+
+```bash
+ssh-keygen -t ed25519 -C "mac" -f ~/.ssh/id_ed25519 -N ""
+cat ~/.ssh/id_ed25519.pub
+```
+
+Copy the whole line (starts with `ssh-ed25519 …`).
+
+**2. On the droplet — add the key (use the web console)**
+
+Log in as root via the DigitalOcean console, then run (replace `PASTE_YOUR_KEY_HERE` with the line you copied):
+
+```bash
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+echo "PASTE_YOUR_KEY_HERE" >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+```
+
+**3. From your Mac again**
+
+```bash
+ssh root@YOUR_DROPLET_IP
+```
+
+You should get in without being asked for a password. If you still see “Permission denied”, double-check you pasted the full public key (one line, no extra spaces) and that you’re using the same username (e.g. `root`) on both Mac and droplet.
+
+---
+
 ## If you used a different user or path
 
 - If you created a user `ubuntu`: use `User=ubuntu` and paths like `/home/ubuntu/cursorbot`.
