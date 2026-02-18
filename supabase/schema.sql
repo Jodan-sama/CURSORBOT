@@ -128,6 +128,22 @@ create table if not exists b4_state (
 
 insert into b4_state (id) values ('default') on conflict (id) do nothing;
 
+-- B4 spread-runner only: tier blocks and early-guard cooldown (read on startup; write when setting block).
+create table if not exists b4_tier_blocks (
+  id text primary key default 'default',
+  t1_blocked_until_ms bigint not null default 0,
+  t2_blocked_until_ms bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+insert into b4_tier_blocks (id) values ('default') on conflict (id) do nothing;
+
+create table if not exists b4_early_guard (
+  id text primary key default 'default',
+  cooldown_until_ms bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+insert into b4_early_guard (id) values ('default') on conflict (id) do nothing;
+
 -- Seed spread thresholds (B1/B2/B3 x BTC/ETH/SOL/XRP). For existing DBs: add XRP if missing.
 insert into spread_thresholds (bot, asset, threshold_pct) values
   ('B1', 'BTC', 0.21), ('B1', 'ETH', 0.23), ('B1', 'SOL', 0.27), ('B1', 'XRP', 0.27),

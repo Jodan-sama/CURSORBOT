@@ -368,6 +368,59 @@ export async function saveB4OpenPosition(position: Record<string, unknown> | nul
   }
 }
 
+/** B4 spread-runner: load tier blocks and early-guard cooldown (read on startup only). */
+export interface B4BlocksRow {
+  t1BlockedUntilMs: number;
+  t2BlockedUntilMs: number;
+  earlyGuardCooldownUntilMs: number;
+}
+
+export async function getB4Blocks(): Promise<B4BlocksRow | null> {
+  try {
+    const [tierRes, guardRes] = await Promise.all([
+      getDb().from('b4_tier_blocks').select('t1_blocked_until_ms, t2_blocked_until_ms').eq('id', 'default').maybeSingle(),
+      getDb().from('b4_early_guard').select('cooldown_until_ms').eq('id', 'default').maybeSingle(),
+    ]);
+    const tier = (tierRes as { data?: { t1_blocked_until_ms?: number; t2_blocked_until_ms?: number } | null }).data;
+    const guard = (guardRes as { data?: { cooldown_until_ms?: number } | null }).data;
+    return {
+      t1BlockedUntilMs: Number(tier?.t1_blocked_until_ms) || 0,
+      t2BlockedUntilMs: Number(tier?.t2_blocked_until_ms) || 0,
+      earlyGuardCooldownUntilMs: Number(guard?.cooldown_until_ms) || 0,
+    };
+  } catch (e) {
+    console.warn('[getB4Blocks] failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/** B4 spread-runner: persist tier blocks when T2 or T3 places (write-through only). */
+export async function updateB4TierBlocks(t1BlockedUntilMs: number, t2BlockedUntilMs: number): Promise<void> {
+  try {
+    await getDb().from('b4_tier_blocks').upsert({
+      id: 'default',
+      t1_blocked_until_ms: t1BlockedUntilMs,
+      t2_blocked_until_ms: t2BlockedUntilMs,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+  } catch (e) {
+    console.warn('[updateB4TierBlocks] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+/** B4 spread-runner: persist early-guard cooldown when triggered (write-through only). */
+export async function updateB4EarlyGuard(cooldownUntilMs: number): Promise<void> {
+  try {
+    await getDb().from('b4_early_guard').upsert({
+      id: 'default',
+      cooldown_until_ms: cooldownUntilMs,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+  } catch (e) {
+    console.warn('[updateB4EarlyGuard] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
 /** Load B4 open position from Supabase. Returns null if none saved or data is invalid. */
 export async function loadB4OpenPosition(): Promise<Record<string, unknown> | null> {
   try {

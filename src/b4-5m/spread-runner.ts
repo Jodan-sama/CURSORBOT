@@ -31,6 +31,9 @@ import {
   logPosition,
   loadB4Config,
   getDb,
+  getB4Blocks,
+  updateB4TierBlocks,
+  updateB4EarlyGuard,
 } from '../db/supabase.js';
 import {
   createPolyClobClient,
@@ -106,11 +109,9 @@ const openOrders: OpenOrder[] = [];
 let currentWindowStart = 0;
 const placedThisWindow = new Set<string>();
 
-// Blocking timestamps
+// Blocking timestamps (in-memory for hot path; persisted to Supabase on set, loaded on startup)
 let t1BlockedUntil = 0;
 let t2BlockedUntil = 0;
-
-// Early-guard cooldown (in-memory only — does NOT affect B1c/B2c/B3c)
 let earlyGuardCooldownUntil = 0;
 
 // ---------------------------------------------------------------------------
@@ -330,6 +331,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
     if (absSpread >= earlyGuardSpreadPct) {
       earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;
+      updateB4EarlyGuard(earlyGuardCooldownUntil);
       const cooldownMin = Math.round(earlyGuardCooldownMs / 60_000);
       console.log(
         `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${earlyGuardSpreadPct}% ` +
@@ -430,14 +432,16 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         });
       } catch { /* best effort */ }
 
-      // Apply blocking rules
+      // Apply blocking rules (in-memory + write-through to Supabase)
       if (tier.name === 'B4-T2') {
         t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t2BlockMs);
+        updateB4TierBlocks(t1BlockedUntil, t2BlockedUntil);
         console.log(`[B4] T2 entered → T1 blocked for ${t2BlockMs / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
       }
       if (tier.name === 'B4-T3') {
         t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlockMs);
         t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlockMs);
+        updateB4TierBlocks(t1BlockedUntil, t2BlockedUntil);
         console.log(`[B4] T3 entered → T1+T2 blocked for ${t3BlockMs / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
       }
     } else {
@@ -476,6 +480,18 @@ export async function startSpreadRunner(): Promise<void> {
 
   // Load config from Supabase
   await refreshConfig();
+
+  // Load persisted blocks (read once on startup; no read at every tick)
+  const blocks = await getB4Blocks();
+  if (blocks) {
+    const now = Date.now();
+    t1BlockedUntil = (blocks.t1BlockedUntilMs > now) ? blocks.t1BlockedUntilMs : 0;
+    t2BlockedUntil = (blocks.t2BlockedUntilMs > now) ? blocks.t2BlockedUntilMs : 0;
+    earlyGuardCooldownUntil = (blocks.earlyGuardCooldownUntilMs > now) ? blocks.earlyGuardCooldownUntilMs : 0;
+    if (t1BlockedUntil > 0 || t2BlockedUntil > 0 || earlyGuardCooldownUntil > 0) {
+      console.log(`[B4] Restored blocks from Supabase: T1 until ${t1BlockedUntil ? new Date(t1BlockedUntil).toISOString() : '—'}, T2 until ${t2BlockedUntil ? new Date(t2BlockedUntil).toISOString() : '—'}, early-guard until ${earlyGuardCooldownUntil ? new Date(earlyGuardCooldownUntil).toISOString() : '—'}`);
+    }
+  }
 
   console.log(`[B4] Position size: $${positionSize}`);
   console.log('[B4] Tiers:');
