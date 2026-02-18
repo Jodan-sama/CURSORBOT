@@ -137,7 +137,7 @@ export default function Dashboard() {
         b4StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(400),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -676,7 +676,7 @@ export default function Dashboard() {
         <h2 style={headingStyle}>Win rate (resolved)</h2>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 16 }}>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B1/B2/B3 Kalshi</strong> (last 200):{' '}
+            <strong>B1/B2/B3 Kalshi</strong> (last 400):{' '}
             {(() => {
               const kalshiResolved = positions.filter((p) => p.venue === 'kalshi' && (p.outcome === 'win' || p.outcome === 'loss'));
               const wins = kalshiResolved.filter((p) => p.outcome === 'win').length;
@@ -911,10 +911,10 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 positions (last 200)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 positions (last 400)</h2>
         <p style={{ marginBottom: 8 }}>
           <span style={{ fontSize: 13, color: '#666' }}>Orders <strong>placed</strong> by the bot — limit orders may not fill; check the exchange for fill status.</span>
-          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 200)'}</button>
+          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 400)'}</button>
           <span style={{ display: 'block', fontSize: 13, color: '#555', marginTop: 6 }}>
             CSV includes <strong>exchange</strong> (kalshi/polymarket) and <strong>price_source</strong> (binance/coingecko).
           </span>

@@ -1,6 +1,6 @@
 /**
  * Resolve win/loss for Kalshi B1/B2/B3 positions. Updates positions.outcome and resolved_at.
- * Run every 15 min at :03 and :18 (calm period) via cron on D1. Uses KALSHI_* and SUPABASE_* from env.
+ * Run every 15 min at :03, :18, :33, :48 (calm period) via cron on D1. Uses KALSHI_* and SUPABASE_* from env.
  *
  * Fill check: if order has fill_count 0 or missing, set outcome = 'no_fill' (still shown in dashboard; not counted in win rate).
  * Resolution: GET /portfolio/settlements; match by ticker; derive side from yes_count/no_count; set win/loss.
