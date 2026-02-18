@@ -134,7 +134,7 @@ export async function getPositionSize(
   return val != null ? val : defaultSize;
 }
 
-/** Log a new position. */
+/** Log a new position. Logs even when position_size is 0 so resolver can record actual win/loss from CLOB fill. */
 export async function logPosition(entry: {
   bot: BotId;
   asset: Asset;

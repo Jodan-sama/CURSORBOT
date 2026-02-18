@@ -273,19 +273,27 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: spread is 0 (failsafe)`);
       continue;
     }
+
+    // B3 high-spread guard: trigger block when spread > threshold. Runs BEFORE the MAX_SPREAD_PCT failsafe
+    // so that even very extreme spreads (>2%) still activate the guard instead of being silently skipped.
+    // Triggers during the early window (first 7 min, every ~60s) AND at B3 entry time (any tick).
+    if (spreadMagnitude > b3EarlyHighSpreadPct) {
+      const isEarlyWindow = minutesLeft > 8 && tickCount % 12 === 0;
+      const isB3EntryTime = isB3Window(minutesLeft);
+      if (isEarlyWindow || isB3EntryTime) {
+        lastB3EarlyHighSpreadByAsset.set(asset, now.getTime());
+        const b1b2BlockUntil = new Date(now.getTime() + b3BlockMs);
+        await setAssetBlock(asset, b1b2BlockUntil);
+        const ctx = isB3EntryTime && !isEarlyWindow ? 'at B3 entry' : 'early in window';
+        console.log(`[tick] B3 ${asset} high spread ${spreadMagnitude.toFixed(2)}% > ${b3EarlyHighSpreadPct}% (${ctx}); skip B3 for ${b3EarlyHighSpreadBlockMin} min, block B1/B2 for ${delays.b3BlockMin} min`);
+      }
+    }
+
     if (spreadMagnitude > MAX_SPREAD_PCT) {
       if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: |spread| ${spreadMagnitude.toFixed(2)}% > ${MAX_SPREAD_PCT}% (failsafe)`);
       continue;
     }
     const side = sideFromSignedSpread(signedSpreadPct);
-
-    // B3 early check: first 7 min of window, every 1 min. If spread > threshold, skip B3 for block_min and block B1/B2 for 1h.
-    if (minutesLeft > 8 && tickCount % 12 === 0 && spreadMagnitude > b3EarlyHighSpreadPct) {
-      lastB3EarlyHighSpreadByAsset.set(asset, now.getTime());
-      const b1b2BlockUntil = new Date(now.getTime() + b3BlockMs);
-      await setAssetBlock(asset, b1b2BlockUntil);
-      console.log(`[tick] B3 ${asset} early spread ${spreadMagnitude.toFixed(2)}% > ${b3EarlyHighSpreadPct}%; skip B3 for ${b3EarlyHighSpreadBlockMin} min, block B1/B2 for ${delays.b3BlockMin} min`);
-    }
 
     const sizeKalshiB1 = await getPositionSize('kalshi', 'B1', asset);
     const sizePolyB1 = await getPositionSize('polymarket', 'B1', asset);
@@ -512,7 +520,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       if (tEarly != null && now.getTime() - tEarly < b3EarlyBlockMs) {
         if (tickCount % 12 === 0) {
           const minLeft = Math.ceil((b3EarlyBlockMs - (now.getTime() - tEarly)) / 60000);
-          console.log(`[tick] B3 ${asset} skip: early spread >${b3EarlyHighSpreadPct}% in first 7 min; block ${minLeft} min left`);
+          console.log(`[tick] B3 ${asset} skip: high spread >${b3EarlyHighSpreadPct}% detected; block ${minLeft} min left`);
         }
         continue;
       }

@@ -3,7 +3,7 @@
  *
  * Runs on the B4 droplet with the B4 wallet. Same spread thresholds, timing
  * windows, and blocking rules as the original B1/B2/B3, but:
- *   1. Chainlink RTDS prices ONLY (no Binance, no CoinGecko)
+ *   1. Chainlink RTDS primary; Binance REST fallback when Chainlink stale (same pattern as B4)
  *   2. Polymarket only (no Kalshi)
  *   3. Separate position sizing
  *   4. All blocking in-memory (does NOT touch asset_blocks table)
@@ -35,7 +35,7 @@ import {
   type BotId,
   type Asset,
 } from '../db/supabase.js';
-import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
+import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix, fetchBinancePrice } from '../kalshi/spread.js';
 import {
   createPolyClobClient,
   getPolyClobConfigFromEnv,
@@ -69,7 +69,13 @@ const chainlinkPrices: Record<Asset, { price: number; ts: number }> = {
 
 let rtdsWs: WebSocket | null = null;
 let rtdsPing: ReturnType<typeof setInterval> | null = null;
+let rtdsStaleCheck: ReturnType<typeof setInterval> | null = null;
 let rtdsReconnecting = false;
+/** Last time we received any price update from RTDS (any asset). Used to detect silent connection. */
+let rtdsLastMessageMs = 0;
+
+/** If no price message received for this long, force reconnect (connection may be open but silent). */
+const RTDS_SILENT_RECONNECT_MS = 45_000;
 
 function connectRTDS(): void {
   if (rtdsWs && (rtdsWs.readyState === WebSocket.OPEN || rtdsWs.readyState === WebSocket.CONNECTING)) return;
@@ -78,6 +84,7 @@ function connectRTDS(): void {
 
   rtdsWs.on('open', () => {
     console.log('[B123c] RTDS connected');
+    rtdsLastMessageMs = Date.now();
     rtdsWs!.send(JSON.stringify({
       action: 'subscribe',
       subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*' }],
@@ -86,6 +93,15 @@ function connectRTDS(): void {
     rtdsPing = setInterval(() => {
       if (rtdsWs?.readyState === WebSocket.OPEN) rtdsWs.send(JSON.stringify({ action: 'ping' }));
     }, PING_MS);
+    if (rtdsStaleCheck) clearInterval(rtdsStaleCheck);
+    rtdsStaleCheck = setInterval(() => {
+      if (rtdsWs?.readyState !== WebSocket.OPEN || rtdsReconnecting) return;
+      const elapsed = Date.now() - rtdsLastMessageMs;
+      if (elapsed > RTDS_SILENT_RECONNECT_MS) {
+        console.warn(`[B123c] RTDS silent ${Math.round(elapsed / 1000)}s – reconnecting`);
+        try { rtdsWs.close(); } catch {}
+      }
+    }, 10_000);
   });
 
   rtdsWs.on('message', (raw: WebSocket.Data) => {
@@ -94,6 +110,7 @@ function connectRTDS(): void {
         topic?: string; payload?: { symbol?: string; value?: number; timestamp?: number };
       };
       if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol && msg.payload.value) {
+        rtdsLastMessageMs = Date.now();
         const asset = SYMBOL_MAP[msg.payload.symbol];
         if (asset) chainlinkPrices[asset] = { price: msg.payload.value, ts: msg.payload.timestamp ?? Date.now() };
       }
@@ -108,13 +125,41 @@ function scheduleReconnect(): void {
   if (rtdsReconnecting) return;
   rtdsReconnecting = true;
   if (rtdsPing) { clearInterval(rtdsPing); rtdsPing = null; }
+  if (rtdsStaleCheck) { clearInterval(rtdsStaleCheck); rtdsStaleCheck = null; }
+  rtdsWs = null;
   setTimeout(connectRTDS, RECONNECT_MS);
 }
 
+/** Max age (ms) for Chainlink price before considered stale. 60s so brief RTDS gaps don't disable order logic. */
+const PRICE_STALE_MS = 60_000;
+/** When using Binance fallback, cache it per asset to avoid hammering REST (same idea as B4). */
+const FALLBACK_CACHE_MS = 30_000;
+const fallbackPrices: Record<Asset, { price: number; ts: number }> = {
+  BTC: { price: 0, ts: 0 }, ETH: { price: 0, ts: 0 },
+  SOL: { price: 0, ts: 0 }, XRP: { price: 0, ts: 0 },
+};
+
 function getPrice(asset: Asset): number | null {
   const p = chainlinkPrices[asset];
-  if (p.price <= 0 || Date.now() - p.ts > 30_000) return null;
+  if (p.price <= 0 || Date.now() - p.ts > PRICE_STALE_MS) return null;
   return p.price;
+}
+
+/** Current price: Chainlink if fresh, else Binance fallback (cached). Same pattern as B4 getSpotPrice(). */
+async function getPriceOrFallback(asset: Asset): Promise<number | null> {
+  const chainlink = getPrice(asset);
+  if (chainlink != null) return chainlink;
+  const fb = fallbackPrices[asset];
+  if (fb.price > 0 && Date.now() - fb.ts < FALLBACK_CACHE_MS) return fb.price;
+  try {
+    const price = await fetchBinancePrice(asset);
+    fallbackPrices[asset] = { price, ts: Date.now() };
+    if (fb.price === 0) console.log(`[B123c] Chainlink stale – using Binance fallback for ${asset}`);
+    return price;
+  } catch (e) {
+    if (fb.price > 0) return fb.price;
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,13 +318,13 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   const windowEnd = getWindowEndMs(now);
   const nowMs = now.getTime();
 
-  // New window → capture open prices, clear tracking
+  // New window → capture open prices (Chainlink or Binance fallback), clear tracking
   if (windowEnd !== currentWindowEndMs) {
     currentWindowEndMs = windowEnd;
     enteredThisWindow.clear();
     for (const a of ASSETS) {
-      const p = getPrice(a);
-      if (p) {
+      const p = await getPriceOrFallback(a);
+      if (p && p > 0) {
         windowOpenPrices[a] = p;
         if (tickCount > 1) console.log(`[B123c] window open ${a}: $${p.toFixed(2)}`);
       }
@@ -304,10 +349,14 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   const b3BlockMs = delays.b3BlockMin * 60_000;
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
 
+  let anySkippedNoPrice = false;
   for (const asset of ASSETS) {
-    const price = getPrice(asset);
+    const price = await getPriceOrFallback(asset);
     const openPrice = windowOpenPrices[asset];
-    if (!price || !openPrice || openPrice <= 0) continue;
+    if (!price || !openPrice || openPrice <= 0) {
+      if (!price) anySkippedNoPrice = true;
+      continue;
+    }
 
     const signedSpread = ((price - openPrice) / price) * 100;
     const abSpread = Math.abs(signedSpread);
@@ -375,6 +424,11 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     }
   }
 
+  if (anySkippedNoPrice && tickCount % 12 === 0) {
+    const stale = ASSETS.filter(a => !getPrice(a));
+    if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s, Binance failed?): ${stale.join(' ')}`);
+  }
+
   // Periodic log
   if (tickCount % 12 === 0) {
     const parts: string[] = [];
@@ -400,7 +454,7 @@ export async function startB123cRunner(): Promise<void> {
   console.log('');
   console.log('[B123c] ═══ B1c/B2c/B3c Chainlink Runner Starting ═══');
   console.log('[B123c] Strategy: clone of B1/B2/B3 with Chainlink prices, Polymarket only');
-  console.log('[B123c] Price source: Chainlink RTDS only (no Binance/CoinGecko)');
+  console.log('[B123c] Price source: Chainlink RTDS primary, Binance fallback when stale (same as B4)');
   console.log('[B123c] Blocking: in-memory only (no shared tables)');
   console.log(`[B123c] Position size: $${positionSize}`);
   console.log('[B123c] Tiers: B1c(last 2.5min,96c/99c) B2c(last 5min,97c) B3c(last 8min,97c)');

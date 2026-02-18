@@ -23,6 +23,7 @@ import {
 } from './balance.js';
 import { discoverB5MarketsBySlug, type B5Candidate } from './markets.js';
 import { fetchBinance1m, estimateProb } from './edge-engine.js';
+import { getB5MinEdgeFromSupabase, logB5Loss } from './supabase-b5.js';
 
 const WALLET = process.env.POLYMARKET_PROXY_WALLET?.trim() ||
   process.env.POLYMARKET_FUNDER?.trim() ||
@@ -78,6 +79,8 @@ interface OpenPosition {
   question: string;
   tickSize: CreateOrderOptions['tickSize'];
   negRisk: boolean;
+  edge_at_entry: number;
+  slug?: string;
 }
 
 const positions = new Map<string, OpenPosition>();
@@ -187,7 +190,8 @@ async function runSellMonitor(): Promise<void> {
         if (mid <= 0) continue;
         if (mid < pos.buyPrice * 1.6) continue;
         const sellShares = Math.max(1, Math.ceil(pos.shares));
-        console.log(`[B5] Sell monitor: selling ${sellShares} @ ${mid.toFixed(3)} (${pos.question.slice(0, 40)}…)`);
+        const isLoss = mid < pos.buyPrice;
+        console.log(`[B5] Sell monitor: selling ${sellShares} @ ${mid.toFixed(3)} (${pos.question.slice(0, 40)}…)${isLoss ? ' [LOSS]' : ''}`);
         const result = await client.createAndPostMarketOrder(
           { tokenID: tokenId, amount: sellShares, side: Side.SELL },
           { tickSize: pos.tickSize, negRisk: pos.negRisk },
@@ -195,6 +199,9 @@ async function runSellMonitor(): Promise<void> {
         );
         const orderId = (result as { orderID?: string; orderId?: string })?.orderID ?? (result as { orderId?: string })?.orderId;
         if (orderId) {
+          if (isLoss) {
+            await logB5Loss({ edge_at_entry: pos.edge_at_entry, question: pos.question, slug: pos.slug });
+          }
           positions.delete(tokenId);
           console.log(`[B5] Sold: ${tokenId.slice(0, 16)}…`);
         }
@@ -229,6 +236,8 @@ async function runOneScan(): Promise<void> {
     fetchBinance1m('ETHUSDT', 120).catch(() => null),
   ]);
 
+  const minEdge = (await getB5MinEdgeFromSupabase()) ?? B5_CONFIG.minEdge;
+
   await withPolyProxy(async () => {
     const allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
     const rawCandidates = allOutcomes.filter((c) => c.price < B5_CONFIG.cheapThreshold);
@@ -240,11 +249,11 @@ async function runOneScan(): Promise<void> {
       const estP = estimateProb(c.question, btcCandles, ethCandles, symbol);
       const edge = estP - c.price;
       const passCheap = c.price < B5_CONFIG.cheapThreshold;
-      const passEdge = edge >= B5_CONFIG.minEdge;
+      const passEdge = edge >= minEdge;
       console.log(
-        `[B5] Edge ${c.question}: price=${c.price.toFixed(3)} estP=${estP.toFixed(3)} edge=${edge.toFixed(3)} (cheap? ${passCheap} edge≥${B5_CONFIG.minEdge}? ${passEdge})`
+        `[B5] Edge ${c.question}: price=${c.price.toFixed(3)} estP=${estP.toFixed(3)} edge=${edge.toFixed(3)} (cheap? ${passCheap} edge≥${minEdge}? ${passEdge})`
       );
-      if (!passCheap || edge < B5_CONFIG.minEdge) continue;
+      if (!passCheap || edge < minEdge) continue;
       candidates.push({ ...c, estP, edge });
     }
 
@@ -286,6 +295,8 @@ async function runOneScan(): Promise<void> {
         question: c.question,
         tickSize,
         negRisk,
+        edge_at_entry: c.edge,
+        slug: c.slug,
       });
 
       console.log(`[B5] BOUGHT ${c.question.slice(0, 50)}… @ ${c.price} | ~${shares} shares`);

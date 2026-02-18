@@ -120,6 +120,32 @@ Cron will run the script at **:06, :21, :36, :51** every hour (6 minutes into ea
 
 The script also writes a **one-line summary** (date, time, message) to `logs/claim-polymarket.log` and to Supabase `polymarket_claim_log`. The dashboard shows the latest status: **ALL ITEMS CLAIMED**, **NEED MORE POL**, or **CLAIM INCOMPLETE**.
 
+**D1 vs D2:** **D1** is the B1/B2/B3 (Kalshi/Poly) droplet — the cron above (6,21,36,51) is for D1 if you run claim there. **Do not** run B4 claim on D1. **D2** is the B4 + B1c/B2c/B3c droplet — see **D2 only** below for B4 every 3 min and B123c at :06/:21/:36/:51.
+
+### 6b. D2 only: B4 wallet every 3 min, B123c wallet at :06/:21/:36/:51
+
+On **D2** (B4 + B1c/B2c/B3c droplet) you want:
+
+- **B4 wallet** claimed **every 3 minutes** (only B4).
+- **B1c/B2c/B3c wallet** claimed at **:06, :21, :36, :51** (only that wallet).
+
+The claim script uses whatever `.env` is loaded: it discovers and claims only for the wallet(s) defined in that env. So use two cron lines and two env files:
+
+1. **`.env`** on D2 should contain **only** the B4 wallet (POLYMARKET_FUNDER, POLYMARKET_PRIVATE_KEY, POLYGON_RPC_URL, etc. for B4). No B123c/POLYGUN_CLAIM_* in `.env`.
+2. **`.env.b123c`** on D2 contains **only** the B1c/B2c/B3c wallet (same var names, but values for the B123c wallet).
+
+Then in crontab on D2:
+
+```cron
+# B4 wallet only — every 3 minutes (uses .env)
+0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45,48,51,54,57 * * * * cd /root/cursorbot && DOTENV_CONFIG_PATH=.env /usr/bin/node dist/scripts/claim-polymarket.js >> /var/log/cursorbot-claim-b4.log 2>&1
+
+# B123c wallet only — at :06, :21, :36, :51 (uses .env.b123c)
+6,21,36,51 * * * * cd /root/cursorbot && DOTENV_CONFIG_PATH=.env.b123c /usr/bin/node dist/scripts/claim-polymarket.js >> /var/log/cursorbot-claim-b123c.log 2>&1
+```
+
+Node’s `dotenv` (used by the script) respects `DOTENV_CONFIG_PATH`: each run loads only that file, so B4 and B123c are claimed separately.
+
 ### 7. Test once by hand
 
 ```bash

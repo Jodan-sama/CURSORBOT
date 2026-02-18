@@ -87,6 +87,14 @@ type PolySkipRow = {
   kalshi_placed: boolean;
 };
 
+type B5LossRow = {
+  id: string;
+  created_at: string;
+  edge_at_entry: number;
+  question: string;
+  slug: string | null;
+};
+
 export default function Dashboard() {
   const [config, setConfig] = useState<Config | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
@@ -118,6 +126,8 @@ export default function Dashboard() {
   const [csvLoading, setCsvLoading] = useState(false);
   const [b4CsvLoading, setB4CsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [b5MinEdge, setB5MinEdge] = useState('0.2');
+  const [b5Losses, setB5Losses] = useState<B5LossRow[]>([]);
 
   async function load() {
     setLoadError(null);
@@ -205,6 +215,16 @@ export default function Dashboard() {
         b3EarlySpreadPct: cfg?.b3_early_high_spread_pct != null ? String(cfg.b3_early_high_spread_pct) : '1.8',
         b3EarlySpreadBlock: cfg?.b3_early_high_spread_block_min != null ? String(cfg.b3_early_high_spread_block_min) : '15',
       });
+
+      try {
+        const { data: b5ConfigData } = await getSupabase().from('b5_config').select('min_edge').eq('id', 'default').maybeSingle();
+        const { data: b5LossesData } = await getSupabase().from('b5_losses').select('*').order('created_at', { ascending: false }).limit(20);
+        setB5MinEdge(b5ConfigData?.min_edge != null ? String(b5ConfigData.min_edge) : '0.2');
+        setB5Losses((b5LossesData ?? []) as B5LossRow[]);
+      } catch {
+        setB5MinEdge('0.2');
+        setB5Losses([]);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -299,6 +319,17 @@ export default function Dashboard() {
           { onConflict: 'bot,asset' }
         );
       }
+    }
+    await load();
+    setSaving(false);
+  }
+
+  async function saveB5MinEdge(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    const val = parseFloat(b5MinEdge);
+    if (Number.isFinite(val)) {
+      await getSupabase().from('b5_config').upsert({ id: 'default', min_edge: val, updated_at: new Date().toISOString() }, { onConflict: 'id' });
     }
     await load();
     setSaving(false);
@@ -688,11 +719,12 @@ export default function Dashboard() {
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
             <strong>B4</strong> (last 200):{' '}
             {(() => {
-              const resolved = b4Positions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const withSize = b4Positions.filter((p) => (Number(p.position_size) || 0) > 0);
+              const resolved = withSize.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
               const wins = resolved.filter((p) => p.outcome === 'win').length;
               const n = resolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
-              return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</>;
+              return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</><span style={{ fontSize: 11, color: '#888', marginLeft: 4 }}>rate excludes size=0</span></>;
             })()}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
@@ -823,7 +855,7 @@ export default function Dashboard() {
         </div>
 
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 200).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 200; includes all resolved win/loss; size=0 rows may be real fills logged with wrong size).</span>
           <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
         </p>
         {b4Positions.length === 0 ? (
@@ -861,6 +893,51 @@ export default function Dashboard() {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>B5 — 5m/15m Basket (D3)</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+          Min edge threshold (D3 B5 reads this from Supabase). Only losing trades are logged; last 20 shown below.
+        </p>
+        <form onSubmit={saveB5MinEdge} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <label style={{ fontWeight: 600 }}>Min edge</label>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            max="1"
+            value={b5MinEdge}
+            onChange={(e) => setB5MinEdge(e.target.value)}
+            style={{ width: 72, padding: '6px 8px' }}
+          />
+          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save</button>
+        </form>
+        <h3 style={{ ...headingStyle, margin: '12px 0 8px', fontSize: 14, color: '#ccc' }}>Last 20 losses (edge at entry)</h3>
+        {b5Losses.length === 0 ? (
+          <p style={{ color: '#666', fontSize: 13 }}>No B5 losses logged yet.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #333', padding: '4px 8px' }}>Time</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #333', padding: '4px 8px' }}>Edge at entry</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #333', padding: '4px 8px' }}>Question</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #333', padding: '4px 8px' }}>Slug</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b5Losses.map((row) => (
+                <tr key={row.id}>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', whiteSpace: 'nowrap' }}>{formatMst(row.created_at, true)}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #333', padding: '4px 8px' }}>{Number(row.edge_at_entry).toFixed(3)}</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>{row.question}</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#888' }}>{row.slug ?? '—'}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}

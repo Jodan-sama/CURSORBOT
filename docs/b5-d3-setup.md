@@ -74,4 +74,19 @@ Add:
 - **Orders:** All CLOB/order traffic goes through `HTTPS_PROXY` (same as other droplets).
 - **Daily loss:** If daily PnL &lt; −5% of that day’s opening balance, scans skip placing new baskets until the next day.
 
-D1 and D2 are not modified. Supabase is not used by B5.
+D1 and D2 are not modified.
+
+## 6. B5 + Supabase (optional): min edge and loss log
+
+To control B5 min edge from the Vercel dashboard and log losing trades:
+
+1. **Run the B5 tables once** in your Supabase project (same as the dashboard). In Supabase → SQL Editor, run the contents of `supabase/b5_tables.sql`. This creates `b5_config` (single row: min edge) and `b5_losses` (last 20 losses with edge at entry). No other tables are touched.
+
+2. **On D3**, add to `.env` (same project URL/key as dashboard):
+   ```env
+   SUPABASE_URL=https://xxxxx.supabase.co
+   SUPABASE_ANON_KEY=your_anon_key
+   ```
+   B5 will then read `min_edge` from `b5_config` each scan (overriding `B5_MIN_EDGE` in env) and append to `b5_losses` when the sell monitor closes a position at a loss.
+
+3. **Vercel dashboard:** The B5 section lets you change the min edge (text box + Save) and shows the last 20 losses with their edge at entry.
