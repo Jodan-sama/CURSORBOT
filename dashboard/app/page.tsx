@@ -118,6 +118,7 @@ export default function Dashboard() {
   const [csvLoading, setCsvLoading] = useState(false);
   const [b4CsvLoading, setB4CsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [b5MinEdge, setB5MinEdge] = useState('0.2');
 
   async function load() {
     setLoadError(null);
@@ -205,6 +206,12 @@ export default function Dashboard() {
         b3EarlySpreadPct: cfg?.b3_early_high_spread_pct != null ? String(cfg.b3_early_high_spread_pct) : '1.8',
         b3EarlySpreadBlock: cfg?.b3_early_high_spread_block_min != null ? String(cfg.b3_early_high_spread_block_min) : '15',
       });
+      try {
+        const b5Res = await getSupabase().from('b5_config').select('min_edge').eq('id', 'default').maybeSingle();
+        if (b5Res.data?.min_edge != null) setB5MinEdge(String(b5Res.data.min_edge));
+      } catch {
+        // b5_config may not exist
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -320,6 +327,17 @@ export default function Dashboard() {
     if (!Number.isNaN(b3EarlySpreadBlock) && b3EarlySpreadBlock > 0) updates.b3_early_high_spread_block_min = b3EarlySpreadBlock;
     if (Object.keys(updates).length > 0) {
       await getSupabase().from('bot_config').update(updates).eq('id', 'default');
+    }
+    await load();
+    setSaving(false);
+  }
+
+  async function saveB5MinEdge(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    const val = parseFloat(b5MinEdge);
+    if (Number.isFinite(val)) {
+      await getSupabase().from('b5_config').upsert({ id: 'default', min_edge: val, updated_at: new Date().toISOString() }, { onConflict: 'id' });
     }
     await load();
     setSaving(false);
@@ -951,6 +969,21 @@ export default function Dashboard() {
             })}
           </tbody>
         </table>
+      </section>
+
+      <section style={{ marginTop: 24 }}>
+        <h2 style={headingStyle}>B5 min edge</h2>
+        <p style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>D3 B5 runner reads this from Supabase. Min edge (0–1) to enter.</p>
+        <form onSubmit={saveB5MinEdge} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ fontWeight: 600 }}>Min edge</label>
+          <input
+            type="text"
+            value={b5MinEdge}
+            onChange={(e) => setB5MinEdge(e.target.value)}
+            style={{ width: 72, padding: '6px 8px' }}
+          />
+          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save</button>
+        </form>
       </section>
 
       <section style={{ marginTop: 24 }}>
