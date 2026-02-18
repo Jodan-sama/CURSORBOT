@@ -230,15 +230,21 @@ async function runOneScan(): Promise<void> {
   ]);
 
   await withPolyProxy(async () => {
-    const rawCandidates = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold);
+    const allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
+    const rawCandidates = allOutcomes.filter((c) => c.price < B5_CONFIG.cheapThreshold);
     console.log(`[B5] Raw candidates (price < ${B5_CONFIG.cheapThreshold}): ${rawCandidates.length}`);
+
     const candidates: B5Candidate[] = [];
-    for (const c of rawCandidates) {
-      if (c.price > B5_CONFIG.cheapThreshold) continue;
+    for (const c of allOutcomes) {
       const symbol = c.question.startsWith('ETH') ? 'ETH' : 'BTC';
       const estP = estimateProb(c.question, btcCandles, ethCandles, symbol);
       const edge = estP - c.price;
-      if (edge < B5_CONFIG.minEdge) continue;
+      const passCheap = c.price < B5_CONFIG.cheapThreshold;
+      const passEdge = edge >= B5_CONFIG.minEdge;
+      console.log(
+        `[B5] Edge ${c.question}: price=${c.price.toFixed(3)} estP=${estP.toFixed(3)} edge=${edge.toFixed(3)} (cheap? ${passCheap} edge≥${B5_CONFIG.minEdge}? ${passEdge})`
+      );
+      if (!passCheap || edge < B5_CONFIG.minEdge) continue;
       candidates.push({ ...c, estP, edge });
     }
 

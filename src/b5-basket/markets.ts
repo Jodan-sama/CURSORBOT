@@ -32,11 +32,13 @@ export function getB5Slugs(now: Date = new Date()): { slug: string; timeframe: '
 
 /**
  * Fetch markets by slug (call from inside withPolyProxy so Gamma uses proxy).
- * Returns candidates for all outcomes (yes/no) with price < cheapThreshold.
+ * If returnAllOutcomes is true, returns every outcome (0 < price < 1) for edge logging.
+ * Otherwise returns only outcomes with price < cheapThreshold (basket candidates).
  */
 export async function discoverB5MarketsBySlug(
   now: Date,
-  cheapThreshold: number
+  cheapThreshold: number,
+  returnAllOutcomes = false
 ): Promise<B5Candidate[]> {
   const slugs = getB5Slugs(now);
   const candidates: B5Candidate[] = [];
@@ -55,7 +57,8 @@ export async function discoverB5MarketsBySlug(
     const outcomes = market.outcomes ?? ['Yes', 'No'];
     for (let i = 0; i < prices.length && i < tokenIds.length; i++) {
       const price = prices[i];
-      if (price >= cheapThreshold || price <= 0) continue;
+      if (price <= 0 || price >= 1) continue;
+      if (!returnAllOutcomes && price >= cheapThreshold) continue;
       const direction = i === 0 ? 'up' : 'down';
       const question = `${asset} ${timeframe} ${direction}`;
       candidates.push({
