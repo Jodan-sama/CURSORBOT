@@ -223,12 +223,13 @@ async function runOneScan(): Promise<void> {
   }
 
   const now = new Date();
-  await withPolyProxy(async () => {
-    const [btcCandles, ethCandles] = await Promise.all([
-      fetchBinance1m('BTCUSDT', 120),
-      fetchBinance1m('ETHUSDT', 120).catch(() => null),
-    ]);
+  // Binance: fetch direct (proxy can break Binance). Gamma + CLOB: use proxy (like D1).
+  const [btcCandles, ethCandles] = await Promise.all([
+    fetchBinance1m('BTCUSDT', 120),
+    fetchBinance1m('ETHUSDT', 120).catch(() => null),
+  ]);
 
+  await withPolyProxy(async () => {
     const rawCandidates = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold);
     console.log(`[B5] Raw candidates (price < ${B5_CONFIG.cheapThreshold}): ${rawCandidates.length}`);
     const candidates: B5Candidate[] = [];
