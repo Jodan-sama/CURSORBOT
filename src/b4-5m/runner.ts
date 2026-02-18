@@ -68,6 +68,8 @@ interface Position {
   tokenId: string;
   entryMid: number;       // mid-price at entry (baseline for TP/SL)
   contracts: number;
+  /** Actual shares filled at entry (from balance after buy). Used for position_size in logs so losses show correct size. */
+  actualSharesBought?: number;
   entryBtcPrice: number;
   entryTime: number;
   windowStart: number;
@@ -226,11 +228,30 @@ async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResu
         ?? (result as { orderId?: string })?.orderId;
       if (!orderId) return { error: `No fill (FOK rejected): ${JSON.stringify(result)}` };
 
+      // Query actual balance after fill so we log correct position size (especially for losses)
+      let actualSharesBought: number | undefined;
+      try {
+        const bal = await client.getBalanceAllowance({
+          asset_type: 'CONDITIONAL' as unknown as import('@polymarket/clob-client').AssetType,
+          token_id: tokenId,
+        });
+        const rawBalance = parseFloat(bal.balance);
+        if (rawBalance > 0) {
+          actualSharesBought = rawBalance > 1000 ? rawBalance / 1e6 : rawBalance;
+          if (actualSharesBought !== contracts) {
+            console.log(`[B4] entry fill: ${actualSharesBought.toFixed(6)} shares (requested ~${contracts})`);
+          }
+        }
+      } catch {
+        // optional: fall back to contracts estimate when logging
+      }
+
       return {
         orderId,
         tokenId,
         entryMid: mid,
         contracts,
+        actualSharesBought,
         negRisk: market.negRisk ?? false,
         tickSize,
       };
@@ -244,7 +265,7 @@ async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResu
 // Sell contracts (early exit)
 // ---------------------------------------------------------------------------
 
-async function sellContracts(pos: Position): Promise<{ orderId?: string; error?: string }> {
+async function sellContracts(pos: Position): Promise<{ orderId?: string; actualSharesSold?: number; error?: string }> {
   try {
     return await withPolyProxy(async () => {
       const client = await getClobClient();
@@ -281,7 +302,7 @@ async function sellContracts(pos: Position): Promise<{ orderId?: string; error?:
       const orderId = (result as { orderID?: string; orderId?: string })?.orderID
         ?? (result as { orderId?: string })?.orderId;
       if (!orderId) return { error: `Sell FOK rejected: ${JSON.stringify(result)}` };
-      return { orderId };
+      return { orderId, actualSharesSold: sellAmount };
     });
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -348,6 +369,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           return;
         }
 
+        // Use actual shares at entry for position_size (so losses show correct size even when we don't sell)
+        const sharesAtEntry = openPosition.actualSharesBought ?? openPosition.contracts;
+        const actualPositionSizeUsd = sharesAtEntry * openPosition.entryMid;
+
         // Sell succeeded — record P&L based on mid movement
         const pnl = (mid - openPosition.entryMid) * openPosition.contracts;
         const won = pnl > 0;
@@ -366,14 +391,14 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           `| bankroll=$${bankroll.toFixed(2)} W/L=${totalWins}/${totalLosses}`,
         );
 
-        // Log to Supabase
+        // Log to Supabase with actual position size (partial fills show correct size on dashboard)
         try {
           await logPosition({
             bot: 'B4',
             asset: 'BTC',
             venue: 'polymarket',
             strike_spread_pct: pctChange * 100,
-            position_size: POSITION_SIZE_USD,
+            position_size: actualPositionSizeUsd,
             ticker_or_slug: openPosition.slug,
             order_id: sellResult.orderId ?? openPosition.orderId,
             raw: {
@@ -382,6 +407,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
               entryMid: openPosition.entryMid,
               exitMid: mid,
               contracts: openPosition.contracts,
+              actualSharesBought: openPosition.actualSharesBought,
+              actualSharesSold: sellResult.actualSharesSold,
               pnl,
               bankroll,
               entryBtcPrice: openPosition.entryBtcPrice,
@@ -450,6 +477,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       tokenId: result.tokenId,
       entryMid: result.entryMid,
       contracts: result.contracts,
+      actualSharesBought: result.actualSharesBought,
       entryBtcPrice: cl?.price ?? 0,
       entryTime: Date.now(),
       windowStart: windowStartMs,
