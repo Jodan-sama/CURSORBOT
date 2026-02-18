@@ -289,7 +289,32 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   // Clean up orders from previous windows
   cleanupOldOrders();
 
-  // B4 emergency off check (manual pause from dashboard)
+  // Calculate spread early so early guard can run even when B4 is paused
+  const windowOpenPrice = await feed.getWindowOpen();
+  if (windowOpenPrice <= 0) return;
+
+  const signedSpread = (btcPrice - windowOpenPrice) / btcPrice * 100;
+  const absSpread = Math.abs(signedSpread);
+  const spreadDir: 'up' | 'down' = btcPrice > windowOpenPrice ? 'up' : 'down';
+  const slug = getPolySlug5m(now);
+  const nowMs = Date.now();
+
+  // --- Early-window high-spread guard (runs even when B4 is paused so block is set before un-pause) ---
+  // During first 100s, check every ~15s: if spread > threshold → cooldown on B4 spread bot
+  if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
+    if (absSpread >= earlyGuardSpreadPct) {
+      earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;
+      updateB4EarlyGuard(earlyGuardCooldownUntil);
+      const cooldownMin = Math.round(earlyGuardCooldownMs / 60_000);
+      console.log(
+        `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${earlyGuardSpreadPct}% ` +
+        `at ${secInWindow.toFixed(0)}s — B4 cooldown for ${cooldownMin}min (until ${new Date(earlyGuardCooldownUntil).toISOString()})`,
+      );
+      // Don't return here — when paused we've set the block; when not paused we'll hit cooldown check below
+    }
+  }
+
+  // B4 emergency off check (manual pause from dashboard) — after early guard so guard can set block while paused
   if (tickCount % 10 === 0) {
     try {
       if (await isB4EmergencyOff()) {
@@ -314,31 +339,6 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   // Refresh config from Supabase every ~30 ticks (~90 seconds)
   if (tickCount % 30 === 0) {
     await refreshConfig();
-  }
-
-  // Calculate spread
-  const windowOpenPrice = await feed.getWindowOpen();
-  if (windowOpenPrice <= 0) return;
-
-  const signedSpread = (btcPrice - windowOpenPrice) / btcPrice * 100;
-  const absSpread = Math.abs(signedSpread);
-  const spreadDir: 'up' | 'down' = btcPrice > windowOpenPrice ? 'up' : 'down';
-  const slug = getPolySlug5m(now);
-  const nowMs = Date.now();
-
-  // --- Early-window high-spread guard (B4 only, in-memory) ---
-  // During first 100s, check every ~15s: if spread > threshold → cooldown on B4 spread bot
-  if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
-    if (absSpread >= earlyGuardSpreadPct) {
-      earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;
-      updateB4EarlyGuard(earlyGuardCooldownUntil);
-      const cooldownMin = Math.round(earlyGuardCooldownMs / 60_000);
-      console.log(
-        `[B4] EARLY GUARD: spread ${signedSpread.toFixed(3)}% exceeds ${earlyGuardSpreadPct}% ` +
-        `at ${secInWindow.toFixed(0)}s — B4 cooldown for ${cooldownMin}min (until ${new Date(earlyGuardCooldownUntil).toISOString()})`,
-      );
-      return;
-    }
   }
 
   // Check tiers from HIGHEST to LOWEST (T3 first → T2 → T1)
