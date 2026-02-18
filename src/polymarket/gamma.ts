@@ -62,3 +62,30 @@ export function poly15mSlug(asset: Asset, timestampEndSeconds: number): string {
   const prefix = POLY_15M_SLUG_PREFIX[asset];
   return `${prefix}${timestampEndSeconds}`;
 }
+
+/** Raw market from Gamma GET /markets (list). */
+export interface GammaMarketRow {
+  id?: string;
+  question?: string;
+  conditionId?: string;
+  slug?: string;
+  outcomePrices?: string;
+  clobTokenIds?: string;
+  outcomes?: string;
+  orderPriceMinTickSize?: number;
+  orderMinSize?: number;
+  negRisk?: boolean;
+  closed?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Fetch active markets from Gamma (for B5 basket discovery).
+ * GET /markets?closed=false&limit=500
+ */
+export async function listGammaMarkets(closed = false, limit = 500): Promise<GammaMarketRow[]> {
+  const url = `${GAMMA_BASE}/markets?closed=${String(closed)}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Gamma list markets: ${res.status}`);
+  return (await res.json()) as GammaMarketRow[];
+}

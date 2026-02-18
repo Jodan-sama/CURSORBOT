@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 .env.droplet
+.env.d3
+.env.d3.*
 *.pem
 .ssh/
 

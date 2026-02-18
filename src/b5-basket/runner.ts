@@ -1,0 +1,331 @@
+/**
+ * B5 basket runner: 5m/15m BTC/ETH, dynamic sizing from highest balance seen,
+ * FOK buys, tiered limit sells, sell monitor. All CLOB/order traffic through proxy.
+ */
+
+import 'dotenv/config';
+import {
+  createPolyClobClient,
+  getPolyClobConfigFromEnv,
+  getOrCreateDerivedPolyClient,
+} from '../polymarket/clob.js';
+import {
+  Side,
+  OrderType,
+  type ClobClient,
+  type CreateOrderOptions,
+} from '@polymarket/clob-client';
+import { B5_CONFIG } from './config.js';
+import {
+  getUSDCBalance,
+  getMaxBalanceForSizing,
+  loadMaxBalance,
+} from './balance.js';
+import { discoverB5Markets, type B5Candidate } from './markets.js';
+import { fetchBinance1m, estimateProb } from './edge-engine.js';
+
+const WALLET = process.env.POLYMARKET_PROXY_WALLET?.trim() ||
+  process.env.POLYMARKET_FUNDER?.trim() ||
+  '';
+const SCAN_INTERVAL_MS = B5_CONFIG.scanIntervalSeconds * 1000;
+const SELL_MONITOR_INTERVAL_MS = 60_000;
+
+// ---------------------------------------------------------------------------
+// Proxy (same pattern as B4 — required for orders)
+// ---------------------------------------------------------------------------
+
+async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (!proxy) return fn();
+  const axios = (await import('axios')).default;
+  const { HttpsProxyAgent } = await import('https-proxy-agent');
+  const prevUndici = (await import('undici')).getGlobalDispatcher();
+  const { setGlobalDispatcher, ProxyAgent } = await import('undici');
+  const prevAxiosAgent = axios.defaults.httpsAgent;
+  const prevAxiosProxy = axios.defaults.proxy;
+  try {
+    setGlobalDispatcher(new ProxyAgent(proxy));
+    axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
+    axios.defaults.proxy = false;
+    return await fn();
+  } finally {
+    setGlobalDispatcher(prevUndici);
+    axios.defaults.httpsAgent = prevAxiosAgent;
+    axios.defaults.proxy = prevAxiosProxy;
+  }
+}
+
+async function getClobClient(): Promise<ClobClient> {
+  const cfg = getPolyClobConfigFromEnv();
+  return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+}
+
+function parseMid(raw: unknown): number {
+  if (typeof raw === 'string') return parseFloat(raw);
+  if (typeof raw === 'number') return raw;
+  if (raw && typeof raw === 'object' && 'mid' in raw) return parseFloat(String((raw as { mid: string }).mid));
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+interface OpenPosition {
+  tokenId: string;
+  buyPrice: number;
+  shares: number;
+  question: string;
+  tickSize: CreateOrderOptions['tickSize'];
+  negRisk: boolean;
+}
+
+const positions = new Map<string, OpenPosition>();
+let dailyStartBalance = 0;
+let dailyStartDate = '';
+
+// ---------------------------------------------------------------------------
+// Sizing from highest balance seen
+// ---------------------------------------------------------------------------
+
+function computeSizing(maxBalanceSeen: number): { positionSizeUSD: number; maxBasketUSD: number } {
+  const positionSizeUSD = Math.max(
+    B5_CONFIG.minPositionUsd,
+    Math.min(B5_CONFIG.positionSizeCap, maxBalanceSeen * B5_CONFIG.riskPerLeg)
+  );
+  const maxBasketUSD = Math.min(
+    B5_CONFIG.maxBasketCostCap,
+    maxBalanceSeen * B5_CONFIG.maxPerBasket
+  );
+  return { positionSizeUSD, maxBasketUSD };
+}
+
+// ---------------------------------------------------------------------------
+// Daily loss check
+// ---------------------------------------------------------------------------
+
+function checkDailyLossLimit(currentBalance: number): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== dailyStartDate) {
+    dailyStartDate = today;
+    dailyStartBalance = currentBalance;
+  }
+  if (dailyStartBalance <= 0) return false;
+  const pnlPct = (currentBalance - dailyStartBalance) / dailyStartBalance;
+  return pnlPct < B5_CONFIG.dailyLossLimit;
+}
+
+// ---------------------------------------------------------------------------
+// Place FOK market buy
+// ---------------------------------------------------------------------------
+
+async function placeFokBuy(
+  client: ClobClient,
+  tokenId: string,
+  amountUsd: number,
+  tickSize: CreateOrderOptions['tickSize'],
+  negRisk: boolean
+): Promise<{ orderId?: string; shares?: number; error?: string }> {
+  try {
+    const result = await client.createAndPostMarketOrder(
+      { tokenID: tokenId, amount: amountUsd, side: Side.BUY },
+      { tickSize, negRisk },
+      OrderType.FOK
+    );
+    const orderId = (result as { orderID?: string; orderId?: string })?.orderID
+      ?? (result as { orderId?: string })?.orderId;
+    if (!orderId) return { error: `No orderId: ${JSON.stringify(result)}` };
+    const mid = parseMid(await client.getMidpoint(tokenId));
+    const shares = mid > 0 ? Math.max(1, Math.ceil(amountUsd / mid)) : 0;
+    return { orderId, shares };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Place GTC limit sell (size in integer shares)
+// ---------------------------------------------------------------------------
+
+async function placeLimitSell(
+  client: ClobClient,
+  tokenId: string,
+  price: number,
+  sizeShares: number,
+  tickSize: CreateOrderOptions['tickSize'],
+  negRisk: boolean
+): Promise<{ orderId?: string; error?: string }> {
+  if (sizeShares < 1) return {};
+  const tickDec = String(tickSize).split('.')[1]?.length ?? 2;
+  const factor = 10 ** tickDec;
+  const roundedPrice = Math.round(price * factor) / factor;
+  try {
+    const result = await client.createAndPostOrder(
+      { tokenID: tokenId, price: roundedPrice, size: sizeShares, side: Side.SELL },
+      { tickSize, negRisk },
+      OrderType.GTC
+    );
+    const orderId = (result as { orderID?: string; orderId?: string })?.orderID
+      ?? (result as { orderId?: string })?.orderId;
+    return orderId ? { orderId } : { error: `No orderId: ${JSON.stringify(result)}` };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sell monitor: FOK sell remainder if mid > 1.6 * buyPrice
+// ---------------------------------------------------------------------------
+
+async function runSellMonitor(): Promise<void> {
+  if (positions.size === 0) return;
+  await withPolyProxy(async () => {
+    const client = await getClobClient();
+    for (const [tokenId, pos] of positions.entries()) {
+      try {
+        const mid = parseMid(await client.getMidpoint(tokenId));
+        if (mid <= 0) continue;
+        if (mid < pos.buyPrice * 1.6) continue;
+        const sellShares = Math.max(1, Math.ceil(pos.shares));
+        console.log(`[B5] Sell monitor: selling ${sellShares} @ ${mid.toFixed(3)} (${pos.question.slice(0, 40)}…)`);
+        const result = await client.createAndPostMarketOrder(
+          { tokenID: tokenId, amount: sellShares, side: Side.SELL },
+          { tickSize: pos.tickSize, negRisk: pos.negRisk },
+          OrderType.FOK
+        );
+        const orderId = (result as { orderID?: string; orderId?: string })?.orderID ?? (result as { orderId?: string })?.orderId;
+        if (orderId) {
+          positions.delete(tokenId);
+          console.log(`[B5] Sold: ${tokenId.slice(0, 16)}…`);
+        }
+      } catch (e) {
+        console.warn('[B5] Sell monitor error:', e instanceof Error ? e.message : e);
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Main scan: discover → edge → basket → buy → tiered sells
+// ---------------------------------------------------------------------------
+
+async function runOneScan(): Promise<void> {
+  if (!WALLET) {
+    console.warn('[B5] No POLYMARKET_FUNDER / POLYMARKET_PROXY_WALLET');
+    return;
+  }
+
+  const { balance, maxForSizing } = await getMaxBalanceForSizing(WALLET);
+  const { positionSizeUSD, maxBasketUSD } = computeSizing(maxForSizing);
+  if (checkDailyLossLimit(balance)) {
+    console.log(`[B5] Daily loss limit hit (balance ${balance.toFixed(2)}, daily start ${dailyStartBalance.toFixed(2)}) — skipping scan`);
+    return;
+  }
+
+  await withPolyProxy(async () => {
+    const [btcCandles, ethCandles] = await Promise.all([
+      fetchBinance1m('BTCUSDT', 120),
+      fetchBinance1m('ETHUSDT', 120).catch(() => null),
+    ]);
+
+    const rawCandidates = await discoverB5Markets();
+    const candidates: B5Candidate[] = [];
+    for (const c of rawCandidates) {
+      if (c.price > B5_CONFIG.cheapThreshold) continue;
+      const symbol = /eth|ether/i.test(c.question) ? 'ETH' : 'BTC';
+      const estP = estimateProb(c.question, btcCandles, ethCandles, symbol);
+      const edge = estP - c.price;
+      if (edge < B5_CONFIG.minEdge) continue;
+      candidates.push({ ...c, estP, edge });
+    }
+
+    candidates.sort((a, b) => a.price - b.price);
+    const basket: B5Candidate[] = [];
+    let totalCost = 0;
+    for (const c of candidates) {
+      if (basket.length >= 4) break;
+      if (totalCost + positionSizeUSD > maxBasketUSD) break;
+      basket.push(c);
+      totalCost += positionSizeUSD;
+    }
+
+    if (basket.length < 2) {
+      console.log(`[B5] Scan: ${candidates.length} candidates, no basket (need ≥2)`);
+      return;
+    }
+
+    console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} (positionSize=$${positionSizeUSD.toFixed(2)}, maxBasket=$${maxBasketUSD.toFixed(2)}, maxSeen=$${maxForSizing.toFixed(2)})`);
+
+    const client = await getClobClient();
+
+    for (const c of basket) {
+      const tickSize: CreateOrderOptions['tickSize'] =
+        (c.market.orderPriceMinTickSize ? String(c.market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
+      const negRisk = c.market.negRisk ?? false;
+
+      const buyResult = await placeFokBuy(client, c.tokenId, positionSizeUSD, tickSize, negRisk);
+      if (buyResult.error) {
+        console.warn(`[B5] Buy failed: ${c.question.slice(0, 40)} — ${buyResult.error}`);
+        continue;
+      }
+
+      const shares = buyResult.shares ?? Math.max(1, Math.ceil(positionSizeUSD / c.price));
+      positions.set(c.tokenId, {
+        tokenId: c.tokenId,
+        buyPrice: c.price,
+        shares,
+        question: c.question,
+        tickSize,
+        negRisk,
+      });
+
+      console.log(`[B5] BOUGHT ${c.question.slice(0, 50)}… @ ${c.price} | ~${shares} shares`);
+
+      const tierSizes = [0.3, 0.3, 0.3].map((pct) => Math.max(1, Math.ceil(shares * pct)));
+      const tiers = [
+        { mult: 1.8, size: tierSizes[0] },
+        { mult: 3, size: tierSizes[1] },
+        { mult: 5, size: tierSizes[2] },
+      ];
+      for (const t of tiers) {
+        const sellPrice = Math.min(0.99, c.price * t.mult);
+        if (sellPrice >= 0.99) continue;
+        await placeLimitSell(client, c.tokenId, sellPrice, t.size, tickSize, negRisk);
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entry
+// ---------------------------------------------------------------------------
+
+export async function startB5Runner(): Promise<void> {
+  console.log('[B5] Basket runner starting (5m/15m BTC/ETH, dynamic sizing from highest balance seen)');
+  loadMaxBalance();
+  if (WALLET) {
+    const { balance, maxForSizing } = await getMaxBalanceForSizing(WALLET);
+    console.log(`[B5] Wallet ${WALLET.slice(0, 10)}… balance=$${balance.toFixed(2)} maxForSizing=$${maxForSizing.toFixed(2)}`);
+  }
+
+  let sellMonitorTimer: ReturnType<typeof setInterval> | null = null;
+
+  const runScan = () => {
+    runOneScan().catch((e) => console.error('[B5] scan error:', e));
+  };
+
+  runScan();
+  const scanTimer = setInterval(runScan, SCAN_INTERVAL_MS);
+
+  sellMonitorTimer = setInterval(() => {
+    runSellMonitor().catch((e) => console.warn('[B5] sell monitor error:', e));
+  }, SELL_MONITOR_INTERVAL_MS);
+
+  const shutdown = () => {
+    if (scanTimer) clearInterval(scanTimer);
+    if (sellMonitorTimer) clearInterval(sellMonitorTimer);
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
