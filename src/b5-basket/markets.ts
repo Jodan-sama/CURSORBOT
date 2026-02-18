@@ -49,6 +49,7 @@ export async function discoverB5MarketsBySlug(
       console.warn(`[B5] Market fetch failed: ${slug}`, e instanceof Error ? e.message : e);
       continue;
     }
+    console.log(`[B5] Fetched ${asset} ${timeframe}: ${slug} prices=${(market.outcomePrices ?? []).join(',')}`);
     const prices = market.outcomePrices ?? [];
     const tokenIds = market.clobTokenIds ?? [];
     const outcomes = market.outcomes ?? ['Yes', 'No'];

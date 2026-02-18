@@ -230,6 +230,7 @@ async function runOneScan(): Promise<void> {
     ]);
 
     const rawCandidates = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold);
+    console.log(`[B5] Raw candidates (price < ${B5_CONFIG.cheapThreshold}): ${rawCandidates.length}`);
     const candidates: B5Candidate[] = [];
     for (const c of rawCandidates) {
       if (c.price > B5_CONFIG.cheapThreshold) continue;
