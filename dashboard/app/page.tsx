@@ -676,7 +676,14 @@ export default function Dashboard() {
         <h2 style={headingStyle}>Win rate (resolved)</h2>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 16 }}>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B1/B2/B3</strong> (last 200): <span style={{ color: '#888' }}>— outcomes not tracked in app (D1 Kalshi/Poly)</span>
+            <strong>B1/B2/B3 Kalshi</strong> (last 200):{' '}
+            {(() => {
+              const kalshiResolved = positions.filter((p) => p.venue === 'kalshi' && (p.outcome === 'win' || p.outcome === 'loss'));
+              const wins = kalshiResolved.filter((p) => p.outcome === 'win').length;
+              const n = kalshiResolved.length;
+              if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
+              return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</>;
+            })()}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
             <strong>B4</strong> (last 200):{' '}
@@ -922,20 +929,26 @@ export default function Dashboard() {
               <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
               <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Result</th>
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => (
-              <tr key={p.id}>
-                <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
-                <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
-                <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
-                <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
-                <td style={{ borderBottom: '1px solid #eee' }}>{(p.raw as { price_source?: string })?.price_source ?? '—'}</td>
-                <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
-                <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
-              </tr>
-            ))}
+            {positions.map((p) => {
+              const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : p.outcome === 'no_fill' ? 'No fill' : 'Pending';
+              const resultColor = p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : p.outcome === 'no_fill' ? '#888' : '#888';
+              return (
+                <tr key={p.id}>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{(p.raw as { price_source?: string })?.price_source ?? '—'}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                  <td style={{ borderBottom: '1px solid #eee', color: resultColor }}>{result}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </section>
