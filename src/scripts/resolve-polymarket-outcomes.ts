@@ -3,17 +3,22 @@
  * Updates positions.outcome and positions.resolved_at once per position (idempotent).
  * Run every 5–10 min via cron (e.g. on D2). Uses SUPABASE_* from env.
  *
+ * Fill check: only resolved positions with order_id get win/loss; if order has size_matched 0 or missing, set outcome = 'no_fill' (dashboard hides these).
  * Resolution: fetch event by slug; after market closes, outcomePrices become [1,0] or [0,1].
- * We map our side (up/down or yes/no) to Up/Down and compare to the winning outcome.
  */
 import 'dotenv/config';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import type { ClobClient } from '@polymarket/clob-client';
+import { getOrCreateDerivedPolyClient, createDerivedPolyClientFromConfig } from '../polymarket/clob.js';
 import { fetchGammaEvent } from '../polymarket/gamma.js';
 
 type PositionRow = {
   id: string;
   bot: string;
   ticker_or_slug: string | null;
+  order_id: string | null;
   raw: Record<string, unknown> | null;
 };
 
@@ -53,6 +58,30 @@ function getWinningSide(outcomes: string[], winningIndex: number): 'Up' | 'Down'
   return null;
 }
 
+/** Parse .env-style file into key-value map. */
+function parseEnvFile(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of content.split('\n')) {
+    const trimmed = line.replace(/#.*/, '').trim();
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+/** Return true if order was filled (size_matched > 0). */
+function isOrderFilled(sizeMatched: string | undefined): boolean {
+  if (sizeMatched == null || sizeMatched === '') return false;
+  const n = parseFloat(sizeMatched);
+  return Number.isFinite(n) && n > 0;
+}
+
 async function main() {
   const url = process.env.SUPABASE_URL?.trim();
   const key = process.env.SUPABASE_ANON_KEY?.trim();
@@ -66,7 +95,7 @@ async function main() {
 
   const { data: rows, error: selectError } = await supabase
     .from('positions')
-    .select('id, bot, ticker_or_slug, raw')
+    .select('id, bot, ticker_or_slug, order_id, raw')
     .eq('venue', 'polymarket')
     .in('bot', ['B4', 'B1c', 'B2c', 'B3c'])
     .is('outcome', null)
@@ -82,9 +111,68 @@ async function main() {
     return;
   }
 
+  let b4Client: ClobClient | null = null;
+  let b123cClient: ClobClient | null = null;
+  try {
+    b4Client = await getOrCreateDerivedPolyClient();
+  } catch (e) {
+    console.warn('B4 CLOB client (derive) failed:', e instanceof Error ? e.message : e);
+  }
+  const b123cEnvPath = join(process.cwd(), '.env.b123c');
+  try {
+    const content = readFileSync(b123cEnvPath, 'utf8');
+    const env = parseEnvFile(content);
+    const pk = env.POLYMARKET_PRIVATE_KEY?.trim();
+    const funder = env.POLYMARKET_FUNDER?.trim();
+    if (pk && funder) {
+      b123cClient = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
+    }
+  } catch {
+    // .env.b123c missing or invalid; only B4 orders can be fill-checked
+  }
+
   let updated = 0;
   for (const row of positions) {
     const slug = row.ticker_or_slug!.trim();
+
+    // Fill check: only set win/loss if order was filled. Otherwise set no_fill (dashboard hides).
+    if (!row.order_id?.trim()) {
+      const { error: updateError } = await supabase
+        .from('positions')
+        .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+        .eq('id', row.id);
+      if (updateError) console.error(`Update no_fill (no order_id) ${row.id}:`, updateError.message);
+      else {
+        updated++;
+        console.log(`Resolved ${row.bot} ${slug}: no_fill (no order_id)`);
+      }
+      continue;
+    }
+
+    const clob = row.bot === 'B4' ? b4Client : b123cClient;
+    if (clob) {
+      let filled = false;
+      try {
+        const order = await clob.getOrder(row.order_id.trim());
+        filled = isOrderFilled(order?.size_matched);
+      } catch {
+        // order not found or API error → treat as unfilled
+      }
+      if (!filled) {
+        const { error: updateError } = await supabase
+          .from('positions')
+          .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (updateError) console.error(`Update no_fill ${row.id}:`, updateError.message);
+        else {
+          updated++;
+          console.log(`Resolved ${row.bot} ${slug}: no_fill (order not filled)`);
+        }
+        continue;
+      }
+    }
+    // No CLOB client for this bot → skip fill check; still allow Gamma resolution below (e.g. B123c without .env.b123c)
+
     const windowEndSec = getWindowEndUnixFromSlug(slug);
     if (windowEndSec == null) continue;
     if (windowEndSec > minWindowEndSec) continue; // not old enough to resolve

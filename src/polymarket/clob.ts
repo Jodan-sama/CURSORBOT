@@ -172,6 +172,61 @@ export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
 }
 
 /**
+ * Create a derived CLOB client from explicit credentials (no cache). Use for a second wallet (e.g. B123c) when the process already has B4 env. Call inside withPolyProxy on D2 if needed.
+ */
+export async function createDerivedPolyClientFromConfig(config: {
+  privateKey: string;
+  funder: string;
+}): Promise<ClobClient> {
+  const privateKey = config.privateKey.startsWith('0x') ? config.privateKey : `0x${config.privateKey}`;
+  const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || DEFAULT_POLYGON_RPC;
+  const provider = new JsonRpcProvider(rpcUrl);
+  const signer = new Wallet(privateKey, provider);
+  const clientNoCreds = new ClobClient(
+    CLOB_HOST,
+    CHAIN_ID as 137,
+    signer,
+    undefined,
+    SIGNATURE_TYPE as SignatureType,
+    config.funder,
+    undefined,
+    true
+  );
+  const normalizeCreds = (raw: Record<string, unknown> | null): { key: string; secret: string; passphrase: string } | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const key = (raw.key ?? raw.apiKey ?? (raw as Record<string, unknown>).api_key) as string | undefined;
+    const secret = (raw.secret ?? (raw as Record<string, unknown>).api_secret) as string | undefined;
+    const passphrase = (raw.passphrase ?? (raw as Record<string, unknown>).api_passphrase) as string | undefined;
+    if (key && secret && passphrase) return { key, secret, passphrase };
+    return null;
+  };
+  let creds: { key: string; secret: string; passphrase: string } | null = null;
+  try {
+    const rawDerive = await clientNoCreds.deriveApiKey();
+    creds = normalizeCreds(rawDerive as unknown as Record<string, unknown>);
+  } catch {
+    /* derive failed */
+  }
+  if (!creds?.key || !creds?.secret || !creds?.passphrase) {
+    const rawCreate = await clientNoCreds.createApiKey();
+    creds = normalizeCreds(rawCreate as unknown as Record<string, unknown>);
+  }
+  if (!creds?.key || !creds?.secret || !creds?.passphrase) {
+    throw new Error('createDerivedPolyClientFromConfig: derive/create did not return key/secret/passphrase');
+  }
+  return new ClobClient(
+    CLOB_HOST,
+    CHAIN_ID as 137,
+    signer,
+    creds,
+    SIGNATURE_TYPE as SignatureType,
+    config.funder,
+    undefined,
+    true
+  );
+}
+
+/**
  * Create a CLOB client. Signer uses POLYGON_RPC_URL (e.g. Alchemy) for RPC. Set proxy before placing order.
  */
 export function createPolyClobClient(config: PolyClobConfig): ClobClient {

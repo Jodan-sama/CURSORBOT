@@ -64,7 +64,7 @@ type Position = {
   ticker_or_slug: string | null;
   order_id: string | null;
   raw?: { price_source?: string } | null;
-  outcome?: 'win' | 'loss' | null;
+  outcome?: 'win' | 'loss' | 'no_fill' | null;
   resolved_at?: string | null;
 };
 
@@ -138,8 +138,8 @@ export default function Dashboard() {
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(200),
-        getSupabase().from('positions').select('*').eq('bot', 'B4').order('entered_at', { ascending: false }).limit(50),
-        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).order('entered_at', { ascending: false }).limit(100),
+        getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
@@ -673,6 +673,35 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>Win rate (resolved)</h2>
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 16 }}>
+          <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+            <strong>B1/B2/B3</strong> (last 200): <span style={{ color: '#888' }}>— outcomes not tracked in app (D1 Kalshi/Poly)</span>
+          </div>
+          <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+            <strong>B4</strong> (last 200):{' '}
+            {(() => {
+              const resolved = b4Positions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const wins = resolved.filter((p) => p.outcome === 'win').length;
+              const n = resolved.length;
+              if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
+              return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</>;
+            })()}
+          </div>
+          <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+            <strong>B1c/B2c/B3c</strong> (last 200):{' '}
+            {(() => {
+              const resolved = b123cPositions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const wins = resolved.filter((p) => p.outcome === 'win').length;
+              const n = resolved.length;
+              if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
+              return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</>;
+            })()}
+          </div>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
         <h2 style={headingStyle}>B4 — 5-Minute BTC Spread Bot</h2>
 
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
@@ -787,7 +816,7 @@ export default function Dashboard() {
         </div>
 
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 50).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 200).</span>
           <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
         </p>
         {b4Positions.length === 0 ? (
@@ -831,7 +860,7 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 100)</h2>
+        <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 200)</h2>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
           Chainlink-only clone of B1/B2/B3 on the B4 droplet. Uses same spread thresholds and blocking rules. Paused/resumed with the B4 button above.
         </p>
