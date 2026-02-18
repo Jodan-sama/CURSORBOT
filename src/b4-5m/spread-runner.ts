@@ -195,6 +195,7 @@ async function refreshConfig(): Promise<void> {
     t3BlockMs = cfg.t3_block_min * 60_000;
     earlyGuardSpreadPct = cfg.early_guard_spread_pct;
     earlyGuardCooldownMs = cfg.early_guard_cooldown_min * 60_000;
+    console.log(`[B4] config refreshed — early_guard_spread_pct=${earlyGuardSpreadPct}%`);
   } catch (e) {
     console.warn('[B4] config refresh failed, using current values:', e instanceof Error ? e.message : e);
   }
