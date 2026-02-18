@@ -1,9 +1,13 @@
 /**
- * B5: Discover 5m and 15m BTC/ETH direction markets from Gamma.
+ * B5: Discover 5m and 15m BTC/ETH markets by slug (same as B4 and B1/B123c).
+ * Always finds current 5m BTC and 15m BTC/ETH markets via clock-derived slugs.
  */
 
-import { listGammaMarkets, parseGammaMarket, type GammaMarketRow } from '../polymarket/gamma.js';
-import type { GammaMarket, ParsedPolyMarket } from '../polymarket/types.js';
+import { getPolySlug5m } from '../b4-5m/clock.js';
+import { getCurrentPolySlug } from '../clock.js';
+import { getPolyMarketBySlug } from '../polymarket/gamma.js';
+import type { ParsedPolyMarket } from '../polymarket/types.js';
+import type { Asset } from '../kalshi/ticker.js';
 
 export interface B5Candidate {
   tokenId: string;
@@ -17,54 +21,51 @@ export interface B5Candidate {
   outcomeIndex: number;
 }
 
-function parseOutcomePrices(raw: string | undefined): number[] {
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(raw) as string[] | number[];
-    return arr.map((x) => (typeof x === 'string' ? parseFloat(x) : x));
-  } catch {
-    return [];
-  }
+/** Slugs for current 5m BTC and 15m BTC/ETH (same logic as B4 and B1). */
+export function getB5Slugs(now: Date = new Date()): { slug: string; timeframe: '5min' | '15min'; asset: 'BTC' | 'ETH' }[] {
+  return [
+    { slug: getPolySlug5m(now), timeframe: '5min', asset: 'BTC' },
+    { slug: getCurrentPolySlug('BTC' as Asset, now), timeframe: '15min', asset: 'BTC' },
+    { slug: getCurrentPolySlug('ETH' as Asset, now), timeframe: '15min', asset: 'ETH' },
+  ];
 }
 
-function parseClobTokenIds(raw: string | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(raw) as string[];
-    return arr.map((x) => String(x).trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/** Filter and parse markets for 5m/15m BTC/ETH up-or-down. */
-export async function discoverB5Markets(): Promise<B5Candidate[]> {
-  const rows = await listGammaMarkets(false, 500);
+/**
+ * Fetch markets by slug (call from inside withPolyProxy so Gamma uses proxy).
+ * Returns candidates for all outcomes (yes/no) with price < cheapThreshold.
+ */
+export async function discoverB5MarketsBySlug(
+  now: Date,
+  cheapThreshold: number
+): Promise<B5Candidate[]> {
+  const slugs = getB5Slugs(now);
   const candidates: B5Candidate[] = [];
 
-  for (const m of rows) {
-    const q = (m.question ?? '').toLowerCase();
-    if (!/(bitcoin|btc|eth|ether)/i.test(q)) continue;
-    if (!/(5\s*min|15\s*min|5\s*minute|15\s*minute|up\s*or\s*down)/i.test(q)) continue;
-
-    const prices = parseOutcomePrices(m.outcomePrices);
-    const tokenIds = parseClobTokenIds(m.clobTokenIds);
-    if (tokenIds.length === 0 || prices.length === 0) continue;
-
-    const timeframe = /5\s*min|5\s*minute/.test(q) ? '5min' : '15min';
-
+  for (const { slug, timeframe, asset } of slugs) {
+    let market: ParsedPolyMarket;
+    try {
+      market = await getPolyMarketBySlug(slug);
+    } catch (e) {
+      console.warn(`[B5] Market fetch failed: ${slug}`, e instanceof Error ? e.message : e);
+      continue;
+    }
+    const prices = market.outcomePrices ?? [];
+    const tokenIds = market.clobTokenIds ?? [];
+    const outcomes = market.outcomes ?? ['Yes', 'No'];
     for (let i = 0; i < prices.length && i < tokenIds.length; i++) {
-      const price = typeof prices[i] === 'number' ? prices[i] : parseFloat(String(prices[i]));
-      if (Number.isNaN(price) || price <= 0) continue;
+      const price = prices[i];
+      if (price >= cheapThreshold || price <= 0) continue;
+      const direction = i === 0 ? 'up' : 'down';
+      const question = `${asset} ${timeframe} ${direction}`;
       candidates.push({
         tokenId: tokenIds[i],
         price,
-        estP: 0.5, // filled by edge engine
+        estP: 0.5,
         edge: 0,
-        question: m.question ?? '',
+        question,
         timeframe,
-        slug: m.slug ?? '',
-        market: parseGammaMarket(m as GammaMarket),
+        slug,
+        market,
         outcomeIndex: i,
       });
     }

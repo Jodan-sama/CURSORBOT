@@ -37,7 +37,7 @@ B5_SCAN_INTERVAL_SECONDS=300
 B5_DAILY_LOSS_LIMIT=-0.05
 ```
 
-- **HTTPS_PROXY** is required for placing orders (same pattern as D2). Omit only if D3 is not geo-blocked.
+- **HTTPS_PROXY** — copy the same value from your D1 (or D2) droplet `.env`. Same proxy as B4/B123c; required for placing orders. Omit only if D3 is not geo-blocked.
 - **POLYMARKET_DERIVE_KEY=true** so the bot derives CLOB API keys from the wallet (no need to paste API key/secret/passphrase).
 - Fund the B5 wallet with USDC (e.g. $100 to start) and a small amount of POL for claim gas.
 

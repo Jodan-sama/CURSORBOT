@@ -21,7 +21,7 @@ import {
   getMaxBalanceForSizing,
   loadMaxBalance,
 } from './balance.js';
-import { discoverB5Markets, type B5Candidate } from './markets.js';
+import { discoverB5MarketsBySlug, type B5Candidate } from './markets.js';
 import { fetchBinance1m, estimateProb } from './edge-engine.js';
 
 const WALLET = process.env.POLYMARKET_PROXY_WALLET?.trim() ||
@@ -222,17 +222,18 @@ async function runOneScan(): Promise<void> {
     return;
   }
 
+  const now = new Date();
   await withPolyProxy(async () => {
     const [btcCandles, ethCandles] = await Promise.all([
       fetchBinance1m('BTCUSDT', 120),
       fetchBinance1m('ETHUSDT', 120).catch(() => null),
     ]);
 
-    const rawCandidates = await discoverB5Markets();
+    const rawCandidates = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold);
     const candidates: B5Candidate[] = [];
     for (const c of rawCandidates) {
       if (c.price > B5_CONFIG.cheapThreshold) continue;
-      const symbol = /eth|ether/i.test(c.question) ? 'ETH' : 'BTC';
+      const symbol = c.question.startsWith('ETH') ? 'ETH' : 'BTC';
       const estP = estimateProb(c.question, btcCandles, ethCandles, symbol);
       const edge = estP - c.price;
       if (edge < B5_CONFIG.minEdge) continue;
@@ -302,6 +303,12 @@ async function runOneScan(): Promise<void> {
 
 export async function startB5Runner(): Promise<void> {
   console.log('[B5] Basket runner starting (5m/15m BTC/ETH, dynamic sizing from highest balance seen)');
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (!proxy) {
+    console.warn('[B5] No HTTPS_PROXY set — set it like D1/D2 or orders may fail (geo-block).');
+  } else {
+    console.log('[B5] Proxy set (orders and Gamma/Binance via proxy)');
+  }
   loadMaxBalance();
   if (WALLET) {
     const { balance, maxForSizing } = await getMaxBalanceForSizing(WALLET);
