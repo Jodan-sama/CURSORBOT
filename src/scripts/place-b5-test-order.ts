@@ -13,7 +13,7 @@ import {
 } from '../polymarket/clob.js';
 import { Side, OrderType } from '@polymarket/clob-client';
 
-const TEST_AMOUNT_USD = 1;
+const TEST_AMOUNT_USD = 5; // Polymarket min notional is $5
 
 async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
