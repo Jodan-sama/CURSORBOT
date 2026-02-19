@@ -16,7 +16,6 @@ export const B5_CONFIG = {
   cheapThreshold: Number(process.env.B5_CHEAP_THRESHOLD) || 0.09,
   /** Scan every 5s. Override with B5_SCAN_INTERVAL_SECONDS if rate-limited. */
   scanIntervalSeconds: Number(process.env.B5_SCAN_INTERVAL_SECONDS) || 5,
-  dailyLossLimit: Number(process.env.B5_DAILY_LOSS_LIMIT) ?? -0.05,
   minPositionUsd: 5,
   /** Skip 5-min outcomes when already this many seconds into window (early edges only). */
   max5minSecondsIntoWindow: Number(process.env.B5_MAX_5MIN_SECONDS_INTO_WINDOW) || 150,

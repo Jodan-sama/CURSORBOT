@@ -92,8 +92,6 @@ interface OpenPosition {
 }
 
 const positions = new Map<string, OpenPosition>();
-let dailyStartBalance = 0;
-let dailyStartDate = '';
 
 // ---------------------------------------------------------------------------
 // Sizing from highest balance seen
@@ -106,21 +104,6 @@ function computeSizing(maxBalanceSeen: number): { positionSizeUSD: number } {
     Math.min(B5_CONFIG.positionSizeCap, maxBalanceSeen * B5_CONFIG.riskPerLeg)
   );
   return { positionSizeUSD };
-}
-
-// ---------------------------------------------------------------------------
-// Daily loss check
-// ---------------------------------------------------------------------------
-
-function checkDailyLossLimit(currentBalance: number): boolean {
-  const today = new Date().toISOString().slice(0, 10);
-  if (today !== dailyStartDate) {
-    dailyStartDate = today;
-    dailyStartBalance = currentBalance;
-  }
-  if (dailyStartBalance <= 0) return false;
-  const pnlPct = (currentBalance - dailyStartBalance) / dailyStartBalance;
-  return pnlPct < B5_CONFIG.dailyLossLimit;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +135,8 @@ async function placeFokBuy(
 }
 
 // ---------------------------------------------------------------------------
-// Place GTC limit sell (size in integer shares)
+// Place GTC limit SELL — sells our position (shares we hold), not buying.
+// Size = integer shares to sell; price = limit price (e.g. 1.8× entry).
 // ---------------------------------------------------------------------------
 
 async function placeLimitSell(
@@ -229,10 +213,6 @@ async function runOneScan(): Promise<void> {
 
   const { balance, maxForSizing } = await getMaxBalanceForSizing(WALLET);
   const { positionSizeUSD } = computeSizing(maxForSizing);
-  if (checkDailyLossLimit(balance)) {
-    console.log(`[B5] Daily loss limit hit (balance ${balance.toFixed(2)}, daily start ${dailyStartBalance.toFixed(2)}) — skipping scan`);
-    return;
-  }
 
   const now = new Date();
   // Binance: fetch direct (proxy can break Binance). Gamma + CLOB: use proxy (like D1).
@@ -355,7 +335,12 @@ async function runOneScan(): Promise<void> {
       for (const t of tiers) {
         const sellPrice = Math.min(0.99, c.price * t.mult);
         if (sellPrice >= 0.99) continue;
-        await placeLimitSell(client, c.tokenId, sellPrice, t.size, tickSize, negRisk);
+        const sellResult = await placeLimitSell(client, c.tokenId, sellPrice, t.size, tickSize, negRisk);
+        if (sellResult.error) {
+          console.warn(`[B5] Limit sell failed: ${c.question.slice(0, 30)}… price=${sellPrice.toFixed(3)} size=${t.size} — ${sellResult.error}`);
+        } else {
+          console.log(`[B5] Limit sell placed: ${c.question.slice(0, 30)}… @ ${sellPrice.toFixed(3)} size=${t.size} orderId=${sellResult.orderId ?? '(none)'}`);
+        }
       }
     }
   });
