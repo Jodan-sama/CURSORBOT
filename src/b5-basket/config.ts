@@ -9,8 +9,8 @@ export const B5_CONFIG = {
   maxPerBasket: Number(process.env.B5_MAX_PER_BASKET) || 0.06,
   minEdge: Number(process.env.B5_MIN_EDGE) || 0.2,
   cheapThreshold: Number(process.env.B5_CHEAP_THRESHOLD) || 0.08,
-  /** Scan every 10s by default so we catch cheap (≤0.08) and edge opportunities. Override with B5_SCAN_INTERVAL_SECONDS if rate-limited. */
-  scanIntervalSeconds: Number(process.env.B5_SCAN_INTERVAL_SECONDS) || 10,
+  /** Scan every 5s by default so we catch cheap (≤0.08) and edge opportunities. Override with B5_SCAN_INTERVAL_SECONDS if rate-limited. */
+  scanIntervalSeconds: Number(process.env.B5_SCAN_INTERVAL_SECONDS) || 5,
   dailyLossLimit: Number(process.env.B5_DAILY_LOSS_LIMIT) ?? -0.05,
   minPositionUsd: 5,
 };
