@@ -183,6 +183,7 @@ interface TradeResult {
   tokenId?: string;
   entryMid?: number;      // mid at time of entry (baseline for TP/SL)
   contracts?: number;
+  actualSharesBought?: number;
   negRisk?: boolean;
   tickSize?: CreateOrderOptions['tickSize'];
   error?: string;
