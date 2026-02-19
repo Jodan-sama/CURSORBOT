@@ -75,9 +75,15 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+let cachedB5Client: ClobClient | null = null;
+
+/** One CLOB client per process so we never pull a new API key for sells (same key/session as buy). */
 async function getClobClient(): Promise<ClobClient> {
+  if (cachedB5Client) return cachedB5Client;
   const cfg = getPolyClobConfigFromEnv();
-  return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+  cachedB5Client =
+    cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+  return cachedB5Client;
 }
 
 function parseMid(raw: unknown): number {
