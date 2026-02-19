@@ -138,7 +138,7 @@ export default function Dashboard() {
         b4StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(600),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1000),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -404,9 +404,12 @@ export default function Dashboard() {
 
   const b4PositionsGrouped = groupB4ByWindow(b4Positions);
 
-  const positionsFilledKalshi = positions.filter((p) => p.venue === 'kalshi' && (p.outcome === 'win' || p.outcome === 'loss')).slice(0, 100);
-  const positionsFilledPoly = positions.filter((p) => p.venue === 'polymarket' && (p.outcome === 'win' || p.outcome === 'loss')).slice(0, 100);
-  const positionsPendingNoFill = positions.filter((p) => p.outcome !== 'win' && p.outcome !== 'loss').slice(0, 200);
+  const isKalshi = (v: string) => (v ?? '').toLowerCase() === 'kalshi';
+  const isPolymarket = (v: string) => (v ?? '').toLowerCase() === 'polymarket';
+  const isFilled = (o: string | null | undefined) => (o ?? '').toLowerCase() === 'win' || (o ?? '').toLowerCase() === 'loss';
+  const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 100);
+  const positionsFilledPoly = positions.filter((p) => isPolymarket(p.venue) && isFilled(p.outcome)).slice(0, 100);
+  const positionsPendingNoFill = positions.filter((p) => !isFilled(p.outcome)).slice(0, 200);
 
   function downloadCsvFromList(list: Position[], filename: string) {
     setCsvLoading(true);
@@ -748,7 +751,7 @@ export default function Dashboard() {
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
             <strong>B1/B2/B3 Kalshi</strong> (last 400):{' '}
             {(() => {
-              const kalshiResolved = positions.filter((p) => p.venue === 'kalshi' && (p.outcome === 'win' || p.outcome === 'loss'));
+              const kalshiResolved = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome));
               const wins = kalshiResolved.filter((p) => p.outcome === 'win').length;
               const n = kalshiResolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
