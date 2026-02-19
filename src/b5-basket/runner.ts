@@ -96,10 +96,15 @@ function computeSizing(maxBalanceSeen: number): { positionSizeUSD: number; maxBa
     B5_CONFIG.minPositionUsd,
     Math.min(B5_CONFIG.positionSizeCap, maxBalanceSeen * B5_CONFIG.riskPerLeg)
   );
-  const maxBasketUSD = Math.min(
+  let maxBasketUSD = Math.min(
     B5_CONFIG.maxBasketCostCap,
     maxBalanceSeen * B5_CONFIG.maxPerBasket
   );
+  // Ensure we can fit at least 2 legs so a 2-candidate scan can form a basket
+  const minBasketForTwoLegs = 2 * positionSizeUSD;
+  if (maxBasketUSD < minBasketForTwoLegs) {
+    maxBasketUSD = Math.min(minBasketForTwoLegs, B5_CONFIG.maxBasketCostCap);
+  }
   return { positionSizeUSD, maxBasketUSD };
 }
 
@@ -236,7 +241,13 @@ async function runOneScan(): Promise<void> {
     fetchBinance1m('ETHUSDT', 120).catch(() => null),
   ]);
 
-  const minEdge = (await getB5MinEdgeFromSupabase()) ?? B5_CONFIG.minEdge;
+  const minEdgeFromSupabase = await getB5MinEdgeFromSupabase();
+  const minEdge = minEdgeFromSupabase ?? B5_CONFIG.minEdge;
+  if (minEdgeFromSupabase == null) {
+    console.log(`[B5] min_edge from Supabase: (none) — using default ${minEdge} (set SUPABASE_URL + SUPABASE_ANON_KEY on D3 to use dashboard value)`);
+  } else {
+    console.log(`[B5] min_edge from Supabase: ${minEdge}`);
+  }
 
   await withPolyProxy(async () => {
     const allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
@@ -268,7 +279,10 @@ async function runOneScan(): Promise<void> {
     }
 
     if (basket.length < 2) {
-      console.log(`[B5] Scan: ${candidates.length} candidates, no basket (need ≥2)`);
+      const reason = candidates.length >= 2 && basket.length === 0
+        ? ` (budget $${maxBasketUSD.toFixed(2)} < 2×position $${(2 * positionSizeUSD).toFixed(2)})`
+        : '';
+      console.log(`[B5] Scan: ${candidates.length} candidates, no basket (need ≥2)${reason}`);
       return;
     }
 
