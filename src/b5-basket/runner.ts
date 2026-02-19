@@ -91,21 +91,13 @@ let dailyStartDate = '';
 // Sizing from highest balance seen
 // ---------------------------------------------------------------------------
 
-function computeSizing(maxBalanceSeen: number): { positionSizeUSD: number; maxBasketUSD: number } {
+/** Per-leg size ($5 min). Basket is capped at 4 legs only, no dollar cap. */
+function computeSizing(maxBalanceSeen: number): { positionSizeUSD: number } {
   const positionSizeUSD = Math.max(
     B5_CONFIG.minPositionUsd,
     Math.min(B5_CONFIG.positionSizeCap, maxBalanceSeen * B5_CONFIG.riskPerLeg)
   );
-  let maxBasketUSD = Math.min(
-    B5_CONFIG.maxBasketCostCap,
-    maxBalanceSeen * B5_CONFIG.maxPerBasket
-  );
-  // Ensure we can fit at least 2 legs so a 2-candidate scan can form a basket
-  const minBasketForTwoLegs = 2 * positionSizeUSD;
-  if (maxBasketUSD < minBasketForTwoLegs) {
-    maxBasketUSD = Math.min(minBasketForTwoLegs, B5_CONFIG.maxBasketCostCap);
-  }
-  return { positionSizeUSD, maxBasketUSD };
+  return { positionSizeUSD };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +220,7 @@ async function runOneScan(): Promise<void> {
   }
 
   const { balance, maxForSizing } = await getMaxBalanceForSizing(WALLET);
-  const { positionSizeUSD, maxBasketUSD } = computeSizing(maxForSizing);
+  const { positionSizeUSD } = computeSizing(maxForSizing);
   if (checkDailyLossLimit(balance)) {
     console.log(`[B5] Daily loss limit hit (balance ${balance.toFixed(2)}, daily start ${dailyStartBalance.toFixed(2)}) — skipping scan`);
     return;
@@ -251,6 +243,16 @@ async function runOneScan(): Promise<void> {
 
   await withPolyProxy(async () => {
     const allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
+    // Refresh prices from CLOB midpoint (live order book) so we don't rely on Gamma's delayed outcomePrices
+    const client = await getClobClient();
+    for (const c of allOutcomes) {
+      try {
+        const mid = parseMid(await client.getMidpoint(c.tokenId));
+        if (mid > 0 && mid < 1) c.price = mid;
+      } catch {
+        // keep Gamma price if CLOB fails
+      }
+    }
     const rawCandidates = allOutcomes.filter((c) => c.price < B5_CONFIG.cheapThreshold);
     console.log(`[B5] Raw candidates (price < ${B5_CONFIG.cheapThreshold}): ${rawCandidates.length}`);
 
@@ -269,39 +271,39 @@ async function runOneScan(): Promise<void> {
     }
 
     candidates.sort((a, b) => a.price - b.price);
+    const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
     const basket: B5Candidate[] = [];
     let totalCost = 0;
     for (const c of candidates) {
       if (basket.length >= 4) break;
-      if (totalCost + positionSizeUSD > maxBasketUSD) break;
+      const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
+      if (totalCost + legCost > maxBasketUSD) break;
       basket.push(c);
-      totalCost += positionSizeUSD;
+      totalCost += legCost;
     }
-
     if (basket.length < 2) {
-      const reason = candidates.length >= 2 && basket.length === 0
-        ? ` (budget $${maxBasketUSD.toFixed(2)} < 2×position $${(2 * positionSizeUSD).toFixed(2)})`
-        : '';
-      console.log(`[B5] Scan: ${candidates.length} candidates, no basket (need ≥2)${reason}`);
+      console.log(`[B5] Scan: ${candidates.length} candidates, no basket (need ≥2)`);
       return;
     }
 
-    console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} (positionSize=$${positionSizeUSD.toFixed(2)}, maxBasket=$${maxBasketUSD.toFixed(2)}, maxSeen=$${maxForSizing.toFixed(2)})`);
-
-    const client = await getClobClient();
+    // Per-leg size = orderMinSize × price (e.g. 5 × 0.08 = $0.40 at 8¢); basket capped at $10 total
+    console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (max basket $${maxBasketUSD})`);
 
     for (const c of basket) {
       const tickSize: CreateOrderOptions['tickSize'] =
         (c.market.orderPriceMinTickSize ? String(c.market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
       const negRisk = c.market.negRisk ?? false;
+      // Min order = orderMinSize contracts × price (e.g. 5 × 0.08 = $0.40 at 8¢). Use that so we don't over-spend per leg.
+      const minOrderUsd = (c.market.orderMinSize ?? 5) * c.price;
+      const amountUsd = Math.max(0.25, minOrderUsd);
 
-      const buyResult = await placeFokBuy(client, c.tokenId, positionSizeUSD, tickSize, negRisk);
+      const buyResult = await placeFokBuy(client, c.tokenId, amountUsd, tickSize, negRisk);
       if (buyResult.error) {
         console.warn(`[B5] Buy failed: ${c.question.slice(0, 40)} — ${buyResult.error}`);
         continue;
       }
 
-      const shares = buyResult.shares ?? Math.max(1, Math.ceil(positionSizeUSD / c.price));
+      const shares = buyResult.shares ?? Math.max(1, Math.ceil(amountUsd / c.price));
       positions.set(c.tokenId, {
         tokenId: c.tokenId,
         buyPrice: c.price,

@@ -17,10 +17,15 @@ export const POLY_15M_SLUG_PREFIX: Record<Asset, string> = {
 
 /**
  * Fetch event by slug. Returns full Gamma event.
+ * Uses cache-busting and no-cache headers so each call gets a fresh response (Gamma can still
+ * update outcomePrices on their backend with ~1s+ delay; for true real-time use CLOB WebSocket).
  */
 export async function fetchGammaEvent(slug: string): Promise<GammaEvent> {
-  const url = `${GAMMA_BASE}/events/slug/${encodeURIComponent(slug)}`;
-  const res = await fetch(url);
+  const url = `${GAMMA_BASE}/events/slug/${encodeURIComponent(slug)}?t=${Date.now()}`;
+  const res = await fetch(url, {
+    headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    cache: 'no-store',
+  });
   if (!res.ok) throw new Error(`Gamma event ${slug}: ${res.status}`);
   return (await res.json()) as GammaEvent;
 }
