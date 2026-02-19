@@ -408,7 +408,8 @@ export default function Dashboard() {
   const isPolymarket = (v: string) => (v ?? '').toLowerCase() === 'polymarket';
   const isFilled = (o: string | null | undefined) => (o ?? '').toLowerCase() === 'win' || (o ?? '').toLowerCase() === 'loss';
   const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 100);
-  const positionsFilledPoly = positions.filter((p) => isPolymarket(p.venue) && isFilled(p.outcome)).slice(0, 100);
+  // B1/B2/B3 Polymarket outcomes are not resolved by the resolver (it only runs for B4/B1c/B2c/B3c), so show all Polymarket rows like the original single table did
+  const positionsPoly = positions.filter((p) => isPolymarket(p.venue)).slice(0, 100);
   const positionsPendingNoFill = positions.filter((p) => !isFilled(p.outcome)).slice(0, 200);
 
   function downloadCsvFromList(list: Position[], filename: string) {
@@ -444,8 +445,8 @@ export default function Dashboard() {
     downloadCsvFromList(positionsFilledKalshi, `cursorbot-b123-kalshi-filled-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
-  function downloadCsvPolyFilled() {
-    downloadCsvFromList(positionsFilledPoly, `cursorbot-b123-polymarket-filled-${new Date().toISOString().slice(0, 10)}.csv`);
+  function downloadCsvPoly() {
+    downloadCsvFromList(positionsPoly, `cursorbot-b123-polymarket-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
   function downloadB4Csv() {
@@ -1022,10 +1023,10 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 – Polymarket filled (last 100)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (last 100)</h2>
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders that <strong>filled</strong> (win or loss).</span>
-          <button type="button" onClick={downloadCsvPolyFilled} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 100)'}</button>
+          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders (filled, pending, or no fill). Same data as before the split.</span>
+          <button type="button" onClick={downloadCsvPoly} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 100)'}</button>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -1040,9 +1041,9 @@ export default function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {positionsFilledPoly.map((p) => {
-              const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : '—';
-              const resultColor = p.outcome === 'win' ? '#22c55e' : '#ef4444';
+            {positionsPoly.map((p) => {
+              const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : p.outcome === 'no_fill' ? 'No fill' : 'Pending';
+              const resultColor = p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : '#888';
               return (
                 <tr key={p.id}>
                   <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
