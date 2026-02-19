@@ -368,17 +368,20 @@ export default function Dashboard() {
     return t;
   }
 
-  /** Group B4 positions by 5m window (ticker_or_slug) so one window = one trade for display and win rate. */
+  /** Group B4 positions by (window, tier) so we only merge multiple fills of the same tier in the same window. */
   function groupB4ByWindow(positions: Position[]): Position[] {
-    const bySlug = new Map<string, Position[]>();
+    const byKey = new Map<string, Position[]>();
     for (const p of positions) {
       const slug = p.ticker_or_slug ?? p.id;
-      if (!bySlug.has(slug)) bySlug.set(slug, []);
-      bySlug.get(slug)!.push(p);
+      const tier = String((p.raw as Record<string, unknown>)?.tier ?? 'B4');
+      const key = `${slug}\n${tier}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key)!.push(p);
     }
     const out: Position[] = [];
-    for (const [, group] of bySlug) {
+    for (const [, group] of byKey) {
       const first = group[0];
+      const tier = String((first.raw as Record<string, unknown>)?.tier ?? 'B4');
       const hasLoss = group.some((p) => p.outcome === 'loss');
       const hasWin = group.some((p) => p.outcome === 'win');
       const outcome = hasLoss ? ('loss' as const) : hasWin ? ('win' as const) : (first.outcome ?? null);
@@ -386,9 +389,7 @@ export default function Dashboard() {
       const resolved_at = resolvedAts.length > 0 ? resolvedAts.sort().pop()! : (first.resolved_at ?? null);
       const totalSize = group.reduce((s, p) => s + (p.position_size ?? 0), 0);
       const earliest = group.reduce((a, b) => (a.entered_at < b.entered_at ? a : b));
-      const tiers = group.map((p) => (p.raw as Record<string, unknown>)?.tier).filter(Boolean);
-      const tierStr = tiers.length > 0 ? tiers.join('+') : String((first.raw as Record<string, unknown>)?.tier ?? '');
-      const raw: Position['raw'] = { ...(first.raw as Record<string, unknown>), tier: tierStr } as Position['raw'];
+      const raw: Position['raw'] = { ...(first.raw as Record<string, unknown>), tier } as Position['raw'];
       out.push({
         ...first,
         entered_at: earliest.entered_at,
