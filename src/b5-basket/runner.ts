@@ -37,6 +37,17 @@ function secondsInto5minWindow(slug: string, now: Date): number | null {
   const startUnix = parseInt(m[1], 10);
   return now.getTime() / 1000 - startUnix;
 }
+
+/** Seconds into the 15-min window for slug *-updown-15m-{unixStart}. Returns null for 5min slugs. */
+function secondsInto15minWindow(slug: string, now: Date): number | null {
+  const m = slug.match(/-15m-(\d+)$/);
+  if (!m) return null;
+  const startUnix = parseInt(m[1], 10);
+  return now.getTime() / 1000 - startUnix;
+}
+
+/** Do not enter 15-min markets in the last 5 minutes of the window. */
+const B5_15MIN_NO_ENTRY_SECONDS_INTO_WINDOW = 600; // 10 min in = 5 min left
 const SELL_MONITOR_INTERVAL_MS = 60_000;
 
 // ---------------------------------------------------------------------------
@@ -211,8 +222,11 @@ async function runOneScan(): Promise<void> {
     return;
   }
 
-  const { balance, maxForSizing } = await getMaxBalanceForSizing(WALLET);
-  const { positionSizeUSD } = computeSizing(maxForSizing);
+  const { balance } = await getMaxBalanceForSizing(WALLET);
+  const maxEntryUsd = Math.min(5, Math.max(1, B5_CONFIG.staticPositionUsd));
+  if (positions.size === 0 && balance < maxEntryUsd) {
+    return; // skip new entries when we can't afford max entry size; sell monitor still runs when we have a position
+  }
 
   const now = new Date();
   // Binance: fetch direct (proxy can break Binance). Gamma + CLOB: use proxy (like D1).
@@ -230,7 +244,11 @@ async function runOneScan(): Promise<void> {
   }
 
   await withPolyProxy(async () => {
-    const allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
+    let allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
+    // Only 5-min BTC: disable 15m and ETH
+    if (B5_CONFIG.only5minBtc) {
+      allOutcomes = allOutcomes.filter((c) => c.slug.startsWith('btc-updown-5m'));
+    }
     // Refresh prices from CLOB midpoint (live order book) so we don't rely on Gamma's delayed outcomePrices
     const client = await getClobClient();
     for (const c of allOutcomes) {
@@ -260,6 +278,11 @@ async function runOneScan(): Promise<void> {
         const secInto = secondsInto5minWindow(c.slug, now);
         if (secInto != null && secInto > B5_CONFIG.max5minSecondsIntoWindow) continue;
       }
+      // Do not enter 15-min in the last 5 minutes of the window
+      if (c.timeframe === '15min') {
+        const secInto = secondsInto15minWindow(c.slug, now);
+        if (secInto != null && secInto > B5_15MIN_NO_ENTRY_SECONDS_INTO_WINDOW) continue;
+      }
       candidates.push({ ...c, estP, edge });
     }
 
@@ -269,27 +292,36 @@ async function runOneScan(): Promise<void> {
     const normalCandidates = candidates.filter((c) => c.edge >= B5_CONFIG.minEdge);
 
     let basket: B5Candidate[] = [];
-    let perLegMaxUsd = 0; // 0 = normal (orderMinSize×price); solo 5m=1.0, solo 15m=1.5
-    if (strong5min.length >= 1) {
-      basket = [strong5min[0]];
-      perLegMaxUsd = 1.0;
-      console.log(`[B5] Basket: 1 leg (solo 5-min, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
-    } else if (strong15min.length >= 1) {
-      basket = [strong15min[0]];
-      perLegMaxUsd = 1.5;
-      console.log(`[B5] Basket: 1 leg (solo 15-min, edge ${strong15min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong15minEdge})`);
-    } else if (normalCandidates.length >= 2) {
-      const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
-      let totalCost = 0;
-      for (const c of normalCandidates) {
-        if (basket.length >= 4) break;
-        const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
-        if (totalCost + legCost > maxBasketUSD) break;
-        basket.push(c);
-        totalCost += legCost;
+    let perLegMaxUsd = 0; // 0 = normal; solo 5m=1.0, solo 15m=1.5
+    if (B5_CONFIG.only5minBtc) {
+      // Solo 5m BTC only: one leg, strong 5m edge, buy only at start of window (already filtered above)
+      if (strong5min.length >= 1) {
+        basket = [strong5min[0]];
+        perLegMaxUsd = 1.0; // unused when using staticPositionUsd
+        console.log(`[B5] Basket: 1 leg (solo 5m BTC, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
       }
-      perLegMaxUsd = 0; // use orderMinSize×price per leg, no dollar cap
-      console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (normal multi-leg, max $${maxBasketUSD})`);
+    } else {
+      if (strong5min.length >= 1) {
+        basket = [strong5min[0]];
+        perLegMaxUsd = 1.0;
+        console.log(`[B5] Basket: 1 leg (solo 5-min, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
+      } else if (strong15min.length >= 1) {
+        basket = [strong15min[0]];
+        perLegMaxUsd = 1.5;
+        console.log(`[B5] Basket: 1 leg (solo 15-min, edge ${strong15min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong15minEdge})`);
+      } else if (normalCandidates.length >= 2) {
+        const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
+        let totalCost = 0;
+        for (const c of normalCandidates) {
+          if (basket.length >= 4) break;
+          const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
+          if (totalCost + legCost > maxBasketUSD) break;
+          basket.push(c);
+          totalCost += legCost;
+        }
+        perLegMaxUsd = 0;
+        console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (normal multi-leg, max $${maxBasketUSD})`);
+      }
     }
 
     if (basket.length === 0) {
@@ -297,14 +329,18 @@ async function runOneScan(): Promise<void> {
       return;
     }
 
+    // One position at a time: do not enter a new position until the current one is sold or resolved
+    if (positions.size >= 1) {
+      console.log(`[B5] One position at a time (${positions.size} open) — skipping new entries until it sells`);
+      return;
+    }
+
     for (const c of basket) {
       const tickSize: CreateOrderOptions['tickSize'] =
         (c.market.orderPriceMinTickSize ? String(c.market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
       const negRisk = c.market.negRisk ?? false;
-      const minOrderUsd = (c.market.orderMinSize ?? 5) * c.price;
-      const amountUsd = perLegMaxUsd > 0
-        ? Math.max(minOrderUsd, perLegMaxUsd)
-        : Math.max(0.25, minOrderUsd);
+      // Max $5 per single position (hard cap). Polymarket min $1.
+      const amountUsd = maxEntryUsd;
 
       const buyResult = await placeFokBuy(client, c.tokenId, amountUsd, tickSize, negRisk);
       if (buyResult.error) {
@@ -326,21 +362,28 @@ async function runOneScan(): Promise<void> {
 
       console.log(`[B5] BOUGHT ${c.question.slice(0, 50)}… @ ${c.price} | ~${shares} shares`);
 
-      const tierSizes = [0.3, 0.3, 0.3].map((pct) => Math.max(1, Math.ceil(shares * pct)));
+      // Let Polymarket credit the tokens before placing limit sells (avoids "not enough balance / allowance")
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Take-profit limit sells: 10c 50%, 12c 30%, 15c 20% of position
+      const t0 = Math.max(1, Math.min(Math.round(shares * 0.5), shares - 2));
+      const t1 = Math.max(0, Math.min(Math.round(shares * 0.3), shares - t0 - 1));
+      const t2 = Math.max(0, shares - t0 - t1);
       const tiers = [
-        { mult: 1.8, size: tierSizes[0] },
-        { mult: 3, size: tierSizes[1] },
-        { mult: 5, size: tierSizes[2] },
-      ];
+        { price: 0.1, size: t0 },
+        { price: 0.12, size: t1 },
+        { price: 0.15, size: t2 },
+      ].filter((t) => t.size >= 1);
       for (const t of tiers) {
-        const sellPrice = Math.min(0.99, c.price * t.mult);
+        const sellPrice = Math.min(0.99, t.price);
         if (sellPrice >= 0.99) continue;
         const sellResult = await placeLimitSell(client, c.tokenId, sellPrice, t.size, tickSize, negRisk);
         if (sellResult.error) {
-          console.warn(`[B5] Limit sell failed: ${c.question.slice(0, 30)}… price=${sellPrice.toFixed(3)} size=${t.size} — ${sellResult.error}`);
+          console.warn(`[B5] Limit sell failed: ${c.question.slice(0, 30)}… price=${sellPrice.toFixed(2)} size=${t.size} — ${sellResult.error}`);
         } else {
-          console.log(`[B5] Limit sell placed: ${c.question.slice(0, 30)}… @ ${sellPrice.toFixed(3)} size=${t.size} orderId=${sellResult.orderId ?? '(none)'}`);
+          console.log(`[B5] Limit sell placed: ${c.question.slice(0, 30)}… @ ${sellPrice.toFixed(2)} size=${t.size} orderId=${sellResult.orderId ?? '(none)'}`);
         }
+        await new Promise((r) => setTimeout(r, 500)); // small gap between orders so CLOB sees updated balance
       }
     }
   });
