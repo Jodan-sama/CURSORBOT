@@ -250,12 +250,8 @@ async function runOneScan(): Promise<void> {
   }
 
   await withPolyProxy(async () => {
-    let allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
-    // Only 5-min BTC: disable 15m and ETH
-    if (B5_CONFIG.only5minBtc) {
-      allOutcomes = allOutcomes.filter((c) => c.slug.startsWith('btc-updown-5m'));
-    }
-    // Refresh prices from CLOB midpoint (live order book) so we don't rely on Gamma's delayed outcomePrices
+    // Always fetch all 6 sides: BTC 5m up/down, BTC 15m up/down, ETH 15m up/down (returnAllOutcomes so we log and consider every side)
+    const allOutcomes = await discoverB5MarketsBySlug(now, B5_CONFIG.cheapThreshold, true);
     const client = await getClobClient();
     for (const c of allOutcomes) {
       try {
@@ -279,12 +275,10 @@ async function runOneScan(): Promise<void> {
         `[B5] Edge ${c.question}: price=${c.price.toFixed(3)} estP=${estP.toFixed(3)} edge=${edge.toFixed(3)} (cheap? ${passCheap} edge≥${minEdge}? ${passEdge})`
       );
       if (!passCheap || edge < minEdge) continue;
-      // Skip 5-min outcomes when already >2.5 min into window (catch early edges only)
       if (c.timeframe === '5min') {
         const secInto = secondsInto5minWindow(c.slug, now);
         if (secInto != null && secInto > B5_CONFIG.max5minSecondsIntoWindow) continue;
       }
-      // Do not enter 15-min in the last 5 minutes of the window
       if (c.timeframe === '15min') {
         const secInto = secondsInto15minWindow(c.slug, now);
         if (secInto != null && secInto > B5_15MIN_NO_ENTRY_SECONDS_INTO_WINDOW) continue;
@@ -293,41 +287,47 @@ async function runOneScan(): Promise<void> {
     }
 
     candidates.sort((a, b) => a.price - b.price);
-    const strong5min = candidates.filter((c) => c.timeframe === '5min' && c.edge >= B5_CONFIG.strong5minEdge);
-    const strong15min = candidates.filter((c) => c.timeframe === '15min' && c.edge >= B5_CONFIG.strong15minEdge);
-    const normalCandidates = candidates.filter((c) => c.edge >= B5_CONFIG.minEdge);
+    // When only5minBtc, restrict basket to 5m BTC only; otherwise consider all
+    const forBasket = B5_CONFIG.only5minBtc
+      ? candidates.filter((c) => c.slug.startsWith('btc-updown-5m'))
+      : candidates;
+    const strong5min = forBasket.filter((c) => c.timeframe === '5min' && c.edge >= B5_CONFIG.strong5minEdge);
+    const strong15min = forBasket.filter((c) => c.timeframe === '15min' && c.edge >= B5_CONFIG.strong15minEdge);
+    const normalCandidates = forBasket.filter((c) => c.edge >= B5_CONFIG.minEdge);
 
     let basket: B5Candidate[] = [];
-    let perLegMaxUsd = 0; // 0 = normal; solo 5m=1.0, solo 15m=1.5
-    if (B5_CONFIG.only5minBtc) {
-      // Solo 5m BTC only: one leg, strong 5m edge, buy only at start of window (already filtered above)
-      if (strong5min.length >= 1) {
-        basket = [strong5min[0]];
-        perLegMaxUsd = 1.0; // unused when using staticPositionUsd
-        console.log(`[B5] Basket: 1 leg (solo 5m BTC, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
+    let perLegMaxUsd = 0;
+    // 1) Strong solo 5m
+    if (strong5min.length >= 1) {
+      basket = [strong5min[0]];
+      perLegMaxUsd = 1.0;
+      console.log(`[B5] Basket: 1 leg (strong solo 5m, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
+    }
+    // 2) Strong solo 15m (only when not only5minBtc)
+    else if (strong15min.length >= 1) {
+      basket = [strong15min[0]];
+      perLegMaxUsd = 1.5;
+      console.log(`[B5] Basket: 1 leg (strong solo 15m, edge ${strong15min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong15minEdge})`);
+    }
+    // 3) Multi-leg: 2+ legs with edge >= minEdge
+    else if (normalCandidates.length >= 2) {
+      const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
+      let totalCost = 0;
+      for (const c of normalCandidates) {
+        if (basket.length >= 4) break;
+        const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
+        if (totalCost + legCost > maxBasketUSD) break;
+        basket.push(c);
+        totalCost += legCost;
       }
-    } else {
-      if (strong5min.length >= 1) {
-        basket = [strong5min[0]];
-        perLegMaxUsd = 1.0;
-        console.log(`[B5] Basket: 1 leg (solo 5-min, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
-      } else if (strong15min.length >= 1) {
-        basket = [strong15min[0]];
-        perLegMaxUsd = 1.5;
-        console.log(`[B5] Basket: 1 leg (solo 15-min, edge ${strong15min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong15minEdge})`);
-      } else if (normalCandidates.length >= 2) {
-        const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
-        let totalCost = 0;
-        for (const c of normalCandidates) {
-          if (basket.length >= 4) break;
-          const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
-          if (totalCost + legCost > maxBasketUSD) break;
-          basket.push(c);
-          totalCost += legCost;
-        }
-        perLegMaxUsd = 0;
-        console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (normal multi-leg, max $${maxBasketUSD})`);
-      }
+      perLegMaxUsd = 0;
+      console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (multi-leg, max $${maxBasketUSD})`);
+    }
+    // 4) Solo: single leg with edge >= minEdge (raw candidate that passed filters)
+    else if (normalCandidates.length >= 1) {
+      basket = [normalCandidates[0]];
+      perLegMaxUsd = 1.0;
+      console.log(`[B5] Basket: 1 leg (solo, edge ${normalCandidates[0].edge.toFixed(3)} ≥ ${minEdge})`);
     }
 
     if (basket.length === 0) {
