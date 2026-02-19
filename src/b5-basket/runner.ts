@@ -29,6 +29,14 @@ const WALLET = process.env.POLYMARKET_PROXY_WALLET?.trim() ||
   process.env.POLYMARKET_FUNDER?.trim() ||
   '';
 const SCAN_INTERVAL_MS = B5_CONFIG.scanIntervalSeconds * 1000;
+
+/** Seconds into the 5-min window for slug btc-updown-5m-{unixStart}. Returns null for 15min slugs. */
+function secondsInto5minWindow(slug: string, now: Date): number | null {
+  const m = slug.match(/-5m-(\d+)$/);
+  if (!m) return null;
+  const startUnix = parseInt(m[1], 10);
+  return now.getTime() / 1000 - startUnix;
+}
 const SELL_MONITOR_INTERVAL_MS = 60_000;
 
 // ---------------------------------------------------------------------------
@@ -267,35 +275,56 @@ async function runOneScan(): Promise<void> {
         `[B5] Edge ${c.question}: price=${c.price.toFixed(3)} estP=${estP.toFixed(3)} edge=${edge.toFixed(3)} (cheap? ${passCheap} edge≥${minEdge}? ${passEdge})`
       );
       if (!passCheap || edge < minEdge) continue;
+      // Skip 5-min outcomes when already >2.5 min into window (catch early edges only)
+      if (c.timeframe === '5min') {
+        const secInto = secondsInto5minWindow(c.slug, now);
+        if (secInto != null && secInto > B5_CONFIG.max5minSecondsIntoWindow) continue;
+      }
       candidates.push({ ...c, estP, edge });
     }
 
     candidates.sort((a, b) => a.price - b.price);
-    const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
-    const basket: B5Candidate[] = [];
-    let totalCost = 0;
-    for (const c of candidates) {
-      if (basket.length >= 4) break;
-      const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
-      if (totalCost + legCost > maxBasketUSD) break;
-      basket.push(c);
-      totalCost += legCost;
-    }
-    if (basket.length < 2) {
-      console.log(`[B5] Scan: ${candidates.length} candidates, no basket (need ≥2)`);
-      return;
+    const strong5min = candidates.filter((c) => c.timeframe === '5min' && c.edge >= B5_CONFIG.strong5minEdge);
+    const strong15min = candidates.filter((c) => c.timeframe === '15min' && c.edge >= B5_CONFIG.strong15minEdge);
+    const normalCandidates = candidates.filter((c) => c.edge >= B5_CONFIG.minEdge);
+
+    let basket: B5Candidate[] = [];
+    let perLegMaxUsd: number; // cap per leg for solo baskets; normal uses orderMinSize×price only
+    if (strong5min.length >= 1) {
+      basket = [strong5min[0]];
+      perLegMaxUsd = 1.0;
+      console.log(`[B5] Basket: 1 leg (solo 5-min, edge ${strong5min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong5minEdge})`);
+    } else if (strong15min.length >= 1) {
+      basket = [strong15min[0]];
+      perLegMaxUsd = 1.5;
+      console.log(`[B5] Basket: 1 leg (solo 15-min, edge ${strong15min[0].edge.toFixed(3)} ≥ ${B5_CONFIG.strong15minEdge})`);
+    } else if (normalCandidates.length >= 2) {
+      const maxBasketUSD = B5_CONFIG.maxBasketCostCap;
+      let totalCost = 0;
+      for (const c of normalCandidates) {
+        if (basket.length >= 4) break;
+        const legCost = Math.max(0.25, (c.market.orderMinSize ?? 5) * c.price);
+        if (totalCost + legCost > maxBasketUSD) break;
+        basket.push(c);
+        totalCost += legCost;
+      }
+      perLegMaxUsd = 0; // use orderMinSize×price per leg, no dollar cap
+      console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (normal multi-leg, max $${maxBasketUSD})`);
     }
 
-    // Per-leg size = orderMinSize × price (e.g. 5 × 0.08 = $0.40 at 8¢); basket capped at $10 total
-    console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (max basket $${maxBasketUSD})`);
+    if (basket.length === 0) {
+      console.log(`[B5] Scan: ${candidates.length} candidates, no basket`);
+      return;
+    }
 
     for (const c of basket) {
       const tickSize: CreateOrderOptions['tickSize'] =
         (c.market.orderPriceMinTickSize ? String(c.market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
       const negRisk = c.market.negRisk ?? false;
-      // Min order = orderMinSize contracts × price (e.g. 5 × 0.08 = $0.40 at 8¢). Use that so we don't over-spend per leg.
       const minOrderUsd = (c.market.orderMinSize ?? 5) * c.price;
-      const amountUsd = Math.max(0.25, minOrderUsd);
+      const amountUsd = perLegMaxUsd > 0
+        ? Math.max(minOrderUsd, perLegMaxUsd)
+        : Math.max(0.25, minOrderUsd);
 
       const buyResult = await placeFokBuy(client, c.tokenId, amountUsd, tickSize, negRisk);
       if (buyResult.error) {
