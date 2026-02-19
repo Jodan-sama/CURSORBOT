@@ -1,5 +1,5 @@
 /**
- * Resolve win/loss for Polymarket B4 and B1c/B2c/B3c positions using Polymarket Gamma API.
+ * Resolve win/loss for Polymarket B4, B1c/B2c/B3c, and B1/B2/B3 positions using Polymarket Gamma API.
  * Updates positions.outcome and positions.resolved_at once per position (idempotent).
  * Run every 5–10 min via cron (e.g. on D2). Uses SUPABASE_* from env.
  *
@@ -97,7 +97,7 @@ async function main() {
     .from('positions')
     .select('id, bot, ticker_or_slug, order_id, raw')
     .eq('venue', 'polymarket')
-    .in('bot', ['B4', 'B1c', 'B2c', 'B3c'])
+    .in('bot', ['B4', 'B1c', 'B2c', 'B3c', 'B1', 'B2', 'B3'])
     .is('outcome', null)
     .not('ticker_or_slug', 'is', null);
 
@@ -149,7 +149,7 @@ async function main() {
       continue;
     }
 
-    const clob = row.bot === 'B4' ? b4Client : b123cClient;
+    const clob = (row.bot === 'B4' || row.bot === 'B1' || row.bot === 'B2' || row.bot === 'B3') ? b4Client : b123cClient;
     if (clob) {
       let filled = false;
       try {

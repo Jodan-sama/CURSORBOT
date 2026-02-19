@@ -397,7 +397,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeB1,
           ticker_or_slug: polySlug ?? '',
           order_id: polyResult.orderId,
-          raw: { price_source: priceSource[asset] },
+          raw: { price_source: priceSource[asset], direction: side },
         });
         console.log(`B1 Poly ${asset} ${priceB1 * 100}% orderId=${polyResult.orderId}`);
       }
@@ -482,7 +482,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeB2,
           ticker_or_slug: polySlug ?? undefined,
           order_id: polyResult.orderId,
-          raw: { price_source: priceSource[asset] },
+          raw: { price_source: priceSource[asset], direction: side },
         });
         console.log(`B2 Poly ${asset} orderId=${polyResult.orderId}`);
       }
@@ -585,7 +585,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
           position_size: sizeB3,
           ticker_or_slug: polySlug ?? undefined,
           order_id: polyResult.orderId,
-          raw: { price_source: priceSource[asset] },
+          raw: { price_source: priceSource[asset], direction: side },
         });
         console.log(`B3 Poly ${asset} orderId=${polyResult.orderId}`);
       }
