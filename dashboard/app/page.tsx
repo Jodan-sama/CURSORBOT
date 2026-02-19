@@ -138,7 +138,7 @@ export default function Dashboard() {
         b4StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(400),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(600),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -404,10 +404,14 @@ export default function Dashboard() {
 
   const b4PositionsGrouped = groupB4ByWindow(b4Positions);
 
-  function downloadCsv() {
+  const positionsFilledKalshi = positions.filter((p) => p.venue === 'kalshi' && (p.outcome === 'win' || p.outcome === 'loss')).slice(0, 100);
+  const positionsFilledPoly = positions.filter((p) => p.venue === 'polymarket' && (p.outcome === 'win' || p.outcome === 'loss')).slice(0, 100);
+  const positionsPendingNoFill = positions.filter((p) => p.outcome !== 'win' && p.outcome !== 'loss').slice(0, 200);
+
+  function downloadCsvFromList(list: Position[], filename: string) {
     setCsvLoading(true);
-    const headers = ['entered_at', 'bot', 'asset', 'exchange', 'price_source', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id'];
-    const rows = positions.map((p) =>
+    const headers = ['entered_at', 'bot', 'asset', 'exchange', 'price_source', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id', 'outcome', 'resolved_at'];
+    const rows = list.map((p) =>
       [
         escapeCsv(p.entered_at),
         escapeCsv(p.bot),
@@ -418,6 +422,8 @@ export default function Dashboard() {
         escapeCsv(String(p.position_size)),
         escapeCsv(p.ticker_or_slug ?? ''),
         escapeCsv(p.order_id ?? ''),
+        escapeCsv(p.outcome ?? ''),
+        escapeCsv(p.resolved_at ?? ''),
       ].join(',')
     );
     const csv = [headers.join(','), ...rows].join('\n');
@@ -425,10 +431,18 @@ export default function Dashboard() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `cursorbot-positions-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
     setCsvLoading(false);
+  }
+
+  function downloadCsvKalshiFilled() {
+    downloadCsvFromList(positionsFilledKalshi, `cursorbot-b123-kalshi-filled-${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+
+  function downloadCsvPolyFilled() {
+    downloadCsvFromList(positionsFilledPoly, `cursorbot-b123-polymarket-filled-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
   function downloadB4Csv() {
@@ -967,13 +981,85 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 positions (last 400)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Kalshi filled (last 100)</h2>
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Orders <strong>placed</strong> by the bot — limit orders may not fill; check the exchange for fill status.</span>
-          <button type="button" onClick={downloadCsv} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 400)'}</button>
-          <span style={{ display: 'block', fontSize: 13, color: '#555', marginTop: 6 }}>
-            CSV includes <strong>exchange</strong> (kalshi/polymarket) and <strong>price_source</strong> (binance/coingecko).
-          </span>
+          <span style={{ fontSize: 13, color: '#666' }}>Kalshi orders that <strong>filled</strong> (win or loss).</span>
+          <button type="button" onClick={downloadCsvKalshiFilled} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 100)'}</button>
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positionsFilledKalshi.map((p) => {
+              const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : '—';
+              const resultColor = p.outcome === 'win' ? '#22c55e' : '#ef4444';
+              return (
+                <tr key={p.id}>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{(p.raw as { price_source?: string })?.price_source ?? '—'}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                  <td style={{ borderBottom: '1px solid #eee', color: resultColor }}>{result}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2 style={headingStyle}>B1/B2/B3 – Polymarket filled (last 100)</h2>
+        <p style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders that <strong>filled</strong> (win or loss).</span>
+          <button type="button" onClick={downloadCsvPolyFilled} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 100)'}</button>
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positionsFilledPoly.map((p) => {
+              const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : '—';
+              const resultColor = p.outcome === 'win' ? '#22c55e' : '#ef4444';
+              return (
+                <tr key={p.id}>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                  <td style={{ borderBottom: '1px solid #eee' }}>{(p.raw as { price_source?: string })?.price_source ?? '—'}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
+                  <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                  <td style={{ borderBottom: '1px solid #eee', color: resultColor }}>{result}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2 style={headingStyle}>B1/B2/B3 – Pending / no fill (last 200)</h2>
+        <p style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: '#666' }}>Orders not yet filled (pending or no fill) from both Kalshi and Polymarket. No CSV download.</span>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -989,9 +1075,8 @@ export default function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
-              const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : p.outcome === 'no_fill' ? 'No fill' : 'Pending';
-              const resultColor = p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : p.outcome === 'no_fill' ? '#888' : '#888';
+            {positionsPendingNoFill.map((p) => {
+              const result = p.outcome === 'no_fill' ? 'No fill' : 'Pending';
               return (
                 <tr key={p.id}>
                   <td style={{ borderBottom: '1px solid #eee' }}>{formatMst(p.entered_at, true)}</td>
@@ -1001,7 +1086,7 @@ export default function Dashboard() {
                   <td style={{ borderBottom: '1px solid #eee' }}>{(p.raw as { price_source?: string })?.price_source ?? '—'}</td>
                   <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
                   <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
-                  <td style={{ borderBottom: '1px solid #eee', color: resultColor }}>{result}</td>
+                  <td style={{ borderBottom: '1px solid #eee', color: '#888' }}>{result}</td>
                 </tr>
               );
             })}
