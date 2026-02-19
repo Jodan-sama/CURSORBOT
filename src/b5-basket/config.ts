@@ -19,6 +19,10 @@ export const B5_CONFIG = {
   minPositionUsd: 5,
   /** Skip 5-min outcomes when already this many seconds into window (early edges only). */
   max5minSecondsIntoWindow: Number(process.env.B5_MAX_5MIN_SECONDS_INTO_WINDOW) || 150,
+  /** If true: only trade 5-min BTC (no 15m, no ETH). Solo 5m only, one position at a time. */
+  only5minBtc: process.env.B5_ONLY_5MIN_BTC !== 'false',
+  /** Static position size in USD per leg (e.g. 5). No balance-based sizing. */
+  staticPositionUsd: Number(process.env.B5_STATIC_POSITION_USD) || 5,
 };
 
 export type B5Config = typeof B5_CONFIG;
