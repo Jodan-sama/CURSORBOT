@@ -368,6 +368,40 @@ export default function Dashboard() {
     return t;
   }
 
+  /** Group B4 positions by 5m window (ticker_or_slug) so one window = one trade for display and win rate. */
+  function groupB4ByWindow(positions: Position[]): Position[] {
+    const bySlug = new Map<string, Position[]>();
+    for (const p of positions) {
+      const slug = p.ticker_or_slug ?? p.id;
+      if (!bySlug.has(slug)) bySlug.set(slug, []);
+      bySlug.get(slug)!.push(p);
+    }
+    const out: Position[] = [];
+    for (const [, group] of bySlug) {
+      const first = group[0];
+      const hasLoss = group.some((p) => p.outcome === 'loss');
+      const hasWin = group.some((p) => p.outcome === 'win');
+      const outcome = hasLoss ? ('loss' as const) : hasWin ? ('win' as const) : (first.outcome ?? null);
+      const resolvedAts = group.map((p) => p.resolved_at).filter(Boolean) as string[];
+      const resolved_at = resolvedAts.length > 0 ? resolvedAts.sort().pop()! : (first.resolved_at ?? null);
+      const totalSize = group.reduce((s, p) => s + (p.position_size ?? 0), 0);
+      const earliest = group.reduce((a, b) => (a.entered_at < b.entered_at ? a : b));
+      const tiers = group.map((p) => (p.raw as Record<string, unknown>)?.tier).filter(Boolean);
+      const raw = { ...(first.raw as Record<string, unknown>), tier: tiers.length > 0 ? tiers.join('+') : first.raw };
+      out.push({
+        ...first,
+        entered_at: earliest.entered_at,
+        outcome,
+        resolved_at: resolved_at ?? undefined,
+        position_size: totalSize,
+        raw,
+      });
+    }
+    return out.sort((a, b) => new Date(b.entered_at).getTime() - new Date(a.entered_at).getTime());
+  }
+
+  const b4PositionsGrouped = groupB4ByWindow(b4Positions);
+
   function downloadCsv() {
     setCsvLoading(true);
     const headers = ['entered_at', 'bot', 'asset', 'exchange', 'price_source', 'strike_spread_pct', 'position_size', 'ticker_or_slug', 'order_id'];
@@ -398,7 +432,7 @@ export default function Dashboard() {
   function downloadB4Csv() {
     setB4CsvLoading(true);
     const headers = ['time', 'bot', 'asset', 'venue', 'price_source', 'spread_pct', 'size', 'tier', 'direction', 'outcome', 'resolved_at'];
-    const rows = b4Positions.map((p) => {
+    const rows = b4PositionsGrouped.map((p) => {
       const raw = (p.raw ?? {}) as Record<string, unknown>;
       return [
         escapeCsv(p.entered_at),
@@ -706,9 +740,9 @@ export default function Dashboard() {
             })()}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B4</strong> (last 200):{' '}
+            <strong>B4</strong> (last 200, one per 5m window):{' '}
             {(() => {
-              const resolved = b4Positions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const resolved = b4PositionsGrouped.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
               const wins = resolved.filter((p) => p.outcome === 'win').length;
               const n = resolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
@@ -762,7 +796,7 @@ export default function Dashboard() {
           {b4State && (
             <span style={{ marginLeft: 12, fontSize: 13, color: '#aaa' }}>
               Bankroll: <strong style={{ color: '#0D9488' }}>${Number(b4State.bankroll).toFixed(2)}</strong>
-              {' | '}Trades: {b4Positions.length}
+              {' | '}Trades: {b4PositionsGrouped.length}
               {b4State.updated_at && <> | Last: {formatMst(b4State.updated_at, true)}</>}
             </span>
           )}
@@ -846,7 +880,7 @@ export default function Dashboard() {
           <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 200).</span>
           <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
         </p>
-        {b4Positions.length === 0 ? (
+        {b4PositionsGrouped.length === 0 ? (
           <p style={{ color: '#666' }}>No B4 trades yet.</p>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -863,7 +897,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {b4Positions.map((p) => {
+              {b4PositionsGrouped.map((p) => {
                 const raw = (p.raw ?? {}) as Record<string, unknown>;
                 const tier = String(raw.tier ?? 'B4');
                 const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : 'Pending';
