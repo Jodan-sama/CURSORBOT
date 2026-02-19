@@ -17,8 +17,8 @@ export const B5_CONFIG = {
   /** Scan every 5s. Override with B5_SCAN_INTERVAL_SECONDS if rate-limited. */
   scanIntervalSeconds: Number(process.env.B5_SCAN_INTERVAL_SECONDS) || 5,
   minPositionUsd: 5,
-  /** Skip 5-min outcomes when already this many seconds into window (early edges only). */
-  max5minSecondsIntoWindow: Number(process.env.B5_MAX_5MIN_SECONDS_INTO_WINDOW) || 150,
+  /** Skip 5-min only when past this many seconds into window. Default 300 = full 5m window (enter whenever cheap + edge). */
+  max5minSecondsIntoWindow: Number(process.env.B5_MAX_5MIN_SECONDS_INTO_WINDOW) ?? 300,
   /** If true: only trade 5-min BTC (no 15m, no ETH). Solo 5m only, one position at a time. */
   only5minBtc: process.env.B5_ONLY_5MIN_BTC !== 'false',
   /** Static position size in USD per leg (e.g. 5). No balance-based sizing. */
