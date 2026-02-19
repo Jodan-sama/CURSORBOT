@@ -397,7 +397,7 @@ export default function Dashboard() {
 
   function downloadB4Csv() {
     setB4CsvLoading(true);
-    const headers = ['time', 'bot', 'asset', 'venue', 'price_source', 'spread_pct', 'size', 'tier', 'direction'];
+    const headers = ['time', 'bot', 'asset', 'venue', 'price_source', 'spread_pct', 'size', 'tier', 'direction', 'outcome', 'resolved_at'];
     const rows = b4Positions.map((p) => {
       const raw = (p.raw ?? {}) as Record<string, unknown>;
       return [
@@ -410,6 +410,8 @@ export default function Dashboard() {
         escapeCsv(String(p.position_size)),
         escapeCsv(String(raw.tier ?? '')),
         escapeCsv(String(raw.direction ?? '')),
+        escapeCsv(p.outcome ?? ''),
+        escapeCsv(p.resolved_at ?? ''),
       ].join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
