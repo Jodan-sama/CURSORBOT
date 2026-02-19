@@ -289,7 +289,7 @@ async function runOneScan(): Promise<void> {
     const normalCandidates = candidates.filter((c) => c.edge >= B5_CONFIG.minEdge);
 
     let basket: B5Candidate[] = [];
-    let perLegMaxUsd: number; // cap per leg for solo baskets; normal uses orderMinSize×price only
+    let perLegMaxUsd = 0; // 0 = normal (orderMinSize×price); solo 5m=1.0, solo 15m=1.5
     if (strong5min.length >= 1) {
       basket = [strong5min[0]];
       perLegMaxUsd = 1.0;
