@@ -277,11 +277,17 @@ async function runOneScan(): Promise<void> {
       if (!passCheap || edge < minEdge) continue;
       if (c.timeframe === '5min') {
         const secInto = secondsInto5minWindow(c.slug, now);
-        if (secInto != null && secInto > B5_CONFIG.max5minSecondsIntoWindow) continue;
+        if (secInto != null && secInto > B5_CONFIG.max5minSecondsIntoWindow) {
+          console.log(`[B5] Skip ${c.question}: 5m window too far in (${secInto}s > ${B5_CONFIG.max5minSecondsIntoWindow}s)`);
+          continue;
+        }
       }
       if (c.timeframe === '15min') {
         const secInto = secondsInto15minWindow(c.slug, now);
-        if (secInto != null && secInto > B5_15MIN_NO_ENTRY_SECONDS_INTO_WINDOW) continue;
+        if (secInto != null && secInto > B5_15MIN_NO_ENTRY_SECONDS_INTO_WINDOW) {
+          console.log(`[B5] Skip ${c.question}: 15m last 5 min (${secInto}s into window)`);
+          continue;
+        }
       }
       candidates.push({ ...c, estP, edge });
     }
@@ -323,11 +329,11 @@ async function runOneScan(): Promise<void> {
       perLegMaxUsd = 0;
       console.log(`[B5] Basket: ${basket.length} legs, ~$${totalCost.toFixed(2)} total (multi-leg, max $${maxBasketUSD})`);
     }
-    // 4) Solo: single leg with edge >= minEdge (raw candidate that passed filters)
-    else if (normalCandidates.length >= 1) {
-      basket = [normalCandidates[0]];
+    // 4) Solo: single leg that passed all filters (use full candidates so 1 leg 5m or 15m always enters)
+    else if (candidates.length >= 1) {
+      basket = [candidates[0]];
       perLegMaxUsd = 1.0;
-      console.log(`[B5] Basket: 1 leg (solo, edge ${normalCandidates[0].edge.toFixed(3)} ≥ ${minEdge})`);
+      console.log(`[B5] Basket: 1 leg (solo, edge ${candidates[0].edge.toFixed(3)} ≥ ${minEdge})`);
     }
 
     if (basket.length === 0) {
