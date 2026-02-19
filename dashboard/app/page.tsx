@@ -387,7 +387,8 @@ export default function Dashboard() {
       const totalSize = group.reduce((s, p) => s + (p.position_size ?? 0), 0);
       const earliest = group.reduce((a, b) => (a.entered_at < b.entered_at ? a : b));
       const tiers = group.map((p) => (p.raw as Record<string, unknown>)?.tier).filter(Boolean);
-      const raw = { ...(first.raw as Record<string, unknown>), tier: tiers.length > 0 ? tiers.join('+') : first.raw };
+      const tierStr = tiers.length > 0 ? tiers.join('+') : String((first.raw as Record<string, unknown>)?.tier ?? '');
+      const raw: Position['raw'] = { ...(first.raw as Record<string, unknown>), tier: tierStr } as Position['raw'];
       out.push({
         ...first,
         entered_at: earliest.entered_at,
