@@ -143,7 +143,7 @@ export default function Dashboard() {
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1000),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(50),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
@@ -228,6 +228,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     load().finally(() => setLoading(false));
+  }, []);
+
+  // Auto-refresh so B123 Poly log and other data stay current (e.g. new losses visible)
+  useEffect(() => {
+    const interval = setInterval(() => load(), 90_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function setEmergencyOff(off: boolean) {
@@ -416,12 +422,24 @@ export default function Dashboard() {
   const isPolymarket = (v: string) => (v ?? '').toLowerCase() === 'polymarket';
   const isFilled = (o: string | null | undefined) => (o ?? '').toLowerCase() === 'win' || (o ?? '').toLowerCase() === 'loss';
   const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 100);
-  // B1/B2/B3 Polymarket: show filled (Win/Loss) first so they are never hidden, then up to 100 more (pending/no fill)
+  // B1/B2/B3 Polymarket: most recently resolved first, then by entered_at, so new wins/losses appear at top
   const filledPolyIds = new Set(b123PolyFilled.map((p) => p.id));
+  const b123PolyResolved = b123PolyFilled.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+  const b123PolyWins = b123PolyResolved.filter((p) => p.outcome === 'win').length;
+  const b123PolyLosses = b123PolyResolved.filter((p) => p.outcome === 'loss').length;
+  const b123PolyWinRateResolved =
+    b123PolyResolved.length > 0
+      ? ((b123PolyWins / b123PolyResolved.length) * 100).toFixed(1)
+      : null;
   const positionsPoly = [
     ...b123PolyFilled,
     ...positions.filter((p) => isPolymarket(p.venue) && !filledPolyIds.has(p.id)).slice(0, 100),
-  ];
+  ].sort((a, b) => {
+    const ra = a.resolved_at ? new Date(a.resolved_at).getTime() : 0;
+    const rb = b.resolved_at ? new Date(b.resolved_at).getTime() : 0;
+    if (rb !== ra) return rb - ra;
+    return new Date(b.entered_at).getTime() - new Date(a.entered_at).getTime();
+  });
   const positionsPendingNoFill = positions.filter((p) => !isFilled(p.outcome)).slice(0, 200);
 
   function downloadCsvFromList(list: Position[], filename: string) {
@@ -1082,9 +1100,12 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (filled first, then last 100)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (most recent first)</h2>
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders: Win/Loss (filled) shown first (up to 50), then pending/no fill (up to 100). B1/B2/B3 Poly are placed from D1; Win/Loss appear here once the resolver has run for that order.</span>
+          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders sorted by time so the latest (including new wins/losses) is at the top. B1/B2/B3 Poly are placed from D1; Win/Loss appear once the resolver has run (every ~10 min). Page auto-refreshes every 90s.</span>
+          {b123PolyWinRateResolved != null && (
+            <span style={{ marginLeft: 12, fontWeight: 600 }}>Win rate (resolved): {b123PolyWinRateResolved}% ({b123PolyWins}W / {b123PolyLosses}L)</span>
+          )}
           <button type="button" onClick={downloadCsvPoly} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV'}</button>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
