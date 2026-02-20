@@ -97,6 +97,7 @@ export default function Dashboard() {
   });
   const [b123cPositions, setB123cPositions] = useState<Position[]>([]);
   const [b123cUnfilled, setB123cUnfilled] = useState<Position[]>([]);
+  const [b123PolyFilled, setB123PolyFilled] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -129,6 +130,7 @@ export default function Dashboard() {
       const [
         { data: configData },
         { data: posData },
+        { data: b123PolyFilledData },
         { data: b4PosData },
         { data: b123cPosData },
         { data: b123cUnfilledData },
@@ -141,6 +143,7 @@ export default function Dashboard() {
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1000),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
@@ -156,6 +159,7 @@ export default function Dashboard() {
       setB4Positions((b4PosData ?? []) as Position[]);
       setB123cPositions((b123cPosData ?? []) as Position[]);
       setB123cUnfilled((b123cUnfilledData ?? []) as Position[]);
+      setB123PolyFilled((b123PolyFilledData ?? []) as Position[]);
       const b4Row = (b4StateResult as { data: unknown }).data as typeof b4State;
       setB4State(b4Row ?? null);
       if (b4Row?.results_json && typeof b4Row.results_json === 'object' && !Array.isArray(b4Row.results_json)) {
@@ -412,8 +416,12 @@ export default function Dashboard() {
   const isPolymarket = (v: string) => (v ?? '').toLowerCase() === 'polymarket';
   const isFilled = (o: string | null | undefined) => (o ?? '').toLowerCase() === 'win' || (o ?? '').toLowerCase() === 'loss';
   const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 100);
-  // B1/B2/B3 Polymarket outcomes are not resolved by the resolver (it only runs for B4/B1c/B2c/B3c), so show all Polymarket rows like the original single table did
-  const positionsPoly = positions.filter((p) => isPolymarket(p.venue)).slice(0, 100);
+  // B1/B2/B3 Polymarket: show filled (Win/Loss) first so they are never hidden, then up to 100 more (pending/no fill)
+  const filledPolyIds = new Set(b123PolyFilled.map((p) => p.id));
+  const positionsPoly = [
+    ...b123PolyFilled,
+    ...positions.filter((p) => isPolymarket(p.venue) && !filledPolyIds.has(p.id)).slice(0, 100),
+  ];
   const positionsPendingNoFill = positions.filter((p) => !isFilled(p.outcome)).slice(0, 200);
 
   function downloadCsvFromList(list: Position[], filename: string) {
@@ -1002,7 +1010,7 @@ export default function Dashboard() {
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
-                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Slug</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread % at entry</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Order ID</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Outcome</th>
@@ -1017,7 +1025,7 @@ export default function Dashboard() {
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
                     <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
                     <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
-                    <td style={{ borderBottom: '1px solid #eee', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.ticker_or_slug ?? ''}>{p.ticker_or_slug ?? '—'}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct != null ? `${Number(p.strike_spread_pct).toFixed(3)}%` : '—'}</td>
                     <td style={{ borderBottom: '1px solid #eee', fontSize: 11, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.order_id ?? ''}>{p.order_id ?? '—'}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
                     <td style={{ borderBottom: '1px solid #eee', color: outcomeColor, fontWeight: p.outcome ? 600 : undefined }}>{outcomeLabel}</td>
@@ -1068,10 +1076,10 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (last 100)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (filled first, then last 100)</h2>
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders (filled, pending, or no fill). Same data as before the split.</span>
-          <button type="button" onClick={downloadCsvPoly} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 100)'}</button>
+          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders: Win/Loss (filled) shown first (up to 50), then pending/no fill (up to 100). B1/B2/B3 Poly are placed from D1; Win/Loss appear here once the resolver has run for that order.</span>
+          <button type="button" onClick={downloadCsvPoly} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV'}</button>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
