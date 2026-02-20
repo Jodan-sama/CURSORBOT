@@ -1,8 +1,11 @@
 /**
  * One-off: place a small test limit order on current BTC 15m, winning side, using B123c wallet env.
  * Usage on D2: cd /root/cursorbot && node dist/scripts/place-b123c-test-order.js
+ * Loads .env then .env.b123c (override) so the order goes to the B123c wallet, same as cursorbot-b123c service.
  */
-import 'dotenv/config';
+import { config } from 'dotenv';
+config(); // .env (proxy, RPC)
+config({ path: '.env.b123c', override: true }); // B123c wallet (overrides POLYMARKET_* when present)
 
 import { getCurrentPolySlug } from '../clock.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
