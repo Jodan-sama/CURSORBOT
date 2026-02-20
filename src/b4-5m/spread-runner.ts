@@ -68,6 +68,9 @@ const MIN_TICK_DELAY_MS = 1_000;
 let t2BlockMs = 5 * 60_000;   // T2 → blocks T1 for 5 min
 let t3BlockMs = 15 * 60_000;  // T3 → blocks T1 + T2 for 15 min
 
+/** T3 may only enter before T2 starts. After this second, T3 cannot enter and cannot block T1/T2. */
+const T3_WINDOW_END_SEC = 180;  // same as T2 entryAfterSec: T3 window = [100, 180), then T2 starts
+
 // Early-window high-spread guard: check every 15s during first 100s,
 // if spread > threshold → cooldown on B4 spread bot only
 const EARLY_GUARD_WINDOW_SEC = 100;
@@ -411,6 +414,9 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
     // Time check: must be past entryAfterSec
     if (secInWindow < tier.entryAfterSec) continue;
+
+    // T3 only in its window: do not enter or block T1/T2 after T2 starts (secInWindow >= 180)
+    if (tier.name === 'B4-T3' && secInWindow >= T3_WINDOW_END_SEC) continue;
 
     // Spread check
     if (absSpread < tier.spreadPct) continue;
