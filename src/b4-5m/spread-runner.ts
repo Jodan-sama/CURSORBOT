@@ -323,7 +323,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const nowMs = Date.now();
 
   // --- Early-window high-spread guard (runs even when B4 is paused so block is set before un-pause) ---
-  // During first 100s, check every ~15s: if spread >= threshold → cooldown on B4 spread bot
+  // During first 100s, check every ~15s: if |spread| >= threshold (either + or -) → cooldown on B4 spread bot
   if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
     if (absSpread >= earlyGuardSpreadPct) {
       earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;

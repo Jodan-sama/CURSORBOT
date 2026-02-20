@@ -14,6 +14,8 @@
 
 **B4 placement (D2):** The B4 spread-runner **does** place limit orders when spread exceeds tier thresholds; journal logs show `[B4] PLACED` with orderIds. Some attempts fail with `not enough balance / allowance` (e.g. when T1 and T2 fire in the same window and balance is tied up). So B4 is placing; the issue was the resolver marking Win without checking fill. After deploying the resolver fix and rebuilding on D2, run `cd /root/cursorbot && git pull && npm run build` so the next cron run uses the new script.
 
+**B1c/B2c/B3c (D2):** B123c uses **derive-only** Polymarket CLOB (same as B4 and D1 runner); static API keys are not used. After code changes: on D2 run `cd /root/cursorbot && git pull origin main && npm run build && systemctl restart cursorbot-b123c`. To verify placement: `node dist/scripts/place-b123c-test-order.js` (uses same derive + proxy; ensure `.env` or env has POLYMARKET_* and HTTPS_PROXY for the B123c wallet).
+
 D2 uses password auth by default; add your SSH key with `ssh-copy-id root@161.35.149.219` for key-based checks.
 
 ## Security updates (and rollback)

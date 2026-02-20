@@ -1,6 +1,6 @@
 /**
- * One-off: place a minimal test limit order on current BTC 15m using B123c wallet env.
- * Usage on D2: DOTENV_CONFIG_PATH=/root/cursorbot/.env.b123c node dist/scripts/place-b123c-test-order.js
+ * One-off: place a small test limit order on current BTC 15m, winning side, using B123c wallet env.
+ * Usage on D2: cd /root/cursorbot && node dist/scripts/place-b123c-test-order.js
  */
 import 'dotenv/config';
 
@@ -13,8 +13,7 @@ import {
 } from '../polymarket/clob.js';
 
 const ASSET = 'BTC';
-const TEST_PRICE = 0.01;
-const TEST_SIZE = 5; // Polymarket min size for this market
+const LIMIT_PRICE = 0.97;
 
 async function main() {
   const now = new Date();
@@ -22,18 +21,24 @@ async function main() {
   console.log('[B123c test] Current BTC 15m slug:', slug);
 
   const parsed = await getPolyMarketBySlug(slug);
-  const tickSize = (parsed.orderPriceMinTickSize ?? '0.01') as CreatePolyOrderParams['tickSize'];
-  const side: 'yes' | 'no' = 'yes';
+  const prices = parsed.outcomePrices ?? ['0.5', '0.5'];
+  const yesPrice = typeof prices[0] === 'string' ? parseFloat(prices[0]) : prices[0];
+  const noPrice = typeof prices[1] === 'string' ? parseFloat(prices[1]) : prices[1];
+  const side: 'yes' | 'no' = yesPrice >= noPrice ? 'yes' : 'no';
   const tokenId = side === 'yes' ? parsed.clobTokenIds[0] : parsed.clobTokenIds[1];
   if (!tokenId) throw new Error('No tokenId');
 
+  const minShares = parsed.orderMinSize ?? 5;
+  const shares = Math.max(minShares, Math.ceil(5 / LIMIT_PRICE)); // ~$5 notional
+  const tickSize = (parsed.orderPriceMinTickSize != null ? String(parsed.orderPriceMinTickSize) : '0.01') as CreatePolyOrderParams['tickSize'];
   const params: CreatePolyOrderParams = {
     tokenId,
-    price: TEST_PRICE,
-    size: TEST_SIZE,
+    price: LIMIT_PRICE,
+    size: shares,
     tickSize,
     negRisk: parsed.negRisk,
   };
+  console.log('[B123c test] Winning side:', side, '| yes=', yesPrice.toFixed(3), 'no=', noPrice.toFixed(3), '| limit', LIMIT_PRICE, 'shares', shares);
   console.log('[B123c test] Params:', { ...params, tokenId: tokenId.slice(0, 24) + '…' });
 
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';

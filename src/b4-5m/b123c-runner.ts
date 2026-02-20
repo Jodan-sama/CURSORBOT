@@ -33,11 +33,7 @@ import {
   type Asset,
 } from '../db/supabase.js';
 import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix, fetchBinancePrice } from '../kalshi/spread.js';
-import {
-  createPolyClobClient,
-  getPolyClobConfigFromEnv,
-  getOrCreateDerivedPolyClient,
-} from '../polymarket/clob.js';
+import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
@@ -242,9 +238,9 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** B123c uses derive only (same as B4/D1); static API keys do not work for placement. */
 async function getClobClient(): Promise<ClobClient> {
-  const cfg = getPolyClobConfigFromEnv();
-  return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+  return getOrCreateDerivedPolyClient();
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +264,8 @@ async function placeLimitOrder(
       const tickDec = String(tickSize).split('.')[1]?.length ?? 2;
       const factor = 10 ** tickDec;
       const price = Math.round(limitPrice * factor) / factor;
-      const shares = Math.max(1, Math.floor(size / price));
+      const minShares = market.orderMinSize ?? 1;
+      const shares = Math.max(minShares, Math.floor(size / price));
       console.log(`[B123c] LIMIT BUY ${side} price=${price} shares=${shares} ($${size}) | ${slug}`);
       const result = await client.createAndPostOrder(
         { tokenID: tokenId, price, size: shares, side: Side.BUY },
