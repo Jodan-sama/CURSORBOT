@@ -96,6 +96,7 @@ export default function Dashboard() {
     t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60',
   });
   const [b123cPositions, setB123cPositions] = useState<Position[]>([]);
+  const [b123cUnfilled, setB123cUnfilled] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
   const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
@@ -130,6 +131,7 @@ export default function Dashboard() {
         { data: posData },
         { data: b4PosData },
         { data: b123cPosData },
+        { data: b123cUnfilledData },
         { data: errData },
         { data: polySkipData },
         spreadResult,
@@ -141,6 +143,7 @@ export default function Dashboard() {
         getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1000),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
@@ -152,6 +155,7 @@ export default function Dashboard() {
       setPositions((posData ?? []) as Position[]);
       setB4Positions((b4PosData ?? []) as Position[]);
       setB123cPositions((b123cPosData ?? []) as Position[]);
+      setB123cUnfilled((b123cUnfilledData ?? []) as Position[]);
       const b4Row = (b4StateResult as { data: unknown }).data as typeof b4State;
       setB4State(b4Row ?? null);
       if (b4Row?.results_json && typeof b4Row.results_json === 'object' && !Array.isArray(b4Row.results_json)) {
@@ -976,6 +980,47 @@ export default function Dashboard() {
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
                     <td style={{ borderBottom: '1px solid #eee', color: resultColor, fontWeight: result !== 'Pending' ? 600 : undefined }}>{result}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>B1c / B2c / B3c — Unfilled / no-fill (last 50)</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+          Limit orders that were placed but not filled (outcome = No fill) or not yet resolved (Pending). Useful for debugging balance/allowance or fill rate.
+        </p>
+        {b123cUnfilled.length === 0 ? (
+          <p style={{ color: '#666' }}>No unfilled B1c/B2c/B3c orders in the last 50.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Bot</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Slug</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Order ID</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Outcome</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b123cUnfilled.map((p) => {
+                const outcomeLabel = p.outcome === 'no_fill' ? 'No fill' : p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : 'Pending';
+                const outcomeColor = p.outcome === 'no_fill' ? '#f59e0b' : p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : '#888';
+                return (
+                  <tr key={p.id}>
+                    <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.bot}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                    <td style={{ borderBottom: '1px solid #eee', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.ticker_or_slug ?? ''}>{p.ticker_or_slug ?? '—'}</td>
+                    <td style={{ borderBottom: '1px solid #eee', fontSize: 11, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.order_id ?? ''}>{p.order_id ?? '—'}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                    <td style={{ borderBottom: '1px solid #eee', color: outcomeColor, fontWeight: p.outcome ? 600 : undefined }}>{outcomeLabel}</td>
                   </tr>
                 );
               })}

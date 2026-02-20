@@ -385,6 +385,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B1', asset, abSpread, spreadThresholds)) {
         const useMarket = isB1MarketOrderWindow(minLeft);
         const priceB1 = useMarket ? 0.99 : 0.96;
+        console.log(`[B123c] attempting B1c ${asset} ${side} ${(priceB1 * 100).toFixed(0)}c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B1c', asset, slug, priceB1, signedSpread, side, positionSize);
         if (placed) enteredThisWindow.add(key);
       }
@@ -396,6 +397,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       const key = windowKey('B2c', asset, windowEnd);
       if (positionsInWindow.has('B2c-' + asset)) enteredThisWindow.add(key);
       if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds)) {
+        console.log(`[B123c] attempting B2c ${asset} ${side} 97c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side, positionSize);
         if (placed) enteredThisWindow.add(key);
       }
@@ -410,6 +412,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       const key = windowKey('B3c', asset, windowEnd);
       if (positionsInWindow.has('B3c-' + asset)) enteredThisWindow.add(key);
       if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B3', asset, abSpread, spreadThresholds)) {
+        console.log(`[B123c] attempting B3c ${asset} ${side} 97c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B3c', asset, slug, 0.97, signedSpread, side, positionSize);
         if (placed) {
           enteredThisWindow.add(key);
