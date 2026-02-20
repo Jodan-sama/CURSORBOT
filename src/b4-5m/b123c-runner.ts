@@ -428,8 +428,8 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s, Binance failed?): ${stale.join(' ')}`);
   }
 
-  // Periodic log (every 3 ticks for less sparse feed)
-  if (tickCount % 3 === 0) {
+  // Periodic log every tick (~1s) so feed is frequent
+  {
     const parts: string[] = [];
     for (const a of ASSETS) {
       const p = getPrice(a);
