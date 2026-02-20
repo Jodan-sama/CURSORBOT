@@ -22,8 +22,6 @@ import { fetchAllPricesOnce, strikeSpreadPctSigned, isOutsideSpreadThreshold } f
 import { kalshiYesBidAsPercent } from '../kalshi/market.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
-  createPolyClobClient,
-  getPolyClobConfigFromEnv,
   getOrCreateDerivedPolyClient,
   createAndPostPolyOrder,
   orderParamsFromParsedMarket,
@@ -167,7 +165,7 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Gamma API (market data) runs direct. Only CLOB (order placement) uses proxy when set. Polygon RPC uses Alchemy. */
+/** Gamma API (market data) runs direct. Only CLOB (order placement) uses proxy when set. Must use derive (same as B4); static API keys do not work for placement. */
 async function tryPlacePolymarket(
   slug: string,
   asset: Asset,
@@ -177,10 +175,7 @@ async function tryPlacePolymarket(
 ): Promise<{ orderId?: string; skipReason?: string }> {
   const parsed = await getPolyMarketBySlug(slug);
   return withPolyProxy(async () => {
-    const config = getPolyClobConfigFromEnv();
-    const client = config
-      ? createPolyClobClient(config)
-      : await getOrCreateDerivedPolyClient();
+    const client = await getOrCreateDerivedPolyClient();
     const params = orderParamsFromParsedMarket(parsed, price, size, side);
     const r = await createAndPostPolyOrder(client, params);
     return { orderId: r.orderID };
