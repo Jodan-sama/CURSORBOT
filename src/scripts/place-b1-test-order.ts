@@ -54,7 +54,8 @@ async function main() {
       console.error('[B1 test] No token for', side);
       process.exit(1);
     }
-    const shares = Math.max(2, Math.ceil(TEST_AMOUNT_USD / LIMIT_PRICE));
+    const minShares = market.orderMinSize ?? 5;
+    const shares = Math.max(minShares, Math.ceil(TEST_AMOUNT_USD / LIMIT_PRICE));
     const tickSize = (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as '0.01';
     const negRisk = market.negRisk ?? false;
     console.log('[B1 test] Winning side:', side, '| yes=', yesPrice.toFixed(3), 'no=', noPrice.toFixed(3), '| limit', LIMIT_PRICE, 'shares', shares);
