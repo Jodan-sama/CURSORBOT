@@ -62,6 +62,8 @@ export async function fetchCoinGeckoPricesAll(): Promise<Record<Asset, number>> 
 }
 
 const PRICE_RETRY_DELAY_MS = 1500;
+/** Space between each asset's Binance fetch to avoid rate limits / connection burst. */
+const PRICE_ASSET_SPACING_MS = 150;
 
 /** Fetches current spot price. Prefers Binance (with one retry); falls back to CoinGecko on failure. */
 export async function fetchBinancePrice(asset: Asset): Promise<number> {
@@ -100,7 +102,9 @@ export async function fetchAllPricesOnce(): Promise<FetchPricesResult> {
   const byAsset: Partial<Record<Asset, number>> = {};
   const priceSource: Record<Asset, PriceSource> = { BTC: 'binance', ETH: 'binance', SOL: 'binance', XRP: 'binance' };
   const binanceFailed: Asset[] = [];
-  for (const a of ASSETS) {
+  for (let i = 0; i < ASSETS.length; i++) {
+    const a = ASSETS[i];
+    if (i > 0) await new Promise((r) => setTimeout(r, PRICE_ASSET_SPACING_MS));
     try {
       const price = await fetchBinancePriceOnly(a);
       if (!Number.isNaN(price)) byAsset[a] = price;

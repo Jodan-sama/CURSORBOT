@@ -22,4 +22,5 @@ process.on('uncaughtException', (err) => {
 
 const venue = isPolymarketEnabled() ? 'Kalshi + Polymarket' : 'Kalshi only';
 console.log(`Cursorbot starting (B1/B2/B3, ${venue})`);
+console.log('[cursorbot] loop starting; first tick in 5s');
 startBotLoop();

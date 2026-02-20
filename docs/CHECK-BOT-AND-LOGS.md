@@ -10,6 +10,10 @@
 
 **Deploy resolver changes:** The script `resolve-polymarket-outcomes` runs on **D2** only. After pushing code changes, on D2 run: `cd /root/cursorbot && git pull origin main && npm run build`. No restart needed; cron picks up the new build.
 
+**Resolver and B4 CLOB:** The resolver must verify each B4 order was filled (via CLOB `getOrder`) before setting Win/Loss. On D2, when the resolver ran from cron **without** the proxy applied, the B4 CLOB client (derive mode) failed ("Maximum number of redirects exceeded" / "derive did not return key/secret/passphrase"), so the resolver had no client and was setting Win/Loss from Gamma market resolution only — phantom Wins. Fix: the resolver now (1) applies `HTTPS_PROXY`/`HTTP_PROXY` at script start so derive and `getOrder` use the proxy (same as the B4 runner), (2) uses derive only for B4 (same as the runner; static keys are not used for placement), (3) requires a working B4 CLOB client for B4 (and B1/B2/B3 Poly); if missing, sets outcome to `no_fill` instead of resolving from Gamma. Ensure the resolver cron runs from the repo so `.env` is loaded, e.g. `*/10 * * * * cd /root/cursorbot && node dist/scripts/resolve-polymarket-outcomes.js >> /root/cursorbot/logs/resolve-outcomes.log 2>&1`.
+
+**B4 placement (D2):** The B4 spread-runner **does** place limit orders when spread exceeds tier thresholds; journal logs show `[B4] PLACED` with orderIds. Some attempts fail with `not enough balance / allowance` (e.g. when T1 and T2 fire in the same window and balance is tied up). So B4 is placing; the issue was the resolver marking Win without checking fill. After deploying the resolver fix and rebuilding on D2, run `cd /root/cursorbot && git pull && npm run build` so the next cron run uses the new script.
+
 D2 uses password auth by default; add your SSH key with `ssh-copy-id root@161.35.149.219` for key-based checks.
 
 ## Security updates (and rollback)

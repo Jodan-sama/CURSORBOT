@@ -35,11 +35,7 @@ import {
   updateB4TierBlocks,
   updateB4EarlyGuard,
 } from '../db/supabase.js';
-import {
-  createPolyClobClient,
-  getPolyClobConfigFromEnv,
-  getOrCreateDerivedPolyClient,
-} from '../polymarket/clob.js';
+import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
@@ -66,7 +62,8 @@ let activeTiers: TierConfig[] = [
 ];
 
 let positionSize = parseFloat(process.env.B4_POSITION_SIZE || '5');
-const TICK_INTERVAL_MS = 3_000;
+/** Min 1s between tick starts to avoid hammering when a tick returns early; no extra wait when tick is long. */
+const MIN_TICK_DELAY_MS = 1_000;
 
 // Blocking durations (configurable)
 let t2BlockMs = 5 * 60_000;   // T2 → blocks T1 for 5 min
@@ -113,6 +110,10 @@ const placedThisWindow = new Set<string>();
 let t1BlockedUntil = 0;
 let t2BlockedUntil = 0;
 let earlyGuardCooldownUntil = 0;
+
+/** Config (early_guard_spread_pct, tiers, etc.) from Supabase — fetch at most once per 5 min, then compare vs live price. */
+const CONFIG_CACHE_MS = 5 * 60 * 1000;
+let lastConfigRefreshMs = 0;
 
 // ---------------------------------------------------------------------------
 // Wallet balance polling (every ~15 min → updates b4_state.bankroll)
@@ -173,9 +174,9 @@ async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** B4 must use derive (same as place-b4-test-order); static API keys do not work for placement. */
 async function getClobClient(): Promise<ClobClient> {
-  const cfg = getPolyClobConfigFromEnv();
-  return cfg != null ? createPolyClobClient(cfg) : await getOrCreateDerivedPolyClient();
+  return getOrCreateDerivedPolyClient();
 }
 
 // ---------------------------------------------------------------------------
@@ -229,8 +230,9 @@ async function placeLimitOrder(
       const factor = 10 ** tickDecimals;
       const price = Math.round(limitPrice * factor) / factor;
 
-      // Calculate shares: size in USDC / price
-      const shares = Math.max(1, Math.floor(size / price));
+      // Calculate shares: size in USDC / price; Polymarket min notional $1
+      const minSharesForNotional = Math.ceil(1 / price);
+      const shares = Math.max(minSharesForNotional, Math.floor(size / price));
 
       console.log(
         `[B4] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`,
@@ -246,6 +248,26 @@ async function placeLimitOrder(
         ?? (result as { orderId?: string })?.orderId;
 
       if (!orderId) return { error: `No orderId in response: ${JSON.stringify(result)}` };
+
+      const verifyOnBook = async (): Promise<boolean> => {
+        try {
+          const onBook = await client.getOrder(orderId);
+          return onBook != null;
+        } catch {
+          return false;
+        }
+      };
+      await new Promise((r) => setTimeout(r, 400));
+      let onBook = await verifyOnBook();
+      if (!onBook) {
+        await new Promise((r) => setTimeout(r, 600));
+        onBook = await verifyOnBook();
+      }
+      if (!onBook) {
+        console.error(`[B4] place returned orderId ${orderId.slice(0, 12)}… but getOrder did not find order on book (possible eventual consistency)`);
+        return { error: 'Place returned orderId but getOrder could not confirm order on book' };
+      }
+
       return { orderId, tokenId, negRisk: market.negRisk ?? false, tickSize };
     });
   } catch (e) {
@@ -339,9 +361,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   // Poll wallet balance every ~15 min
   await pollWalletBalance();
 
-  // Refresh config from Supabase every ~30 ticks (~90 seconds)
-  if (tickCount % 30 === 0) {
+  // Refresh config from Supabase once per 5 min; early guard compares cached threshold to live spread
+  if (Date.now() - lastConfigRefreshMs > CONFIG_CACHE_MS) {
     await refreshConfig();
+    lastConfigRefreshMs = Date.now();
   }
 
   // Check tiers from HIGHEST to LOWEST (T3 first → T2 → T1)
@@ -520,15 +543,17 @@ export async function startSpreadRunner(): Promise<void> {
   let tickCount = 0;
 
   const runTick = async () => {
+    const tickStartMs = Date.now();
     tickCount++;
     try {
-      await feed.refresh();
       await runOneTick(feed, tickCount);
     } catch (e) {
       console.error('[B4] tick error:', e instanceof Error ? e.message : e);
       try { await logError(e, { bot: 'B4', stage: 'tick' }); } catch { /* ignore */ }
     }
-    setTimeout(runTick, TICK_INTERVAL_MS);
+    const elapsedMs = Date.now() - tickStartMs;
+    const delayMs = Math.max(0, MIN_TICK_DELAY_MS - elapsedMs);
+    setTimeout(runTick, delayMs);
   };
 
   runTick();

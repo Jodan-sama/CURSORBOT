@@ -29,15 +29,12 @@ import {
   orderParamsFromParsedMarket,
 } from '../polymarket/clob.js';
 import {
-  isEmergencyOff,
-  getPositionSize,
-  getSpreadThresholds,
-  getBotDelays,
+  getDashboardConfig,
+  getPositionSizeFromMatrix,
   logPosition,
   setAssetBlock,
-  isAssetBlocked,
-  hasB1PositionThisWindow,
-  hasBotPositionThisWindow,
+  getAssetBlocksAll,
+  getPositionsInWindowB123,
   hasKalshiPositionInLastHours,
   logError,
   logPolySkip,
@@ -52,8 +49,8 @@ function isPolymarketEnabled(): boolean {
 }
 
 const B1_CHECK_INTERVAL_MS = 5_000;
-const B2_CHECK_INTERVAL_MS = 30_000;
-const B3_CHECK_INTERVAL_MS = 60_000;
+const B2_CHECK_INTERVAL_MS = 10_000;  // B2 every 10s (every 2nd tick)
+const B3_CHECK_INTERVAL_MS = 30_000;  // B3 every 30s (every 6th tick)
 
 /** Failsafe: never enter if |spread| > this (e.g. bad data). Also never enter when spread is 0. */
 const MAX_SPREAD_PCT = 2;
@@ -69,6 +66,13 @@ const lastB3EarlyHighSpreadByAsset = new Map<Asset, number>();
 
 /** Last window we ran the 3h-no-trade watchdog. Run once per window at start. */
 let lastWatchdogWindowMs: number = 0;
+
+/** Dashboard config (emergency, thresholds, delays, position sizes) cached 15 min so ticks stay fast. */
+const DASHBOARD_CACHE_MS = 15 * 60 * 1000;
+let dashboardCache: Awaited<ReturnType<typeof getDashboardConfig>> & { ts: number } | null = null;
+
+/** No price cache: fetch Binance (or CoinGecko) every tick so live spread % is truly live for entry checks. */
+let priceCache: { prices: Record<Asset, number>; priceSource: Record<Asset, 'binance' | 'coingecko'>; ts: number } | null = null;
 
 const NO_TRADE_WATCHDOG_HOURS = 3;
 
@@ -185,7 +189,13 @@ async function tryPlacePolymarket(
 
 /** Returns true if tick completed successfully (got prices, ran loop). False if bailed early (e.g. price fetch failed). */
 export async function runOneTick(now: Date, tickCount: number = 0): Promise<boolean> {
-  if (await isEmergencyOff()) return true;
+  if (tickCount === 1) console.log('[cursorbot] first tick starting (fetching config & prices…)');
+  const nowMs = now.getTime();
+  if (!dashboardCache || nowMs - dashboardCache.ts > DASHBOARD_CACHE_MS) {
+    const fresh = await getDashboardConfig();
+    dashboardCache = { ...fresh, ts: nowMs };
+  }
+  if (dashboardCache.emergency_off) return true;
   if (isBlackoutWindow(now)) {
     if (tickCount % 12 === 0) console.log('[tick] blackout 08:00–08:15 MST (Utah) Mon–Fri; no trades');
     return true;
@@ -203,30 +213,40 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       process.exit(1);
     }
   }
-  const [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
+  const { spreadThresholds, delays, positionSizesMatrix } = dashboardCache;
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60 * 1000;
   const b3BlockMs = delays.b3BlockMin * 60 * 1000;
   const b3EarlyHighSpreadPct = delays.b3EarlyHighSpreadPct;
   const b3EarlyHighSpreadBlockMin = delays.b3EarlyHighSpreadBlockMin;
 
-  const ASSET_DELAY_MS = 400; // Space out Kalshi+Poly calls across assets to reduce burst rate limits
+  const ASSET_DELAY_MS = 100; // Reduced so ticks finish in ~5s; B1 every 5s, B2 every 30s, B3 every 60s
 
-  let prices: Record<Asset, number>;
-  let priceSource: Record<Asset, 'binance' | 'coingecko'>;
   try {
     const result = await fetchAllPricesOnce();
-    prices = result.prices;
-    priceSource = result.priceSource;
+    priceCache = { prices: result.prices, priceSource: result.priceSource, ts: nowMs };
   } catch (e) {
     await logError(e, { stage: 'market_data' });
     return false;
   }
+  const prices = priceCache.prices;
+  const priceSource = priceCache.priceSource;
+
+  const windowStartMs = windowEndMs - 15 * 60 * 1000;
+  const [blockedSet, positionsInWindow] = await Promise.all([
+    getAssetBlocksAll(),
+    getPositionsInWindowB123(windowStartMs),
+  ]);
 
   for (const asset of ASSETS) {
     if (asset !== ASSETS[0]) await new Promise((r) => setTimeout(r, ASSET_DELAY_MS));
     /** B3 block: when B3 placed recently, block B1/B2 only. B3 can always place in new windows. */
-    const blocked = await isAssetBlocked(asset);
-    if (blocked && tickCount % 12 === 0) console.log(`[tick] ${asset} B1/B2 skip (B3 cooldown 1h); B3 still eligible`);
+    const blocked = blockedSet.has(asset);
+    if (blocked && tickCount % 12 === 0) console.log(`[tick] ${asset} B1/B2 blocked by B3 cooldown (1h); B3 still eligible`);
+
+    /** Log when B2 window is active but B2 is skipped because blocked by B3, so logs clearly show B3 blocking. */
+    if (isB2Window(minutesLeft) && blocked && tickCount % 6 === 0) {
+      console.log(`[tick] B2 ${asset} skip: blocked by B3 cooldown`);
+    }
 
     let kalshiTicker: string | null = null;
     let kalshiStrike: number | null = null;
@@ -295,19 +315,21 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     }
     const side = sideFromSignedSpread(signedSpreadPct);
 
-    const sizeKalshiB1 = await getPositionSize('kalshi', 'B1', asset);
-    const sizePolyB1 = await getPositionSize('polymarket', 'B1', asset);
-    const sizeKalshiB2 = await getPositionSize('kalshi', 'B2', asset);
-    const sizePolyB2 = await getPositionSize('polymarket', 'B2', asset);
-    const sizeKalshiB3 = await getPositionSize('kalshi', 'B3', asset);
-    const sizePolyB3 = await getPositionSize('polymarket', 'B3', asset);
+    const sizeKalshiB1 = getPositionSizeFromMatrix(positionSizesMatrix, 'kalshi', 'B1', asset);
+    const sizePolyB1 = getPositionSizeFromMatrix(positionSizesMatrix, 'polymarket', 'B1', asset);
+    const sizeKalshiB2 = getPositionSizeFromMatrix(positionSizesMatrix, 'kalshi', 'B2', asset);
+    const sizePolyB2 = getPositionSizeFromMatrix(positionSizesMatrix, 'polymarket', 'B2', asset);
+    const sizeKalshiB3 = getPositionSizeFromMatrix(positionSizesMatrix, 'kalshi', 'B3', asset);
+    const sizePolyB3 = getPositionSizeFromMatrix(positionSizesMatrix, 'polymarket', 'B3', asset);
 
     // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). Blocked when B3 placed recently. ---
+    if (isB1Window(minutesLeft) && blocked && tickCount % 6 === 0) {
+      console.log(`[tick] B1 ${asset} skip: blocked by B3 cooldown`);
+    }
     if (!blocked && isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
-      const windowStartMs = windowEndMs - 15 * 60 * 1000;
       // Persisted check: prevents duplicate orders after restart (enteredThisWindow is in-memory only)
-      if (await hasB1PositionThisWindow(asset, windowStartMs)) {
+      if (positionsInWindow.has(`B1-${asset}`)) {
         enteredThisWindow.add(key);
         continue;
       }
@@ -331,14 +353,12 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
             : false;
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB1) {
-        if (tickCount % 6 === 0) console.log(`[tick] B1 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
+        console.log(`[tick] B1 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
         continue;
       }
       if (!bidOk) {
-        if (tickCount % 6 === 0) {
-          const want = inLimitWindow ? 'bid ≥90%' : 'bid 90–96%';
-          console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% (${want})`);
-        }
+        const want = inLimitWindow ? 'bid ≥90%' : 'bid 90–96%';
+        console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% (${want})`);
         continue;
       }
 
@@ -419,13 +439,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       }
     }
 
-    // --- B2: last 5 min, check every 30s, place 97% limit. Blocked when B3 placed recently. ---
-    if (!blocked && isB2Window(minutesLeft)) {
+    // --- B2: last 5 min, check every 10s (every 2nd tick), place 97% limit. Blocked when B3 placed recently. ---
+    if (tickCount % 2 === 0 && !blocked && isB2Window(minutesLeft)) {
       if (spreadMagnitude > delays.b2HighSpreadThresholdPct) lastB2HighSpreadByAsset.set(asset, now.getTime());
       const keyB2 = windowKey('B2', asset, windowEndMs);
       const windowStartMs = windowEndMs - 15 * 60 * 1000;
-      if (await hasBotPositionThisWindow('B2', asset, windowStartMs)) {
+      if (positionsInWindow.has(`B2-${asset}`)) {
         enteredThisWindow.add(keyB2);
+        console.log(`[tick] B2 ${asset} skip (already placed this window)`);
         continue;
       }
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
@@ -502,32 +523,31 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
         await logPolySkip({ bot: 'B2', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
         console.log(`B2 Poly ${asset} skip: ${reason}`);
       }
-      } else if (!outsideB2 && tickCount % 6 === 0) {
+      } else if (!outsideB2) {
         console.log(`[tick] B2 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
       }
     }
 
-    // --- B3: last 8 min, check every 1 min, place 97% limit. Fire Kalshi + Poly in parallel like B1/B2. ---
-    if (isB3Window(minutesLeft)) {
+    // --- B3: last 8 min, check every 30s (every 6th tick), place 97% limit. Fire Kalshi + Poly in parallel like B1/B2. ---
+    if (tickCount % 6 === 0 && isB3Window(minutesLeft)) {
       const key = windowKey('B3', asset, windowEndMs);
       const windowStartMs = windowEndMs - 15 * 60 * 1000;
-      if (await hasBotPositionThisWindow('B3', asset, windowStartMs)) {
+      if (positionsInWindow.has(`B3-${asset}`)) {
         enteredThisWindow.add(key);
+        console.log(`[tick] B3 ${asset} skip (already placed this window)`);
         continue;
       }
       const b3EarlyBlockMs = b3EarlyHighSpreadBlockMin * 60 * 1000;
       const tEarly = lastB3EarlyHighSpreadByAsset.get(asset);
       if (tEarly != null && now.getTime() - tEarly < b3EarlyBlockMs) {
-        if (tickCount % 12 === 0) {
-          const minLeft = Math.ceil((b3EarlyBlockMs - (now.getTime() - tEarly)) / 60000);
-          console.log(`[tick] B3 ${asset} skip: high spread >${b3EarlyHighSpreadPct}% detected; block ${minLeft} min left`);
-        }
+        const minLeft = Math.ceil((b3EarlyBlockMs - (now.getTime() - tEarly)) / 60000);
+        console.log(`[tick] B3 ${asset} skip: high spread >${b3EarlyHighSpreadPct}% detected; block ${minLeft} min left`);
         continue;
       }
       const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB3) {
-        if (tickCount % 12 === 0) console.log(`[tick] B3 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
+        console.log(`[tick] B3 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
         continue;
       }
 
@@ -625,13 +645,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
 /** Consecutive tick failures before we exit(1) to trigger systemd restart. 36 = 3 min at 5s ticks. */
 const WATCHDOG_FAILURE_LIMIT = 36;
 
-/** Run loop: B1 every 5s, B2 every 30s, B3 every 30s. Waits for each tick to finish before scheduling next—no overlapping ticks. */
+/** Run loop: B1 every 5s, B2 every 10s, B3 every 30s. Waits for each tick to finish before scheduling next—no overlapping ticks. */
 export function startBotLoop(): void {
   let tickCount = 0;
   let consecutiveFailures = 0;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   const runTick = async () => {
+    const tickStartMs = Date.now();
     tickCount += 1;
     const now = new Date();
     if (tickCount % 12 === 0) {
@@ -639,8 +660,8 @@ export function startBotLoop(): void {
       console.log(`[cursorbot] alive | UTC ${now.toISOString()} | ${venue}`);
     }
     const shouldB1 = true;
-    const shouldB2 = tickCount % 6 === 0;
-    const shouldB3 = tickCount % 6 === 0;
+    const shouldB2 = tickCount % 2 === 0;  // B2 every 10s
+    const shouldB3 = tickCount % 6 === 0; // B3 every 30s
     if (shouldB1 || shouldB2 || shouldB3) {
       try {
         const ok = await runOneTick(now, tickCount);
@@ -661,7 +682,11 @@ export function startBotLoop(): void {
         }
       }
     }
-    timeoutId = setTimeout(runTick, B1_CHECK_INTERVAL_MS);
+    // Schedule next tick 5s from *start* of this tick so B1 checks every 5s even when a tick runs long
+    const elapsedMs = Date.now() - tickStartMs;
+    const delayMs = Math.max(0, B1_CHECK_INTERVAL_MS - elapsedMs);
+    console.log(`[tick] ${tickCount} done in ${elapsedMs}ms next in ${delayMs}ms`);
+    timeoutId = setTimeout(runTick, delayMs);
   };
 
   runTick();

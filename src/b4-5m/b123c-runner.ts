@@ -25,13 +25,10 @@ import {
   isBlackoutWindow,
 } from '../clock.js';
 import {
-  isB4EmergencyOff,
   logError,
   logPosition,
-  loadB4Config,
-  getSpreadThresholds,
-  getBotDelays,
-  hasBotPositionThisWindow,
+  getB123cDashboardConfig,
+  getPositionsInWindowB123c,
   type BotId,
   type Asset,
 } from '../db/supabase.js';
@@ -45,6 +42,7 @@ import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
+  AssetType,
   type ClobClient,
   type CreateOrderOptions,
 } from '@polymarket/clob-client';
@@ -166,8 +164,10 @@ async function getPriceOrFallback(asset: Asset): Promise<number | null> {
 // Configuration
 // ---------------------------------------------------------------------------
 
-let positionSize = 5;
-const TICK_MS = 5_000;
+const MIN_TICK_DELAY_MS = 1_000;
+const DASHBOARD_CACHE_MS = 15 * 60 * 1000;
+type DashboardCache = Awaited<ReturnType<typeof getB123cDashboardConfig>> & { ts: number };
+let dashboardCache: DashboardCache | null = null;
 
 // ---------------------------------------------------------------------------
 // State — 15-minute window tracking
@@ -213,9 +213,17 @@ function isB2cBlocked(asset: Asset, now: number): boolean {
 // Proxy wrapper + CLOB client
 // ---------------------------------------------------------------------------
 
+let warnedNoProxy = false;
+
 async function withPolyProxy<T>(fn: () => Promise<T>): Promise<T> {
   const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
-  if (!proxy) return fn();
+  if (!proxy) {
+    if (!warnedNoProxy) {
+      warnedNoProxy = true;
+      console.warn('[B123c] No HTTPS_PROXY or HTTP_PROXY — orders not using proxy. Add to .env.b123c or load .env in cursorbot-b123c.service');
+    }
+    return fn();
+  }
   const axios = (await import('axios')).default;
   const { HttpsProxyAgent } = await import('https-proxy-agent');
   const prevUndici = (await import('undici')).getGlobalDispatcher();
@@ -240,7 +248,7 @@ async function getClobClient(): Promise<ClobClient> {
 }
 
 // ---------------------------------------------------------------------------
-// Place Polymarket GTC limit order
+// Place Polymarket GTC limit order. No balance check — use website order size only.
 // ---------------------------------------------------------------------------
 
 async function placeLimitOrder(
@@ -253,8 +261,10 @@ async function placeLimitOrder(
       const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
       if (!tokenId) return { error: `No ${side} token for ${slug}` };
       const client = await getClobClient();
+      // CLOB minimum for many 15m markets is 0.01; Gamma may return 0.001 — use at least 0.01 to avoid "invalid tick size" (B1c/2c/3c).
+      const rawTick = market.orderPriceMinTickSize != null ? Number(market.orderPriceMinTickSize) : 0.01;
       const tickSize: CreateOrderOptions['tickSize'] =
-        (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
+        (rawTick >= 0.01 ? String(rawTick) : '0.01') as CreateOrderOptions['tickSize'];
       const tickDec = String(tickSize).split('.')[1]?.length ?? 2;
       const factor = 10 ** tickDec;
       const price = Math.round(limitPrice * factor) / factor;
@@ -281,16 +291,16 @@ async function placeLimitOrder(
 
 async function tryPlace(
   bot: BotId, asset: Asset, slug: string, limitPrice: number,
-  signedSpread: number, side: 'yes' | 'no',
+  signedSpread: number, side: 'yes' | 'no', size: number,
 ): Promise<boolean> {
-  const result = await placeLimitOrder(slug, side, limitPrice, positionSize);
+  const result = await placeLimitOrder(slug, side, limitPrice, size);
   if (result.orderId) {
     console.log(`[B123c] ${bot} ${asset} ${side} ${limitPrice * 100}c placed | orderId=${result.orderId.slice(0, 12)}… spread=${signedSpread.toFixed(3)}%`);
     try {
       await logPosition({
         bot, asset, venue: 'polymarket',
         strike_spread_pct: signedSpread,
-        position_size: positionSize,
+        position_size: size,
         ticker_or_slug: slug,
         order_id: result.orderId,
         raw: { price_source: 'chainlink', limitPrice, direction: side },
@@ -308,15 +318,32 @@ async function tryPlace(
 // ---------------------------------------------------------------------------
 
 async function runOneTick(now: Date, tickCount: number): Promise<void> {
-  // Emergency off
-  if (tickCount % 10 === 0) {
-    try { if (await isB4EmergencyOff()) { if (tickCount % 100 === 0) console.log('[B123c] paused'); return; } } catch {}
-  }
   if (isBlackoutWindow(now)) return;
+
+  const nowMs = now.getTime();
+  if (!dashboardCache || nowMs - dashboardCache.ts > DASHBOARD_CACHE_MS) {
+    try {
+      const fresh = await getB123cDashboardConfig();
+      dashboardCache = { ...fresh, ts: nowMs };
+    } catch (e) {
+      if (tickCount % 12 === 0) console.warn('[B123c] dashboard config fetch failed:', e instanceof Error ? e.message : e);
+      if (!dashboardCache) return;
+    }
+  }
+  if (dashboardCache.emergencyOff) {
+    if (tickCount % 100 === 0) console.log('[B123c] paused');
+    return;
+  }
 
   const minLeft = minutesLeftInWindow(now);
   const windowEnd = getWindowEndMs(now);
-  const nowMs = now.getTime();
+  const windowStartMs = windowEnd - WINDOW_MS;
+  const positionSize = dashboardCache.positionSize;
+  const { spreadThresholds, delays } = dashboardCache;
+  const b3BlockMs = delays.b3BlockMin * 60_000;
+  const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
+
+  const positionsInWindow = await getPositionsInWindowB123c(windowStartMs);
 
   // New window → capture open prices (Chainlink or Binance fallback), clear tracking
   if (windowEnd !== currentWindowEndMs) {
@@ -330,24 +357,6 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       }
     }
   }
-
-  // Refresh config every ~30 ticks
-  if (tickCount % 30 === 0) {
-    try {
-      const cfg = await loadB4Config();
-      positionSize = cfg.b123c_position_size;
-    } catch {}
-  }
-
-  // Load spread thresholds and delay config
-  let spreadThresholds: SpreadThresholdsMatrix;
-  let delays: { b3BlockMin: number; b2HighSpreadThresholdPct: number; b2HighSpreadBlockMin: number; b3EarlyHighSpreadPct: number; b3EarlyHighSpreadBlockMin: number };
-  try {
-    [spreadThresholds, delays] = await Promise.all([getSpreadThresholds(), getBotDelays()]);
-  } catch { return; }
-
-  const b3BlockMs = delays.b3BlockMin * 60_000;
-  const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
 
   let anySkippedNoPrice = false;
   for (const asset of ASSETS) {
@@ -364,7 +373,6 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (abSpread > 2) { if (tickCount % 20 === 0) console.log(`[B123c] ${asset} skip: |spread| ${abSpread.toFixed(2)}% > 2% failsafe`); continue; }
     const side: 'yes' | 'no' = signedSpread >= 0 ? 'yes' : 'no';
     const slug = getCurrentPolySlug(asset, now);
-    const windowStartMs = windowEnd - WINDOW_MS;
 
     // --- B3c early high spread check (first 7 min of window) ---
     if (minLeft > 8 && tickCount % 12 === 0 && abSpread > delays.b3EarlyHighSpreadPct) {
@@ -376,15 +384,12 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     // --- B1c: last 2.5 min ---
     if (isB1Window(minLeft) && !isB1cBlocked(asset, nowMs, b2HighSpreadBlockMs)) {
       const key = windowKey('B1c', asset, windowEnd);
-      if (!enteredThisWindow.has(key)) {
-        if (await hasBotPositionThisWindow('B1c' as BotId, asset, windowStartMs)) {
-          enteredThisWindow.add(key);
-        } else if (isOutsideSpreadThreshold('B1', asset, abSpread, spreadThresholds)) {
-          const useMarket = isB1MarketOrderWindow(minLeft);
-          const priceB1 = useMarket ? 0.99 : 0.96;
-          const placed = await tryPlace('B1c', asset, slug, priceB1, signedSpread, side);
-          if (placed) enteredThisWindow.add(key);
-        }
+      if (positionsInWindow.has('B1c-' + asset)) enteredThisWindow.add(key);
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B1', asset, abSpread, spreadThresholds)) {
+        const useMarket = isB1MarketOrderWindow(minLeft);
+        const priceB1 = useMarket ? 0.99 : 0.96;
+        const placed = await tryPlace('B1c', asset, slug, priceB1, signedSpread, side, positionSize);
+        if (placed) enteredThisWindow.add(key);
       }
     }
 
@@ -392,13 +397,10 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (isB2Window(minLeft) && !isB2cBlocked(asset, nowMs)) {
       if (abSpread > delays.b2HighSpreadThresholdPct) b2cHighSpreadAt.set(asset, nowMs);
       const key = windowKey('B2c', asset, windowEnd);
-      if (!enteredThisWindow.has(key)) {
-        if (await hasBotPositionThisWindow('B2c' as BotId, asset, windowStartMs)) {
-          enteredThisWindow.add(key);
-        } else if (isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds)) {
-          const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side);
-          if (placed) enteredThisWindow.add(key);
-        }
+      if (positionsInWindow.has('B2c-' + asset)) enteredThisWindow.add(key);
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds)) {
+        const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side, positionSize);
+        if (placed) enteredThisWindow.add(key);
       }
     }
 
@@ -409,16 +411,13 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       if (earlyT && nowMs - earlyT < earlyBlockMs) continue;
 
       const key = windowKey('B3c', asset, windowEnd);
-      if (!enteredThisWindow.has(key)) {
-        if (await hasBotPositionThisWindow('B3c' as BotId, asset, windowStartMs)) {
+      if (positionsInWindow.has('B3c-' + asset)) enteredThisWindow.add(key);
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B3', asset, abSpread, spreadThresholds)) {
+        const placed = await tryPlace('B3c', asset, slug, 0.97, signedSpread, side, positionSize);
+        if (placed) {
           enteredThisWindow.add(key);
-        } else if (isOutsideSpreadThreshold('B3', asset, abSpread, spreadThresholds)) {
-          const placed = await tryPlace('B3c', asset, slug, 0.97, signedSpread, side);
-          if (placed) {
-            enteredThisWindow.add(key);
-            b3cBlockUntil.set(asset, nowMs + b3BlockMs);
-            console.log(`[B123c] B3c ${asset} placed → block B1c/B2c for ${delays.b3BlockMin}min`);
-          }
+          b3cBlockUntil.set(asset, nowMs + b3BlockMs);
+          console.log(`[B123c] B3c ${asset} placed → block B1c/B2c for ${delays.b3BlockMin}min`);
         }
       }
     }
@@ -429,8 +428,8 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s, Binance failed?): ${stale.join(' ')}`);
   }
 
-  // Periodic log
-  if (tickCount % 12 === 0) {
+  // Periodic log (every 3 ticks for less sparse feed)
+  if (tickCount % 3 === 0) {
     const parts: string[] = [];
     for (const a of ASSETS) {
       const p = getPrice(a);
@@ -456,9 +455,28 @@ export async function startB123cRunner(): Promise<void> {
   console.log('[B123c] Strategy: clone of B1/B2/B3 with Chainlink prices, Polymarket only');
   console.log('[B123c] Price source: Chainlink RTDS primary, Binance fallback when stale (same as B4)');
   console.log('[B123c] Blocking: in-memory only (no shared tables)');
-  console.log(`[B123c] Position size: $${positionSize}`);
+  // Prefill dashboard cache so first tick has config (position size logged below after fetch)
+  try {
+    const fresh = await getB123cDashboardConfig();
+    dashboardCache = { ...fresh, ts: Date.now() };
+    console.log(`[B123c] Position size from config: $${dashboardCache.positionSize}`);
+  } catch {
+    console.warn('[B123c] Initial dashboard config fetch failed; first tick will retry');
+  }
+  if (!dashboardCache) console.log('[B123c] Position size: $5 (default until config loaded)');
   console.log('[B123c] Tiers: B1c(last 2.5min,96c/99c) B2c(last 5min,97c) B3c(last 8min,97c)');
   console.log('');
+
+  // Refresh USDC allowance for CLOB so orders don't fail with "not enough balance / allowance" (B1c/2c/3c only; B4 untouched).
+  try {
+    await withPolyProxy(async () => {
+      const client = await getClobClient();
+      await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      console.log('[B123c] USDC balance allowance updated for CLOB');
+    });
+  } catch (e) {
+    console.warn('[B123c] Balance allowance update failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
 
   connectRTDS();
   await new Promise(r => setTimeout(r, 5_000));
@@ -467,16 +485,10 @@ export async function startB123cRunner(): Promise<void> {
   console.log(`[B123c] Chainlink live: ${live.length > 0 ? live.join(', ') : 'none yet (will retry)'}`);
   for (const a of live) console.log(`[B123c]   ${a}: $${getPrice(a)!.toFixed(2)}`);
 
-  // Refresh config
-  try {
-    const cfg = await loadB4Config();
-    positionSize = cfg.b123c_position_size;
-    console.log(`[B123c] Position size from config: $${positionSize}`);
-  } catch {}
-
   let tickCount = 0;
 
   const runTick = async () => {
+    const tickStartMs = Date.now();
     tickCount++;
     try {
       await runOneTick(new Date(), tickCount);
@@ -484,7 +496,9 @@ export async function startB123cRunner(): Promise<void> {
       console.error('[B123c] tick error:', e instanceof Error ? e.message : e);
       try { await logError(e, { bot: 'B1c', stage: 'tick' }); } catch {}
     }
-    setTimeout(runTick, TICK_MS);
+    const elapsedMs = Date.now() - tickStartMs;
+    const delayMs = Math.max(0, MIN_TICK_DELAY_MS - elapsedMs);
+    setTimeout(runTick, delayMs);
   };
 
   runTick();

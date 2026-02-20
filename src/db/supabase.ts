@@ -113,6 +113,81 @@ export async function getBotDelays(): Promise<{
   };
 }
 
+export type DashboardConfig = {
+  emergency_off: boolean;
+  spreadThresholds: SpreadThresholdsMatrix;
+  delays: Awaited<ReturnType<typeof getBotDelays>>;
+  positionSizesMatrix: PositionSizesMatrix;
+};
+
+/** One batch for 15-min cache: emergency, entry thresholds, delays, position sizes. */
+export async function getDashboardConfig(): Promise<DashboardConfig> {
+  const [config, spreadThresholds, posResult] = await Promise.all([
+    getBotConfig(),
+    getSpreadThresholds(),
+    getDb().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
+  ]);
+  const rows = posResult.error ? [] : (posResult.data ?? []);
+  const defaultK = config.position_size_kalshi;
+  const defaultP = config.position_size_polymarket;
+  const kalshi: PositionSizesMatrix['kalshi'] = { B1: { BTC: defaultK, ETH: defaultK, SOL: defaultK, XRP: defaultK }, B2: { BTC: defaultK, ETH: defaultK, SOL: defaultK, XRP: defaultK }, B3: { BTC: defaultK, ETH: defaultK, SOL: defaultK, XRP: defaultK } };
+  const polymarket: PositionSizesMatrix['polymarket'] = { B1: { BTC: defaultP, ETH: defaultP, SOL: defaultP, XRP: defaultP }, B2: { BTC: defaultP, ETH: defaultP, SOL: defaultP, XRP: defaultP }, B3: { BTC: defaultP, ETH: defaultP, SOL: defaultP, XRP: defaultP } };
+  for (const row of rows as { bot: string; asset: Asset; size_kalshi?: number; size_polymarket?: number }[]) {
+    if (row.bot === 'B1' || row.bot === 'B2' || row.bot === 'B3') {
+      if (row.size_kalshi != null) kalshi[row.bot][row.asset] = row.size_kalshi;
+      if (row.size_polymarket != null) polymarket[row.bot][row.asset] = row.size_polymarket;
+    }
+  }
+  const delays: DashboardConfig['delays'] = {
+    b3BlockMin: Number(config.b3_block_min) || 60,
+    b2HighSpreadThresholdPct: Number(config.b2_high_spread_threshold_pct) || 0.55,
+    b2HighSpreadBlockMin: Number(config.b2_high_spread_block_min) || 15,
+    b3EarlyHighSpreadPct: Number(config.b3_early_high_spread_pct) ?? 1.8,
+    b3EarlyHighSpreadBlockMin: Number(config.b3_early_high_spread_block_min) ?? 15,
+  };
+  return {
+    emergency_off: config.emergency_off,
+    spreadThresholds,
+    delays,
+    positionSizesMatrix: { kalshi, polymarket },
+  };
+}
+
+/** Matrix (venue -> bot -> asset -> size) for B1/B2/B3. One getBotConfig + one query instead of 24 getPositionSize calls. */
+export type PositionSizesMatrix = {
+  kalshi: Record<'B1' | 'B2' | 'B3', Record<Asset, number>>;
+  polymarket: Record<'B1' | 'B2' | 'B3', Record<Asset, number>>;
+};
+
+export async function getPositionSizesMatrix(): Promise<PositionSizesMatrix> {
+  const [config, result] = await Promise.all([
+    getBotConfig(),
+    getDb().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
+  ]);
+  const rows = result.error ? [] : (result.data ?? []);
+  const defaultK = config.position_size_kalshi;
+  const defaultP = config.position_size_polymarket;
+  const kalshi: PositionSizesMatrix['kalshi'] = { B1: { BTC: defaultK, ETH: defaultK, SOL: defaultK, XRP: defaultK }, B2: { BTC: defaultK, ETH: defaultK, SOL: defaultK, XRP: defaultK }, B3: { BTC: defaultK, ETH: defaultK, SOL: defaultK, XRP: defaultK } };
+  const polymarket: PositionSizesMatrix['polymarket'] = { B1: { BTC: defaultP, ETH: defaultP, SOL: defaultP, XRP: defaultP }, B2: { BTC: defaultP, ETH: defaultP, SOL: defaultP, XRP: defaultP }, B3: { BTC: defaultP, ETH: defaultP, SOL: defaultP, XRP: defaultP } };
+  for (const row of rows as { bot: string; asset: Asset; size_kalshi?: number; size_polymarket?: number }[]) {
+    if (row.bot === 'B1' || row.bot === 'B2' || row.bot === 'B3') {
+      if (row.size_kalshi != null) kalshi[row.bot][row.asset] = row.size_kalshi;
+      if (row.size_polymarket != null) polymarket[row.bot][row.asset] = row.size_polymarket;
+    }
+  }
+  return { kalshi, polymarket };
+}
+
+/** Get position size for a venue (with optional per-bot/asset override). */
+export function getPositionSizeFromMatrix(
+  matrix: PositionSizesMatrix,
+  venue: Venue,
+  bot: 'B1' | 'B2' | 'B3',
+  asset: Asset
+): number {
+  return venue === 'kalshi' ? matrix.kalshi[bot][asset] : matrix.polymarket[bot][asset];
+}
+
 /** Get position size for a venue (with optional per-bot/asset override). */
 export async function getPositionSize(
   venue: Venue,
@@ -203,6 +278,56 @@ export async function hasBotPositionThisWindow(bot: BotId, asset: Asset, windowS
   return data != null;
 }
 
+/** All (bot, asset) with a position in this 15m window. One query instead of up to 12. Returns keys like 'B1-BTC'. */
+export async function getPositionsInWindowB123(windowStartMs: number): Promise<Set<string>> {
+  const windowStart = new Date(windowStartMs).toISOString();
+  const { data, error } = await getDb()
+    .from('positions')
+    .select('bot, asset')
+    .in('bot', ['B1', 'B2', 'B3'])
+    .gte('entered_at', windowStart);
+  if (error) return new Set();
+  const set = new Set<string>();
+  for (const row of (data ?? []) as { bot: string; asset: Asset }[]) set.add(`${row.bot}-${row.asset}`);
+  return set;
+}
+
+/** All (bot, asset) with a position in this 15m window for B1c/B2c/B3c. One query per tick. Returns keys like 'B1c-BTC'. */
+export async function getPositionsInWindowB123c(windowStartMs: number): Promise<Set<string>> {
+  const windowStart = new Date(windowStartMs).toISOString();
+  const { data, error } = await getDb()
+    .from('positions')
+    .select('bot, asset')
+    .in('bot', ['B1c', 'B2c', 'B3c'])
+    .gte('entered_at', windowStart);
+  if (error) return new Set();
+  const set = new Set<string>();
+  for (const row of (data ?? []) as { bot: string; asset: Asset }[]) set.add(`${row.bot}-${row.asset}`);
+  return set;
+}
+
+/** B123c dashboard config: thresholds, delays, position size, emergency off. One burst every 15 min. */
+export async function getB123cDashboardConfig(): Promise<{
+  spreadThresholds: SpreadThresholdsMatrix;
+  delays: Awaited<ReturnType<typeof getBotDelays>>;
+  positionSize: number;
+  emergencyOff: boolean;
+}> {
+  const [spreadThresholds, delays, b4Res] = await Promise.all([
+    getSpreadThresholds(),
+    getBotDelays(),
+    getDb().from('b4_state').select('cooldown_until_ms, results_json').eq('id', 'default').maybeSingle(),
+  ]);
+  const data = b4Res.data as { cooldown_until_ms?: number; results_json?: Record<string, unknown> } | null;
+  const emergencyOff = data?.cooldown_until_ms === 1;
+  let positionSize = DEFAULT_B4_CONFIG.b123c_position_size;
+  if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
+    const v = (data.results_json as Record<string, unknown>).b123c_position_size;
+    if (typeof v === 'number' && v > 0) positionSize = v;
+  }
+  return { spreadThresholds, delays, positionSize, emergencyOff };
+}
+
 /** True if at least one Kalshi position was logged in the last N hours. */
 export async function hasKalshiPositionInLastHours(hours: number): Promise<boolean> {
   const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
@@ -215,6 +340,19 @@ export async function hasKalshiPositionInLastHours(hours: number): Promise<boole
     .maybeSingle();
   if (error) return true; // on DB error, assume we have activity (don't restart)
   return data != null;
+}
+
+/** All assets currently blocked (B3 filled recently). One query instead of 4. */
+export async function getAssetBlocksAll(): Promise<Set<Asset>> {
+  const now = new Date().toISOString();
+  const { data, error } = await getDb()
+    .from('asset_blocks')
+    .select('asset')
+    .gt('block_until', now);
+  if (error) throw new Error(`getAssetBlocksAll: ${error.message}`);
+  const set = new Set<Asset>();
+  for (const row of (data ?? []) as { asset: Asset }[]) set.add(row.asset);
+  return set;
 }
 
 /** True if this asset is currently blocked (B3 filled recently). */

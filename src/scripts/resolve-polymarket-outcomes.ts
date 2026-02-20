@@ -14,6 +14,18 @@ import type { ClobClient } from '@polymarket/clob-client';
 import { getOrCreateDerivedPolyClient, createDerivedPolyClientFromConfig } from '../polymarket/clob.js';
 import { fetchGammaEvent } from '../polymarket/gamma.js';
 
+/** Apply HTTPS_PROXY/HTTP_PROXY globally for the process. Call once at start so derive and getOrder both use it (cron). */
+async function applyPolyProxy(): Promise<void> {
+  const proxy = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? '';
+  if (!proxy) return;
+  const axios = (await import('axios')).default;
+  const { HttpsProxyAgent } = await import('https-proxy-agent');
+  const undici = await import('undici');
+  undici.setGlobalDispatcher(new undici.ProxyAgent(proxy));
+  axios.defaults.httpsAgent = new HttpsProxyAgent(proxy);
+  axios.defaults.proxy = false;
+}
+
 type PositionRow = {
   id: string;
   bot: string;
@@ -111,6 +123,8 @@ async function main() {
     return;
   }
 
+  await applyPolyProxy();
+
   let b4Client: ClobClient | null = null;
   let b123cClient: ClobClient | null = null;
   try {
@@ -150,6 +164,21 @@ async function main() {
     }
 
     const clob = (row.bot === 'B4' || row.bot === 'B1' || row.bot === 'B2' || row.bot === 'B3') ? b4Client : b123cClient;
+    // B4 and B1/B2/B3 Poly: require CLOB client and verified fill. Never set win/loss from Gamma alone.
+    if (row.bot === 'B4' || row.bot === 'B1' || row.bot === 'B2' || row.bot === 'B3') {
+      if (!clob) {
+        const { error: updateError } = await supabase
+          .from('positions')
+          .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (updateError) console.error(`Update no_fill (no B4 CLOB client) ${row.id}:`, updateError.message);
+        else {
+          updated++;
+          console.log(`Resolved ${row.bot} ${slug}: no_fill (resolver has no Polymarket credentials — set outcome to no_fill, not win/loss)`);
+        }
+        continue;
+      }
+    }
     if (clob) {
       let filled = false;
       try {
@@ -171,7 +200,7 @@ async function main() {
         continue;
       }
     }
-    // No CLOB client for this bot → skip fill check; still allow Gamma resolution below (e.g. B123c without .env.b123c)
+    // No CLOB client for this bot → skip fill check; still allow Gamma resolution below (B123c only when .env.b123c missing)
 
     const windowEndSec = getWindowEndUnixFromSlug(slug);
     if (windowEndSec == null) continue;

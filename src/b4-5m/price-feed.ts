@@ -185,33 +185,52 @@ export class PriceFeed {
     return this.buffer.filter((c) => c.openTime >= startMs && c.openTime < endMs);
   }
 
+  /** Retry Chainlink for this many ms after window start before falling back to Binance. */
+  private static readonly CHAINLINK_RETRY_MS = 30_000;
+  private static readonly CHAINLINK_MAX_AGE_MS = 10_000;
+
   /**
    * Record the window open price from Chainlink at the window boundary.
-   * Called when a new 5-minute window starts.
+   * Called when a new 5-minute window starts. Prefer Chainlink; if not ready, leave null
+   * so getWindowOpen() can retry for 30s then fall back to Binance.
    */
   setWindowOpen(windowStartMs: number): void {
     if (this.currentWindowStart === windowStartMs) return;
     this.currentWindowStart = windowStartMs;
 
-    // Capture the current Chainlink price as the window open
     const cl = getChainlinkPrice();
-    if (cl && cl.ageMs < 10_000) {
+    if (cl && cl.ageMs < PriceFeed.CHAINLINK_MAX_AGE_MS) {
       this.windowOpenChainlink = cl.price;
       console.log(`[PriceFeed] window open (Chainlink): $${cl.price.toFixed(2)} (age ${cl.ageMs}ms)`);
     } else {
-      // Chainlink not yet available — fall back to last Binance candle close
-      const prior = this.buffer.filter((c) => c.closeTime <= windowStartMs);
-      this.windowOpenChainlink = prior.length > 0 ? prior[prior.length - 1].close : null;
-      console.warn(`[PriceFeed] window open fallback (Binance): $${this.windowOpenChainlink?.toFixed(2) ?? 'null'}`);
+      this.windowOpenChainlink = null;
+      console.warn(`[PriceFeed] window open: Chainlink not ready yet (will retry up to 30s, then Binance fallback)`);
     }
   }
 
-  /** Get the window open price (Chainlink preferred). */
+  /** Get the window open price. Retries Chainlink for 30s, then Binance fallback (cached for window). */
   async getWindowOpen(): Promise<number> {
     if (this.windowOpenChainlink != null) return this.windowOpenChainlink;
-    // Fallback: fetch Binance spot
-    const candles = await fetchRecentKlines(1);
-    return candles.length > 0 ? candles[0].close : 0;
+
+    const elapsedSinceWindowStart = Date.now() - this.currentWindowStart;
+    if (elapsedSinceWindowStart < PriceFeed.CHAINLINK_RETRY_MS) {
+      const cl = getChainlinkPrice();
+      if (cl && cl.ageMs < PriceFeed.CHAINLINK_MAX_AGE_MS) {
+        this.windowOpenChainlink = cl.price;
+        console.log(`[PriceFeed] window open (Chainlink after retry): $${cl.price.toFixed(2)}`);
+        return cl.price;
+      }
+    } else {
+      // Past 30s or Chainlink still not ready — use Binance once and cache
+      const candles = await fetchRecentKlines(1);
+      const price = candles.length > 0 ? candles[0].close : 0;
+      if (price > 0) {
+        this.windowOpenChainlink = price;
+        console.warn(`[PriceFeed] window open fallback (Binance): $${price.toFixed(2)}`);
+      }
+      return price;
+    }
+    return 0;
   }
 
   /**

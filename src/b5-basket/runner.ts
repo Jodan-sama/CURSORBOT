@@ -229,7 +229,7 @@ async function runOneScan(): Promise<void> {
   }
 
   const { balance } = await getMaxBalanceForSizing(WALLET);
-  const maxEntryUsd = Math.min(5, Math.max(1, B5_CONFIG.staticPositionUsd));
+  const maxEntryUsd = Math.min(2, Math.max(1, B5_CONFIG.staticPositionUsd));
   if (positions.size === 0 && balance < maxEntryUsd) {
     return; // skip new entries when we can't afford max entry size; sell monitor still runs when we have a position
   }
@@ -351,7 +351,7 @@ async function runOneScan(): Promise<void> {
       const tickSize: CreateOrderOptions['tickSize'] =
         (c.market.orderPriceMinTickSize ? String(c.market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
       const negRisk = c.market.negRisk ?? false;
-      // Max $5 per single position (hard cap). Polymarket min $1.
+      // Max $2 per single position (hard cap). Polymarket min $1.
       const amountUsd = maxEntryUsd;
 
       const buyResult = await placeFokBuy(client, c.tokenId, amountUsd, tickSize, negRisk);
@@ -377,7 +377,7 @@ async function runOneScan(): Promise<void> {
       // Let Polymarket credit the tokens before placing limit sells (avoids "not enough balance / allowance")
       await new Promise((r) => setTimeout(r, 3000));
 
-      // Take-profit limit sells: 10c 50%, 12c 30%, 15c 20% of position
+      // Take-profit limit sells: 10c 50%, 12c 30%, 15c 20% of position. Retry until placed (balance/allowance can lag).
       const t0 = Math.max(1, Math.min(Math.round(shares * 0.5), shares - 2));
       const t1 = Math.max(0, Math.min(Math.round(shares * 0.3), shares - t0 - 1));
       const t2 = Math.max(0, shares - t0 - t1);
@@ -386,16 +386,28 @@ async function runOneScan(): Promise<void> {
         { price: 0.12, size: t1 },
         { price: 0.15, size: t2 },
       ].filter((t) => t.size >= 1);
+      const maxLimitSellRetries = 8;
       for (const t of tiers) {
         const sellPrice = Math.min(0.99, t.price);
         if (sellPrice >= 0.99) continue;
-        const sellResult = await placeLimitSell(client, c.tokenId, sellPrice, t.size, tickSize, negRisk);
-        if (sellResult.error) {
-          console.warn(`[B5] Limit sell failed: ${c.question.slice(0, 30)}… price=${sellPrice.toFixed(2)} size=${t.size} — ${sellResult.error}`);
-        } else {
-          console.log(`[B5] Limit sell placed: ${c.question.slice(0, 30)}… @ ${sellPrice.toFixed(2)} size=${t.size} orderId=${sellResult.orderId ?? '(none)'}`);
+        let placed = false;
+        for (let attempt = 1; attempt <= maxLimitSellRetries; attempt++) {
+          const sellResult = await placeLimitSell(client, c.tokenId, sellPrice, t.size, tickSize, negRisk);
+          if (!sellResult.error) {
+            console.log(`[B5] Limit sell placed: ${c.question.slice(0, 30)}… @ ${sellPrice.toFixed(2)} size=${t.size} orderId=${sellResult.orderId ?? '(none)'}`);
+            placed = true;
+            break;
+          }
+          if (attempt < maxLimitSellRetries) {
+            console.log(`[B5] Limit sell retry ${attempt}/${maxLimitSellRetries} in 2s (${sellPrice.toFixed(2)} size=${t.size}): ${sellResult.error}`);
+            await new Promise((r) => setTimeout(r, 2000));
+          } else {
+            console.warn(`[B5] Limit sell failed: ${c.question.slice(0, 30)}… price=${sellPrice.toFixed(2)} size=${t.size} — ${sellResult.error}`);
+            break;
+          }
         }
-        await new Promise((r) => setTimeout(r, 500)); // small gap between orders so CLOB sees updated balance
+        if (!placed) console.warn(`[B5] Limit sell NOT placed for ${sellPrice.toFixed(2)} size=${t.size} after ${maxLimitSellRetries} attempts`);
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
   });
