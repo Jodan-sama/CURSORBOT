@@ -815,6 +815,14 @@ export default function Dashboard() {
               return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</>;
             })()}
           </div>
+          <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+            <strong>B1/B2/B3 Polymarket</strong> (last 100):{' '}
+            {b123PolyResolved.length === 0 ? (
+              <span style={{ color: '#888' }}>no resolved yet</span>
+            ) : (
+              <><strong style={{ color: '#22c55e' }}>{b123PolyWins}</strong> / {b123PolyResolved.length} ({b123PolyWinRateResolved}%)</>
+            )}
+          </div>
         </div>
       </section>
 
@@ -1103,9 +1111,6 @@ export default function Dashboard() {
         <h2 style={headingStyle}>B1/B2/B3 – Polymarket (most recent first)</h2>
         <p style={{ marginBottom: 8 }}>
           <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders sorted by time so the latest (including new wins/losses) is at the top. B1/B2/B3 Poly are placed from D1; Win/Loss appear once the resolver has run (every ~10 min). Page auto-refreshes every 90s.</span>
-          {b123PolyWinRateResolved != null && (
-            <span style={{ marginLeft: 12, fontWeight: 600 }}>Win rate (resolved): {b123PolyWinRateResolved}% ({b123PolyWins}W / {b123PolyLosses}L)</span>
-          )}
           <button type="button" onClick={downloadCsvPoly} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV'}</button>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
