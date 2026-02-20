@@ -21,7 +21,6 @@ import { ethers } from 'ethers';
 import { PriceFeed, getChainlinkPrice } from './price-feed.js';
 import {
   getWindowStart,
-  msUntilWindowEnd,
   getPolySlug5m,
   secondsIntoWindow,
 } from './clock.js';
@@ -105,6 +104,11 @@ interface OpenOrder {
 const openOrders: OpenOrder[] = [];
 let currentWindowStart = 0;
 const placedThisWindow = new Set<string>();
+
+/** Stale spread detection: if last 10 spread samples are exactly the same, skip placing for rest of window. */
+const SPREAD_SAMPLE_SIZE = 10;
+const spreadSampleBuffer: number[] = [];
+let staleSpreadThisWindow = false;
 
 // Blocking timestamps (in-memory for hot path; persisted to Supabase on set, loaded on startup)
 let t1BlockedUntil = 0;
@@ -298,10 +302,12 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const windowStartMs = getWindowStart(now).getTime();
   const secInWindow = secondsIntoWindow(now);
 
-  // New window → reset tracking
+  // New window → reset tracking and stale-spread state
   if (windowStartMs !== currentWindowStart) {
     currentWindowStart = windowStartMs;
     placedThisWindow.clear();
+    spreadSampleBuffer.length = 0;
+    staleSpreadThisWindow = false;
     feed.setWindowOpen(windowStartMs);
   }
 
@@ -321,6 +327,18 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   const spreadDir: 'up' | 'down' = btcPrice > windowOpenPrice ? 'up' : 'down';
   const slug = getPolySlug5m(now);
   const nowMs = Date.now();
+
+  // --- Stale spread check: every 10 ticks, if last 10 spreads are exactly the same, skip rest of window
+  spreadSampleBuffer.push(signedSpread);
+  if (spreadSampleBuffer.length > SPREAD_SAMPLE_SIZE) spreadSampleBuffer.shift();
+  if (tickCount % 10 === 0 && spreadSampleBuffer.length >= SPREAD_SAMPLE_SIZE) {
+    const first = spreadSampleBuffer[0];
+    if (spreadSampleBuffer.every((s) => s === first)) {
+      staleSpreadThisWindow = true;
+      console.log(`[B4] STALE SPREAD: ${SPREAD_SAMPLE_SIZE} identical readings (${signedSpread.toFixed(4)}%) — skipping rest of window`);
+    }
+  }
+  if (staleSpreadThisWindow) return;
 
   // --- Early-window high-spread guard (runs even when B4 is paused so block is set before un-pause) ---
   // During first 100s, check every ~15s: if |spread| >= threshold (either + or -) → cooldown on B4 spread bot

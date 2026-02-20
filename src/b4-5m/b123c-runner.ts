@@ -3,7 +3,7 @@
  *
  * Runs on the B4 droplet with the B4 wallet. Same spread thresholds, timing
  * windows, and blocking rules as the original B1/B2/B3, but:
- *   1. Chainlink RTDS primary; Binance REST fallback when Chainlink stale (same pattern as B4)
+ *   1. Chainlink RTDS only; no Binance fallback (same as B4 — if stale, skip)
  *   2. Polymarket only (no Kalshi)
  *   3. Separate position sizing
  *   4. All blocking in-memory (does NOT touch asset_blocks table)
@@ -32,7 +32,7 @@ import {
   type BotId,
   type Asset,
 } from '../db/supabase.js';
-import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix, fetchBinancePrice } from '../kalshi/spread.js';
+import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
@@ -124,14 +124,8 @@ function scheduleReconnect(): void {
   setTimeout(connectRTDS, RECONNECT_MS);
 }
 
-/** Max age (ms) for Chainlink price before considered stale. 60s so brief RTDS gaps don't disable order logic. */
+/** Max age (ms) for Chainlink price before considered stale. No Binance fallback. */
 const PRICE_STALE_MS = 60_000;
-/** When using Binance fallback, cache it per asset to avoid hammering REST (same idea as B4). */
-const FALLBACK_CACHE_MS = 30_000;
-const fallbackPrices: Record<Asset, { price: number; ts: number }> = {
-  BTC: { price: 0, ts: 0 }, ETH: { price: 0, ts: 0 },
-  SOL: { price: 0, ts: 0 }, XRP: { price: 0, ts: 0 },
-};
 
 function getPrice(asset: Asset): number | null {
   const p = chainlinkPrices[asset];
@@ -139,21 +133,9 @@ function getPrice(asset: Asset): number | null {
   return p.price;
 }
 
-/** Current price: Chainlink if fresh, else Binance fallback (cached). Same pattern as B4 getSpotPrice(). */
+/** Current price — Chainlink only (no Binance). If stale, returns null and we skip that asset. */
 async function getPriceOrFallback(asset: Asset): Promise<number | null> {
-  const chainlink = getPrice(asset);
-  if (chainlink != null) return chainlink;
-  const fb = fallbackPrices[asset];
-  if (fb.price > 0 && Date.now() - fb.ts < FALLBACK_CACHE_MS) return fb.price;
-  try {
-    const price = await fetchBinancePrice(asset);
-    fallbackPrices[asset] = { price, ts: Date.now() };
-    if (fb.price === 0) console.log(`[B123c] Chainlink stale – using Binance fallback for ${asset}`);
-    return price;
-  } catch (e) {
-    if (fb.price > 0) return fb.price;
-    return null;
-  }
+  return getPrice(asset);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +333,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
 
   const positionsInWindow = await getPositionsInWindowB123c(windowStartMs);
 
-  // New window → capture open prices (Chainlink or Binance fallback), clear tracking
+  // New window → capture open prices (Chainlink only), clear tracking
   if (windowEnd !== currentWindowEndMs) {
     currentWindowEndMs = windowEnd;
     enteredThisWindow.clear();
@@ -451,7 +433,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
 
   if (anySkippedNoPrice && tickCount % 12 === 0) {
     const stale = ASSETS.filter(a => !getPrice(a));
-    if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s, Binance failed?): ${stale.join(' ')}`);
+    if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s): ${stale.join(' ')}`);
   }
 
   // Periodic log every tick (~1s) so feed is frequent
@@ -479,7 +461,7 @@ export async function startB123cRunner(): Promise<void> {
   console.log('');
   console.log('[B123c] ═══ B1c/B2c/B3c Chainlink Runner Starting ═══');
   console.log('[B123c] Strategy: clone of B1/B2/B3 with Chainlink prices, Polymarket only');
-  console.log('[B123c] Price source: Chainlink RTDS primary, Binance fallback when stale (same as B4)');
+  console.log('[B123c] Price source: Chainlink RTDS only (no Binance fallback, same as B4)');
   console.log('[B123c] Blocking: in-memory only (no shared tables)');
   // Prefill dashboard cache so first tick has config (position size logged below after fetch)
   try {

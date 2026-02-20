@@ -1,16 +1,12 @@
 /**
  * Live price feed for B4.
  *
- * Two sources:
- * 1. **Chainlink via Polymarket RTDS** — real-time BTC/USD price that Polymarket
- *    uses to resolve 5-minute markets. Used for window open/close and win/loss
- *    determination. Free WebSocket, no auth, no proxy.
- * 2. **Binance REST** — 1-minute BTCUSDT klines for signal computation (momentum,
- *    RSI, volume). Not used for resolution.
+ * Chainlink only (via Polymarket RTDS) — real-time BTC/USD price that Polymarket
+ * uses to resolve 5-minute markets. No Binance fallback; if Chainlink is unavailable
+ * we skip all bots and retry; after 2 minutes we reset.
  */
 
 import WebSocket from 'ws';
-import type { Candle1m } from './download-candles.js';
 
 // ---------------------------------------------------------------------------
 // Chainlink price via Polymarket RTDS WebSocket
@@ -24,7 +20,11 @@ let chainlinkPrice: number | null = null;
 let chainlinkTimestamp = 0;
 let ws: WebSocket | null = null;
 let pingTimer: ReturnType<typeof setInterval> | null = null;
+let staleCheckTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
+/** Last time we received a price update. If no update for this long, connection is "silent" — force reconnect. */
+let lastPriceMessageMs = 0;
+const SILENT_RECONNECT_MS = 45_000;
 
 function connectRTDS(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -39,6 +39,7 @@ function connectRTDS(): void {
   }
 
   ws.on('open', () => {
+    lastPriceMessageMs = Date.now();
     console.log('[RTDS] connected to Polymarket Chainlink feed');
     ws!.send(JSON.stringify({
       action: 'subscribe',
@@ -48,13 +49,21 @@ function connectRTDS(): void {
         filters: '{"symbol":"btc/usd"}',
       }],
     }));
-    // Ping every 5s to keep connection alive
     if (pingTimer) clearInterval(pingTimer);
     pingTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action: 'ping' }));
       }
     }, PING_INTERVAL_MS);
+    if (staleCheckTimer) clearInterval(staleCheckTimer);
+    staleCheckTimer = setInterval(() => {
+      if (ws?.readyState !== WebSocket.OPEN || reconnecting) return;
+      const elapsed = Date.now() - lastPriceMessageMs;
+      if (elapsed > SILENT_RECONNECT_MS) {
+        console.warn(`[RTDS] no price update for ${Math.round(elapsed / 1000)}s — reconnecting`);
+        try { ws.close(); } catch { /* ignore */ }
+      }
+    }, 10_000);
   });
 
   ws.on('message', (raw: WebSocket.Data) => {
@@ -64,6 +73,7 @@ function connectRTDS(): void {
         payload?: { symbol?: string; value?: number; timestamp?: number };
       };
       if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol === 'btc/usd' && msg.payload.value) {
+        lastPriceMessageMs = Date.now();
         chainlinkPrice = msg.payload.value;
         chainlinkTimestamp = msg.payload.timestamp ?? Date.now();
       }
@@ -86,6 +96,8 @@ function scheduleReconnect(): void {
   if (reconnecting) return;
   reconnecting = true;
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  if (staleCheckTimer) { clearInterval(staleCheckTimer); staleCheckTimer = null; }
+  ws = null;
   setTimeout(connectRTDS, RECONNECT_DELAY_MS);
 }
 
@@ -96,155 +108,70 @@ export function getChainlinkPrice(): { price: number; ageMs: number } | null {
 }
 
 // ---------------------------------------------------------------------------
-// Binance REST — 1-minute candles for signal engine
+// PriceFeed class (Chainlink only; no Binance fallback)
 // ---------------------------------------------------------------------------
 
-const BINANCE_ENDPOINTS = [
-  'https://api.binance.com/api/v3/klines',
-  'https://api.binance.us/api/v3/klines',
-  'https://api1.binance.com/api/v3/klines',
-];
+/** Retry Chainlink for this long after window start before giving up and allowing reset. */
+export const CHAINLINK_RETRY_MS = 2 * 60_000; // 2 minutes
 
-const SYMBOL = 'BTCUSDT';
-const BUFFER_SIZE = 30;
-
-let workingEndpoint: string | null = null;
-
-function parseKline(k: unknown[]): Candle1m {
-  return {
-    openTime: k[0] as number,
-    open: parseFloat(k[1] as string),
-    high: parseFloat(k[2] as string),
-    low: parseFloat(k[3] as string),
-    close: parseFloat(k[4] as string),
-    volume: parseFloat(k[5] as string),
-    closeTime: k[6] as number,
-    takerBuyVolume: parseFloat(k[9] as string),
-  };
-}
-
-async function fetchRecentKlines(limit: number = BUFFER_SIZE): Promise<Candle1m[]> {
-  const endpoints = workingEndpoint ? [workingEndpoint, ...BINANCE_ENDPOINTS.filter((e) => e !== workingEndpoint)] : BINANCE_ENDPOINTS;
-
-  for (const base of endpoints) {
-    const url = `${base}?symbol=${SYMBOL}&interval=1m&limit=${limit}`;
-    try {
-      const res = await fetch(url);
-      if (res.status === 451 || res.status === 403) continue;
-      if (!res.ok) continue;
-      const raw = (await res.json()) as unknown[][];
-      workingEndpoint = base;
-      return raw.map(parseKline);
-    } catch {
-      continue;
-    }
-  }
-  throw new Error('All Binance endpoints failed');
-}
-
-// ---------------------------------------------------------------------------
-// PriceFeed class
-// ---------------------------------------------------------------------------
+const CHAINLINK_MAX_AGE_MS = 10_000;
 
 export class PriceFeed {
-  private buffer: Candle1m[] = [];
-  private lastFetchMs = 0;
-
   /** Chainlink price captured at the window boundary. */
   private windowOpenChainlink: number | null = null;
   private currentWindowStart = 0;
+  private didResetThisWindow = false;
 
   constructor() {
-    // Start the RTDS WebSocket on creation
     connectRTDS();
   }
 
-  /** Fetch latest Binance candles and update buffer. */
-  async refresh(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastFetchMs < 5_000) return;
-    this.lastFetchMs = now;
-
-    try {
-      const candles = await fetchRecentKlines(BUFFER_SIZE);
-      this.buffer = candles;
-    } catch (e) {
-      console.error('[PriceFeed] refresh failed:', e instanceof Error ? e.message : e);
-    }
-  }
-
-  getBuffer(): Candle1m[] {
-    return [...this.buffer];
-  }
-
-  getCandlesBefore(timestampMs: number, count: number): Candle1m[] {
-    return this.buffer.filter((c) => c.openTime < timestampMs).slice(-count);
-  }
-
-  getCandlesInRange(startMs: number, endMs: number): Candle1m[] {
-    return this.buffer.filter((c) => c.openTime >= startMs && c.openTime < endMs);
-  }
-
-  /** Retry Chainlink for this many ms after window start before falling back to Binance. */
-  private static readonly CHAINLINK_RETRY_MS = 30_000;
-  private static readonly CHAINLINK_MAX_AGE_MS = 10_000;
+  /** No-op for API compatibility (Binance candles removed; other runners may still call this). */
+  async refresh(): Promise<void> {}
 
   /**
    * Record the window open price from Chainlink at the window boundary.
-   * Called when a new 5-minute window starts. Prefer Chainlink; if not ready, leave null
-   * so getWindowOpen() can retry for 30s then fall back to Binance.
+   * If Chainlink not ready, leave null so getWindowOpen() retries for up to 2 min.
    */
   setWindowOpen(windowStartMs: number): void {
     if (this.currentWindowStart === windowStartMs) return;
     this.currentWindowStart = windowStartMs;
+    this.didResetThisWindow = false;
 
     const cl = getChainlinkPrice();
-    if (cl && cl.ageMs < PriceFeed.CHAINLINK_MAX_AGE_MS) {
+    if (cl && cl.ageMs < CHAINLINK_MAX_AGE_MS) {
       this.windowOpenChainlink = cl.price;
       console.log(`[PriceFeed] window open (Chainlink): $${cl.price.toFixed(2)} (age ${cl.ageMs}ms)`);
     } else {
       this.windowOpenChainlink = null;
-      console.warn(`[PriceFeed] window open: Chainlink not ready yet (will retry up to 30s, then Binance fallback)`);
+      console.warn(`[PriceFeed] window open: Chainlink not ready (will retry up to 2 min, then reset)`);
     }
   }
 
-  /** Get the window open price. Retries Chainlink for 30s, then Binance fallback (cached for window). */
+  /** Get the window open price. Chainlink only; retries for 2 min, then returns 0 (caller should reset). */
   async getWindowOpen(): Promise<number> {
     if (this.windowOpenChainlink != null) return this.windowOpenChainlink;
 
     const elapsedSinceWindowStart = Date.now() - this.currentWindowStart;
-    if (elapsedSinceWindowStart < PriceFeed.CHAINLINK_RETRY_MS) {
+    if (elapsedSinceWindowStart < CHAINLINK_RETRY_MS) {
       const cl = getChainlinkPrice();
-      if (cl && cl.ageMs < PriceFeed.CHAINLINK_MAX_AGE_MS) {
+      if (cl && cl.ageMs < CHAINLINK_MAX_AGE_MS) {
         this.windowOpenChainlink = cl.price;
         console.log(`[PriceFeed] window open (Chainlink after retry): $${cl.price.toFixed(2)}`);
         return cl.price;
       }
-    } else {
-      // Past 30s or Chainlink still not ready — use Binance once and cache
-      const candles = await fetchRecentKlines(1);
-      const price = candles.length > 0 ? candles[0].close : 0;
-      if (price > 0) {
-        this.windowOpenChainlink = price;
-        console.warn(`[PriceFeed] window open fallback (Binance): $${price.toFixed(2)}`);
-      }
-      return price;
+    } else if (!this.didResetThisWindow) {
+      // No Chainlink for 2 min — reset once so we can try again next window
+      this.didResetThisWindow = true;
+      this.reset();
     }
     return 0;
   }
 
-  /**
-   * Get current spot price for resolution — uses Chainlink (same as Polymarket oracle).
-   * Only falls back to Binance if Chainlink is stale (>15 seconds).
-   */
+  /** Current spot price — Chainlink only. If stale, returns 0 (skip bots). */
   async getSpotPrice(): Promise<number> {
     const cl = getChainlinkPrice();
     if (cl && cl.ageMs < 15_000) return cl.price;
-
-    // Chainlink stale — warn and fall back to fresh Binance spot
-    console.warn(`[PriceFeed] Chainlink stale (age ${cl?.ageMs ?? 'null'}ms), falling back to Binance`);
-    const candles = await fetchRecentKlines(1);
-    if (candles.length > 0) return candles[candles.length - 1].close;
     return 0;
   }
 
@@ -252,5 +179,16 @@ export class PriceFeed {
   isChainlinkLive(): boolean {
     const cl = getChainlinkPrice();
     return cl != null && cl.ageMs < 15_000;
+  }
+
+  /**
+   * Reset window state after 2 min without Chainlink so we can try again next window.
+   * Call after getWindowOpen() has returned 0 for 2 min.
+   */
+  reset(): void {
+    this.windowOpenChainlink = null;
+    this.currentWindowStart = 0;
+    this.didResetThisWindow = true;
+    console.log('[PriceFeed] reset: cleared window state (no Chainlink for 2 min)');
   }
 }
