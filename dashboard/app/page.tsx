@@ -422,8 +422,7 @@ export default function Dashboard() {
   const isPolymarket = (v: string) => (v ?? '').toLowerCase() === 'polymarket';
   const isFilled = (o: string | null | undefined) => (o ?? '').toLowerCase() === 'win' || (o ?? '').toLowerCase() === 'loss';
   const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 100);
-  // B1/B2/B3 Polymarket: most recently resolved first, then by entered_at, so new wins/losses appear at top
-  const filledPolyIds = new Set(b123PolyFilled.map((p) => p.id));
+  // B1/B2/B3 Polymarket: only Win/Loss here (no fill and pending are in the section below)
   const b123PolyResolved = b123PolyFilled.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
   const b123PolyWins = b123PolyResolved.filter((p) => p.outcome === 'win').length;
   const b123PolyLosses = b123PolyResolved.filter((p) => p.outcome === 'loss').length;
@@ -431,10 +430,7 @@ export default function Dashboard() {
     b123PolyResolved.length > 0
       ? ((b123PolyWins / b123PolyResolved.length) * 100).toFixed(1)
       : null;
-  const positionsPoly = [
-    ...b123PolyFilled,
-    ...positions.filter((p) => isPolymarket(p.venue) && !filledPolyIds.has(p.id)).slice(0, 100),
-  ].sort((a, b) => {
+  const positionsPoly = [...b123PolyFilled].sort((a, b) => {
     const ra = a.resolved_at ? new Date(a.resolved_at).getTime() : 0;
     const rb = b.resolved_at ? new Date(b.resolved_at).getTime() : 0;
     if (rb !== ra) return rb - ra;
