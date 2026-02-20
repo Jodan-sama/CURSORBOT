@@ -205,6 +205,15 @@ function isB2cBlocked(asset: Asset, now: number): boolean {
   return !!(b3t && now < b3t);
 }
 
+/** Return block reason for B1c for logging, or null if not blocked. */
+function b1cBlockReason(asset: Asset, now: number, b2BlockMs: number, b2BlockMin: number): string | null {
+  const b3t = b3cBlockUntil.get(asset);
+  if (b3t && now < b3t) return `B3c cooldown (${Math.ceil((b3t - now) / 60_000)} min left)`;
+  const b2t = b2cHighSpreadAt.get(asset);
+  if (b2t && now - b2t < b2BlockMs) return `${b2BlockMin} min delay after B2c high spread (${Math.ceil((b2BlockMs - (now - b2t)) / 60_000)} min left)`;
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Proxy wrapper + CLOB client
 // ---------------------------------------------------------------------------
@@ -379,6 +388,12 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     }
 
     // --- B1c: last 2.5 min ---
+    if (isB1Window(minLeft)) {
+      const b1cReason = b1cBlockReason(asset, nowMs, b2HighSpreadBlockMs, delays.b2HighSpreadBlockMin);
+      if (b1cReason && tickCount % 6 === 0) {
+        console.log(`[B123c] B1c ${asset} skip: ${b1cReason}`);
+      }
+    }
     if (isB1Window(minLeft) && !isB1cBlocked(asset, nowMs, b2HighSpreadBlockMs)) {
       const key = windowKey('B1c', asset, windowEnd);
       if (positionsInWindow.has('B1c-' + asset)) enteredThisWindow.add(key);
@@ -392,6 +407,11 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     }
 
     // --- B2c: last 5 min ---
+    if (isB2Window(minLeft) && isB2cBlocked(asset, nowMs) && tickCount % 6 === 0) {
+      const b3t = b3cBlockUntil.get(asset);
+      const blockMinLeft = b3t ? Math.ceil((b3t - nowMs) / 60_000) : 0;
+      console.log(`[B123c] B2c ${asset} skip: blocked by B3c cooldown (${blockMinLeft} min left)`);
+    }
     if (isB2Window(minLeft) && !isB2cBlocked(asset, nowMs)) {
       if (abSpread > delays.b2HighSpreadThresholdPct) b2cHighSpreadAt.set(asset, nowMs);
       const key = windowKey('B2c', asset, windowEnd);
@@ -407,7 +427,13 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (isB3Window(minLeft)) {
       const earlyT = b3cEarlyHighAt.get(asset);
       const earlyBlockMs = delays.b3EarlyHighSpreadBlockMin * 60_000;
-      if (earlyT && nowMs - earlyT < earlyBlockMs) continue;
+      if (earlyT && nowMs - earlyT < earlyBlockMs) {
+        if (tickCount % 6 === 0) {
+          const minLeft = Math.ceil((earlyBlockMs - (nowMs - earlyT)) / 60_000);
+          console.log(`[B123c] B3c ${asset} skip: high spread block (${minLeft} min left)`);
+        }
+        continue;
+      }
 
       const key = windowKey('B3c', asset, windowEnd);
       if (positionsInWindow.has('B3c-' + asset)) enteredThisWindow.add(key);
