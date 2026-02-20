@@ -126,6 +126,8 @@ function scheduleReconnect(): void {
 
 /** Max age (ms) for Chainlink price before considered stale. No Binance fallback. */
 const PRICE_STALE_MS = 60_000;
+/** No Chainlink for this long → soft reset (clear window open, log to website), same as B4. */
+const CHAINLINK_RETRY_MS = 2 * 60_000;
 
 function getPrice(asset: Asset): number | null {
   const p = chainlinkPrices[asset];
@@ -160,6 +162,9 @@ function getWindowEndMs(now: Date = new Date()): number {
 
 let currentWindowEndMs = 0;
 const windowOpenPrices: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
+/** First time we had no price this window; after 2 min we soft-reset and log (same as B4). */
+let noPriceSinceMs = 0;
+let didSoftResetThisWindow = false;
 const enteredThisWindow = new Set<string>();
 
 function windowKey(bot: string, asset: Asset, windowEnd: number): string {
@@ -337,6 +342,8 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   if (windowEnd !== currentWindowEndMs) {
     currentWindowEndMs = windowEnd;
     enteredThisWindow.clear();
+    noPriceSinceMs = 0;
+    didSoftResetThisWindow = false;
     for (const a of ASSETS) {
       const p = await getPriceOrFallback(a);
       if (p && p > 0) {
@@ -344,6 +351,20 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
         if (tickCount > 1) console.log(`[B123c] window open ${a}: $${p.toFixed(2)}`);
       }
     }
+  }
+
+  // No Chainlink for 2 min → soft reset (clear window open, log to website), same as B4
+  if (noPriceSinceMs > 0 && nowMs - noPriceSinceMs >= CHAINLINK_RETRY_MS && !didSoftResetThisWindow) {
+    didSoftResetThisWindow = true;
+    for (const a of ASSETS) windowOpenPrices[a] = 0;
+    noPriceSinceMs = 0;
+    console.log('[B123c] No Chainlink price for 2 min — soft reset (same as B4)');
+    try {
+      await logError(
+        new Error('No Chainlink price — B123c skipping; soft reset after 2 min (same as B4). No orders until next window.'),
+        { bot: 'B123c', stage: 'chainlink', windowEndMs: currentWindowEndMs },
+      );
+    } catch { /* best effort */ }
   }
 
   let anySkippedNoPrice = false;
@@ -431,9 +452,14 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     }
   }
 
-  if (anySkippedNoPrice && tickCount % 12 === 0) {
-    const stale = ASSETS.filter(a => !getPrice(a));
-    if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s): ${stale.join(' ')}`);
+  if (anySkippedNoPrice) {
+    if (noPriceSinceMs === 0) noPriceSinceMs = nowMs;
+    if (tickCount % 12 === 0) {
+      const stale = ASSETS.filter(a => !getPrice(a));
+      if (stale.length) console.log(`[B123c] no price (Chainlink stale >${PRICE_STALE_MS / 1000}s): ${stale.join(' ')}`);
+    }
+  } else {
+    noPriceSinceMs = 0; // we have price, clear so 2-min timer doesn't run
   }
 
   // Periodic log every tick (~1s) so feed is frequent

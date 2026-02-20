@@ -110,6 +110,9 @@ const SPREAD_SAMPLE_SIZE = 10;
 const spreadSampleBuffer: number[] = [];
 let staleSpreadThisWindow = false;
 
+/** Log "No Chainlink price" to error_log once per window so the website shows it. */
+let loggedNoChainlinkThisWindow = false;
+
 // Blocking timestamps (in-memory for hot path; persisted to Supabase on set, loaded on startup)
 let t1BlockedUntil = 0;
 let t2BlockedUntil = 0;
@@ -308,6 +311,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     placedThisWindow.clear();
     spreadSampleBuffer.length = 0;
     staleSpreadThisWindow = false;
+    loggedNoChainlinkThisWindow = false;
     feed.setWindowOpen(windowStartMs);
   }
 
@@ -320,7 +324,18 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
   // Calculate spread early so early guard can run even when B4 is paused
   const windowOpenPrice = await feed.getWindowOpen();
-  if (windowOpenPrice <= 0) return;
+  if (windowOpenPrice <= 0) {
+    if (!loggedNoChainlinkThisWindow) {
+      loggedNoChainlinkThisWindow = true;
+      try {
+        await logError(
+          new Error('No Chainlink price — B4 skipping (retry up to 2 min, then reset). No orders this window.'),
+          { bot: 'B4', stage: 'chainlink', windowStartMs },
+        );
+      } catch { /* best effort */ }
+    }
+    return;
+  }
 
   const signedSpread = (btcPrice - windowOpenPrice) / btcPrice * 100;
   const absSpread = Math.abs(signedSpread);

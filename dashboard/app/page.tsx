@@ -701,6 +701,9 @@ export default function Dashboard() {
 
       <section style={{ marginBottom: 24 }}>
         <h2 style={headingStyle}>Recent errors</h2>
+        <p style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+          Errors mentioning <strong>No Chainlink price</strong> mean the bot could not get a price and skipped orders (B4/B123c retry up to 2 min then reset).
+        </p>
         {errors.length === 0 ? (
           <p style={{ color: '#666' }}>No errors logged.</p>
         ) : (
@@ -713,13 +716,16 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {errors.map((e) => (
-                <tr key={e.id}>
-                  <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(e.created_at, true)}</td>
-                  <td style={{ borderBottom: '1px solid #eee', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.message}>{e.message}</td>
-                  <td style={{ borderBottom: '1px solid #eee', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.context ? JSON.stringify(e.context) : undefined}>{e.context ? JSON.stringify(e.context) : '—'}</td>
-                </tr>
-              ))}
+              {errors.map((e) => {
+                const isNoChainlink = e.message?.toLowerCase().includes('no chainlink');
+                return (
+                  <tr key={e.id}>
+                    <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(e.created_at, true)}</td>
+                    <td style={{ borderBottom: '1px solid #eee', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isNoChainlink ? '#b91c1c' : undefined }} title={e.message}>{e.message}</td>
+                    <td style={{ borderBottom: '1px solid #eee', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.context ? JSON.stringify(e.context) : undefined}>{e.context ? JSON.stringify(e.context) : '—'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
