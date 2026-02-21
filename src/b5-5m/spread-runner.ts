@@ -115,8 +115,8 @@ const spreadSampleBuffer: Map<B5Asset, number[]> = new Map();
 const staleSpreadThisWindow: Map<B5Asset, boolean> = new Map();
 let loggedNoChainlinkThisWindow: Map<B5Asset, boolean> = new Map();
 
-let t1BlockedUntil = 0;
-let t2BlockedUntil = 0;
+const t1BlockedUntil: Record<B5Asset, number> = { ETH: 0, SOL: 0, XRP: 0 };
+const t2BlockedUntil: Record<B5Asset, number> = { ETH: 0, SOL: 0, XRP: 0 };
 let earlyGuardCooldownUntil = 0;
 
 // ---------------------------------------------------------------------------
@@ -386,8 +386,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       if (tier.name === 'B5-T3' && secInWindow >= T3_WINDOW_END_SEC) continue;
       if (absSpread < tier.spreadPct) continue;
       if (openOrders.some(o => o.tier === tier.name && o.windowStart === windowStartMs && o.asset === asset)) continue;
-      if (tier.name === 'B5-T1' && nowMs < t1BlockedUntil) continue;
-      if (tier.name === 'B5-T2' && nowMs < t2BlockedUntil) continue;
+      if (tier.name === 'B5-T1' && nowMs < t1BlockedUntil[asset]) continue;
+      if (tier.name === 'B5-T2' && nowMs < t2BlockedUntil[asset]) continue;
 
       const side: 'yes' | 'no' = spreadDir === 'up' ? 'yes' : 'no';
       console.log(
@@ -442,15 +442,15 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         } catch { /* best effort */ }
 
         if (tier.name === 'B5-T2') {
-          t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t2BlockMs);
-          updateB5TierBlocks(t1BlockedUntil, t2BlockedUntil);
-          console.log(`[B5] T2 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1 blocked for ${t2BlockMs / 60_000} min`);
+          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t2BlockMs);
+          updateB5TierBlocks(asset, t1BlockedUntil[asset], t2BlockedUntil[asset]);
+          console.log(`[B5] T2 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1 blocked for ${asset} for ${t2BlockMs / 60_000} min`);
         }
         if (tier.name === 'B5-T3') {
-          t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlockMs);
-          t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlockMs);
-          updateB5TierBlocks(t1BlockedUntil, t2BlockedUntil);
-          console.log(`[B5] T3 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1+T2 blocked for ${t3BlockMs / 60_000} min`);
+          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t3BlockMs);
+          t2BlockedUntil[asset] = Math.max(t2BlockedUntil[asset], nowMs + t3BlockMs);
+          updateB5TierBlocks(asset, t1BlockedUntil[asset], t2BlockedUntil[asset]);
+          console.log(`[B5] T3 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1+T2 blocked for ${asset} for ${t3BlockMs / 60_000} min`);
         }
       } else {
         console.log(`[B5] ${tier.name} ${asset} order failed: ${result.error}`);
@@ -478,8 +478,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       console.log(`[B5] ${priceSpreadLine}`);
     }
     console.log(`[B5] Pending orders: ${openOrders.length}`);
-    if (t1BlockedUntil > nowMs) console.log(`[B5] T1 blocked for ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s (all assets)`);
-    if (t2BlockedUntil > nowMs) console.log(`[B5] T2 blocked for ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s (all assets)`);
+    for (const a of B5_ASSETS) {
+      if (t1BlockedUntil[a] > nowMs) console.log(`[B5] T1 blocked ${a} for ${Math.ceil((t1BlockedUntil[a] - nowMs) / 1000)}s`);
+      if (t2BlockedUntil[a] > nowMs) console.log(`[B5] T2 blocked ${a} for ${Math.ceil((t2BlockedUntil[a] - nowMs) / 1000)}s`);
+    }
     console.log('');
   }
 }
@@ -496,16 +498,23 @@ export async function startSpreadRunner(): Promise<void> {
   const blocks = await getB5Blocks();
   if (blocks) {
     const now = Date.now();
-    t1BlockedUntil = (blocks.t1BlockedUntilMs > now) ? blocks.t1BlockedUntilMs : 0;
-    t2BlockedUntil = (blocks.t2BlockedUntilMs > now) ? blocks.t2BlockedUntilMs : 0;
+    let anyBlock = false;
+    for (const a of B5_ASSETS) {
+      const pa = blocks.perAsset[a];
+      t1BlockedUntil[a] = (pa.t1BlockedUntilMs > now) ? pa.t1BlockedUntilMs : 0;
+      t2BlockedUntil[a] = (pa.t2BlockedUntilMs > now) ? pa.t2BlockedUntilMs : 0;
+      if (t1BlockedUntil[a] > 0 || t2BlockedUntil[a] > 0) anyBlock = true;
+    }
     earlyGuardCooldownUntil = (blocks.earlyGuardCooldownUntilMs > now) ? blocks.earlyGuardCooldownUntilMs : 0;
-    if (t1BlockedUntil > 0 || t2BlockedUntil > 0 || earlyGuardCooldownUntil > 0) {
-      console.log(
-        `[B5] Blocks restored from Supabase (set by a previous run when T2/T3 placed) — ` +
-        `T1 until ${t1BlockedUntil ? new Date(t1BlockedUntil).toISOString() : '—'}, ` +
-        `T2 until ${t2BlockedUntil ? new Date(t2BlockedUntil).toISOString() : '—'}, ` +
-        `early-guard until ${earlyGuardCooldownUntil ? new Date(earlyGuardCooldownUntil).toISOString() : '—'}`,
-      );
+    if (anyBlock || earlyGuardCooldownUntil > 0) {
+      const parts: string[] = [];
+      for (const a of B5_ASSETS) {
+        if (t1BlockedUntil[a] > 0 || t2BlockedUntil[a] > 0) {
+          parts.push(`${a}: T1 until ${t1BlockedUntil[a] ? new Date(t1BlockedUntil[a]).toISOString() : '—'}, T2 until ${t2BlockedUntil[a] ? new Date(t2BlockedUntil[a]).toISOString() : '—'}`);
+        }
+      }
+      if (parts.length) console.log(`[B5] Blocks restored from Supabase (per-asset, set by a previous run when T2/T3 placed) — ${parts.join('; ')}`);
+      if (earlyGuardCooldownUntil > 0) console.log(`[B5] Early-guard cooldown until ${new Date(earlyGuardCooldownUntil).toISOString()}`);
     }
   }
 

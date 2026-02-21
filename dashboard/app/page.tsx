@@ -317,10 +317,13 @@ export default function Dashboard() {
   }
 
   async function clearB5Blocks() {
-    if (!confirm('Clear T1/T2 blocks and early-guard cooldown in DB? Restart B5 spread service on D3 for it to take effect.')) return;
+    if (!confirm('Clear T1/T2 blocks (all assets) and early-guard cooldown in DB? Restart B5 spread service on D3 for it to take effect.')) return;
     setSaving(true);
-    await getSupabase().from('b5_tier_blocks').upsert({ id: 'default', t1_blocked_until_ms: 0, t2_blocked_until_ms: 0, updated_at: new Date().toISOString() }, { onConflict: 'id' });
-    await getSupabase().from('b5_early_guard').upsert({ id: 'default', cooldown_until_ms: 0, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    const ts = new Date().toISOString();
+    for (const asset of ['ETH', 'SOL', 'XRP']) {
+      await getSupabase().from('b5_tier_blocks').upsert({ id: asset, t1_blocked_until_ms: 0, t2_blocked_until_ms: 0, updated_at: ts }, { onConflict: 'id' });
+    }
+    await getSupabase().from('b5_early_guard').upsert({ id: 'default', cooldown_until_ms: 0, updated_at: ts }, { onConflict: 'id' });
     await load();
     setSaving(false);
   }

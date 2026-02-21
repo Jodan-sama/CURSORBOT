@@ -160,12 +160,12 @@ create table if not exists b5_state (
 insert into b5_state (id) values ('default') on conflict (id) do nothing;
 
 create table if not exists b5_tier_blocks (
-  id text primary key default 'default',
+  id text primary key,
   t1_blocked_until_ms bigint not null default 0,
   t2_blocked_until_ms bigint not null default 0,
   updated_at timestamptz not null default now()
 );
-insert into b5_tier_blocks (id) values ('default') on conflict (id) do nothing;
+insert into b5_tier_blocks (id, t1_blocked_until_ms, t2_blocked_until_ms, updated_at) values ('ETH', 0, 0, now()), ('SOL', 0, 0, now()), ('XRP', 0, 0, now()) on conflict (id) do nothing;
 
 create table if not exists b5_early_guard (
   id text primary key default 'default',

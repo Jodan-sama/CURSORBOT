@@ -700,23 +700,43 @@ export async function setB5EmergencyOff(off: boolean): Promise<void> {
   }).eq('id', 'default');
 }
 
-export interface B5BlocksRow {
+export type B5Asset = 'ETH' | 'SOL' | 'XRP';
+
+export interface B5BlocksPerAsset {
   t1BlockedUntilMs: number;
   t2BlockedUntilMs: number;
+}
+
+export interface B5BlocksRow {
+  perAsset: Record<B5Asset, B5BlocksPerAsset>;
   earlyGuardCooldownUntilMs: number;
 }
+
+const B5_ASSET_IDS: B5Asset[] = ['ETH', 'SOL', 'XRP'];
 
 export async function getB5Blocks(): Promise<B5BlocksRow | null> {
   try {
     const [tierRes, guardRes] = await Promise.all([
-      getDb().from('b5_tier_blocks').select('t1_blocked_until_ms, t2_blocked_until_ms').eq('id', 'default').maybeSingle(),
+      getDb().from('b5_tier_blocks').select('id, t1_blocked_until_ms, t2_blocked_until_ms').in('id', B5_ASSET_IDS),
       getDb().from('b5_early_guard').select('cooldown_until_ms').eq('id', 'default').maybeSingle(),
     ]);
-    const tier = (tierRes as { data?: { t1_blocked_until_ms?: number; t2_blocked_until_ms?: number } | null }).data;
+    const tierRows = (tierRes as { data?: { id: string; t1_blocked_until_ms?: number; t2_blocked_until_ms?: number }[] }).data ?? [];
     const guard = (guardRes as { data?: { cooldown_until_ms?: number } | null }).data;
+    const perAsset: Record<B5Asset, B5BlocksPerAsset> = {
+      ETH: { t1BlockedUntilMs: 0, t2BlockedUntilMs: 0 },
+      SOL: { t1BlockedUntilMs: 0, t2BlockedUntilMs: 0 },
+      XRP: { t1BlockedUntilMs: 0, t2BlockedUntilMs: 0 },
+    };
+    for (const row of tierRows) {
+      if (row.id === 'ETH' || row.id === 'SOL' || row.id === 'XRP') {
+        perAsset[row.id] = {
+          t1BlockedUntilMs: Number(row.t1_blocked_until_ms) || 0,
+          t2BlockedUntilMs: Number(row.t2_blocked_until_ms) || 0,
+        };
+      }
+    }
     return {
-      t1BlockedUntilMs: Number(tier?.t1_blocked_until_ms) || 0,
-      t2BlockedUntilMs: Number(tier?.t2_blocked_until_ms) || 0,
+      perAsset,
       earlyGuardCooldownUntilMs: Number(guard?.cooldown_until_ms) || 0,
     };
   } catch (e) {
@@ -725,10 +745,10 @@ export async function getB5Blocks(): Promise<B5BlocksRow | null> {
   }
 }
 
-export async function updateB5TierBlocks(t1BlockedUntilMs: number, t2BlockedUntilMs: number): Promise<void> {
+export async function updateB5TierBlocks(asset: B5Asset, t1BlockedUntilMs: number, t2BlockedUntilMs: number): Promise<void> {
   try {
     await getDb().from('b5_tier_blocks').upsert({
-      id: 'default',
+      id: asset,
       t1_blocked_until_ms: t1BlockedUntilMs,
       t2_blocked_until_ms: t2BlockedUntilMs,
       updated_at: new Date().toISOString(),
