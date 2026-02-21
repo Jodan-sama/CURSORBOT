@@ -47,14 +47,15 @@ interface TierConfig {
   limitPrice: number;
 }
 
+/** B4 convention: T1 = lowest spread (enters last), T3 = highest spread (enters first, blocks T1+T2). Config stores high in eth_t1_spread and low in eth_t3_spread; we map so runner T1/T3 match B4. */
 function getTiersForAsset(cfg: B5TierConfig, asset: B5Asset): TierConfig[] {
-  const t1 = asset === 'ETH' ? cfg.eth_t1_spread : asset === 'SOL' ? cfg.sol_t1_spread : cfg.xrp_t1_spread;
+  const cfgHigh = asset === 'ETH' ? cfg.eth_t1_spread : asset === 'SOL' ? cfg.sol_t1_spread : cfg.xrp_t1_spread;
   const t2 = asset === 'ETH' ? cfg.eth_t2_spread : asset === 'SOL' ? cfg.sol_t2_spread : cfg.xrp_t2_spread;
-  const t3 = asset === 'ETH' ? cfg.eth_t3_spread : asset === 'SOL' ? cfg.sol_t3_spread : cfg.xrp_t3_spread;
+  const cfgLow = asset === 'ETH' ? cfg.eth_t3_spread : asset === 'SOL' ? cfg.sol_t3_spread : cfg.xrp_t3_spread;
   return [
-    { name: 'B5-T1', spreadPct: t1, entryAfterSec: 250, limitPrice: 0.96 },
+    { name: 'B5-T1', spreadPct: cfgLow, entryAfterSec: 250, limitPrice: 0.96 },   // T1 = lowest entry level (like B4)
     { name: 'B5-T2', spreadPct: t2, entryAfterSec: 180, limitPrice: 0.97 },
-    { name: 'B5-T3', spreadPct: t3, entryAfterSec: 100, limitPrice: 0.97 },
+    { name: 'B5-T3', spreadPct: cfgHigh, entryAfterSec: 100, limitPrice: 0.97 },  // T3 = highest spread, blocks T1+T2
   ];
 }
 
