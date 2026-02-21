@@ -121,17 +121,34 @@ export default function Dashboard() {
   const [b4CsvLoading, setB4CsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [b5MinEdge, setB5MinEdge] = useState('0.2');
+  const [b5State, setB5State] = useState<{ bankroll: number; cooldown_until_ms: number; results_json: Record<string, unknown>; updated_at: string } | null>(null);
+  const [b5Config, setB5Config] = useState<{
+    eth_t1_spread: string; eth_t2_spread: string; eth_t3_spread: string;
+    sol_t1_spread: string; sol_t2_spread: string; sol_t3_spread: string;
+    xrp_t1_spread: string; xrp_t2_spread: string; xrp_t3_spread: string;
+    t2_block_min: string; t3_block_min: string; position_size: string;
+    early_guard_spread_pct: string; early_guard_cooldown_min: string;
+  }>({
+    eth_t1_spread: '0.32', eth_t2_spread: '0.181', eth_t3_spread: '0.110',
+    sol_t1_spread: '0.32', sol_t2_spread: '0.206', sol_t3_spread: '0.121',
+    xrp_t1_spread: '0.32', xrp_t2_spread: '0.206', xrp_t3_spread: '0.121',
+    t2_block_min: '5', t3_block_min: '15', position_size: '5',
+    early_guard_spread_pct: '0.45', early_guard_cooldown_min: '60',
+  });
+  const [b5Positions, setB5Positions] = useState<Position[]>([]);
 
   async function load() {
     setLoadError(null);
     try {
       const spreadPromise = getSupabase().from('spread_thresholds').select('bot, asset, threshold_pct');
       const b4StatePromise = getSupabase().from('b4_state').select('*').eq('id', 'default').maybeSingle();
+      const b5StatePromise = getSupabase().from('b5_state').select('*').eq('id', 'default').maybeSingle();
       const [
         { data: configData },
         { data: posData },
         { data: b123PolyFilledData },
         { data: b4PosData },
+        { data: b5PosData },
         { data: b123cPosData },
         { data: b123cUnfilledData },
         { data: errData },
@@ -140,11 +157,13 @@ export default function Dashboard() {
         { data: botSizesData },
         { data: claimLogData },
         b4StateResult,
+        b5StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
         getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1000),
         getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').eq('bot', 'B5').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -153,10 +172,12 @@ export default function Dashboard() {
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
         getSupabase().from('polymarket_claim_log').select('message, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
         Promise.resolve(b4StatePromise).catch(() => ({ data: null })),
+        Promise.resolve(b5StatePromise).catch(() => ({ data: null })),
       ]);
       setConfig(configData ?? null);
       setPositions((posData ?? []) as Position[]);
       setB4Positions((b4PosData ?? []) as Position[]);
+      setB5Positions((b5PosData ?? []) as Position[]);
       setB123cPositions((b123cPosData ?? []) as Position[]);
       setB123cUnfilled((b123cUnfilledData ?? []) as Position[]);
       setB123PolyFilled((b123PolyFilledData ?? []) as Position[]);
@@ -174,6 +195,19 @@ export default function Dashboard() {
           b123c_position_size: cfg.b123c_position_size != null ? String(cfg.b123c_position_size) : '5',
           early_guard_spread_pct: cfg.early_guard_spread_pct != null ? String(cfg.early_guard_spread_pct) : '0.6',
           early_guard_cooldown_min: cfg.early_guard_cooldown_min != null ? String(cfg.early_guard_cooldown_min) : '60',
+        });
+      }
+      const b5Row = (b5StateResult as { data: unknown }).data as typeof b5State;
+      setB5State(b5Row ?? null);
+      if (b5Row?.results_json && typeof b5Row.results_json === 'object' && !Array.isArray(b5Row.results_json)) {
+        const cfg = b5Row.results_json as Record<string, unknown>;
+        const s = (k: string, d: string) => (cfg[k] != null ? String(cfg[k]) : d);
+        setB5Config({
+          eth_t1_spread: s('eth_t1_spread', '0.32'), eth_t2_spread: s('eth_t2_spread', '0.181'), eth_t3_spread: s('eth_t3_spread', '0.110'),
+          sol_t1_spread: s('sol_t1_spread', '0.32'), sol_t2_spread: s('sol_t2_spread', '0.206'), sol_t3_spread: s('sol_t3_spread', '0.121'),
+          xrp_t1_spread: s('xrp_t1_spread', '0.32'), xrp_t2_spread: s('xrp_t2_spread', '0.206'), xrp_t3_spread: s('xrp_t3_spread', '0.121'),
+          t2_block_min: s('t2_block_min', '5'), t3_block_min: s('t3_block_min', '15'), position_size: s('position_size', '5'),
+          early_guard_spread_pct: s('early_guard_spread_pct', '0.45'), early_guard_cooldown_min: s('early_guard_cooldown_min', '60'),
         });
       }
       setErrors((errData ?? []) as ErrorLog[]);
@@ -268,6 +302,56 @@ export default function Dashboard() {
       results_json: config,
       updated_at: new Date().toISOString(),
     }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function setB5EmergencyOff(off: boolean) {
+    setSaving(true);
+    await getSupabase().from('b5_state').update({ cooldown_until_ms: off ? 1 : 0, updated_at: new Date().toISOString() }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function saveB5Config(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    const config = {
+      eth_t1_spread: parseFloat(b5Config.eth_t1_spread) || 0.32, eth_t2_spread: parseFloat(b5Config.eth_t2_spread) || 0.181, eth_t3_spread: parseFloat(b5Config.eth_t3_spread) || 0.110,
+      sol_t1_spread: parseFloat(b5Config.sol_t1_spread) || 0.32, sol_t2_spread: parseFloat(b5Config.sol_t2_spread) || 0.206, sol_t3_spread: parseFloat(b5Config.sol_t3_spread) || 0.121,
+      xrp_t1_spread: parseFloat(b5Config.xrp_t1_spread) || 0.32, xrp_t2_spread: parseFloat(b5Config.xrp_t2_spread) || 0.206, xrp_t3_spread: parseFloat(b5Config.xrp_t3_spread) || 0.121,
+      t2_block_min: parseInt(b5Config.t2_block_min, 10) || 5, t3_block_min: parseInt(b5Config.t3_block_min, 10) || 15, position_size: parseFloat(b5Config.position_size) || 5,
+      early_guard_spread_pct: parseFloat(b5Config.early_guard_spread_pct) || 0.45, early_guard_cooldown_min: parseInt(b5Config.early_guard_cooldown_min, 10) || 60,
+    };
+    await getSupabase().from('b5_state').update({ results_json: config, updated_at: new Date().toISOString() }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function resetB5() {
+    if (!confirm('Reset B5 bankroll and counters? This clears all B5 spread stats.')) return;
+    setSaving(true);
+    const config = {
+      eth_t1_spread: parseFloat(b5Config.eth_t1_spread) || 0.32, eth_t2_spread: parseFloat(b5Config.eth_t2_spread) || 0.181, eth_t3_spread: parseFloat(b5Config.eth_t3_spread) || 0.110,
+      sol_t1_spread: parseFloat(b5Config.sol_t1_spread) || 0.32, sol_t2_spread: parseFloat(b5Config.sol_t2_spread) || 0.206, sol_t3_spread: parseFloat(b5Config.sol_t3_spread) || 0.121,
+      xrp_t1_spread: parseFloat(b5Config.xrp_t1_spread) || 0.32, xrp_t2_spread: parseFloat(b5Config.xrp_t2_spread) || 0.206, xrp_t3_spread: parseFloat(b5Config.xrp_t3_spread) || 0.121,
+      t2_block_min: parseInt(b5Config.t2_block_min, 10) || 5, t3_block_min: parseInt(b5Config.t3_block_min, 10) || 15, position_size: parseFloat(b5Config.position_size) || 5,
+      early_guard_spread_pct: parseFloat(b5Config.early_guard_spread_pct) || 0.45, early_guard_cooldown_min: parseInt(b5Config.early_guard_cooldown_min, 10) || 60,
+    };
+    const startBankroll = 50;
+    const today = new Date().toISOString().slice(0, 10);
+    await getSupabase().from('b5_state').upsert({
+      id: 'default',
+      bankroll: startBankroll,
+      max_bankroll: startBankroll,
+      consecutive_losses: 0,
+      cooldown_until_ms: 0,
+      results_json: config,
+      daily_start_bankroll: startBankroll,
+      daily_start_date: today,
+      half_kelly_trades_left: 0,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
     await load();
     setSaving(false);
   }
@@ -819,6 +903,16 @@ export default function Dashboard() {
               <><strong style={{ color: '#22c55e' }}>{b123PolyWins}</strong> / {b123PolyResolved.length} ({b123PolyWinRateResolved}%)</>
             )}
           </div>
+          <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+            <strong>B5</strong> (last 200):{' '}
+            {(() => {
+              const resolved = b5Positions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const wins = resolved.filter((p) => p.outcome === 'win').length;
+              const n = resolved.length;
+              if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
+              return <><strong style={{ color: '#22c55e' }}>{wins}</strong> / {n} ({((wins / n) * 100).toFixed(1)}%)</>;
+            })()}
+          </div>
         </div>
       </section>
 
@@ -1177,6 +1271,87 @@ export default function Dashboard() {
             })}
           </tbody>
         </table>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={headingStyle}>B5 — 5-Minute ETH/SOL/XRP (D3)</h2>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+          <p style={{ margin: 0, marginBottom: 8, color: '#e5e5e5' }}>
+            B5 Status: <strong style={{ color: b5State?.cooldown_until_ms === 1 ? '#ef4444' : '#22c55e' }}>{b5State?.cooldown_until_ms === 1 ? 'OFF (paused)' : 'Running'}</strong>
+          </p>
+          <button type="button" onClick={() => setB5EmergencyOff(true)} disabled={saving || b5State?.cooldown_until_ms === 1} style={{ marginRight: 8, ...(saving || b5State?.cooldown_until_ms === 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#dc2626' }) }}>Pause B5</button>
+          <button type="button" onClick={() => setB5EmergencyOff(false)} disabled={saving || b5State?.cooldown_until_ms !== 1} style={{ marginRight: 8, ...(saving || b5State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}>Resume B5</button>
+          <button type="button" onClick={resetB5} disabled={saving} style={{ ...buttonStyle, background: '#7c3aed' }}>Reset B5</button>
+          {b5State && (
+            <span style={{ marginLeft: 12, fontSize: 13, color: '#aaa' }}>
+              Bankroll: <strong style={{ color: '#0D9488' }}>${Number(b5State.bankroll).toFixed(2)}</strong>
+              {' | '}Trades: {b5Positions.length}
+              {b5State.updated_at && <> | Last: {formatMst(b5State.updated_at, true)}</>}
+            </span>
+          )}
+        </div>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
+          <h3 style={{ ...headingStyle, margin: '0 0 12px', fontSize: 16, color: '#fff' }}>B5 Spread Tier Config</h3>
+          <p style={{ fontSize: 13, color: '#ccc', marginBottom: 12 }}>Per-asset tier spreads (%). T1: last 50s, T2: last 100s, T3: last 160s. One position size for all. Saved to Supabase.</p>
+          <form onSubmit={saveB5Config}>
+            <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#fff' }}>Setting</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #555', padding: '4px 8px', color: '#fff' }}>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>ETH T1 / T2 / T3 (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.eth_t1_spread} onChange={(e) => setB5Config((p) => ({ ...p, eth_t1_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.eth_t2_spread} onChange={(e) => setB5Config((p) => ({ ...p, eth_t2_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.eth_t3_spread} onChange={(e) => setB5Config((p) => ({ ...p, eth_t3_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>SOL T1 / T2 / T3 (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.sol_t1_spread} onChange={(e) => setB5Config((p) => ({ ...p, sol_t1_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.sol_t2_spread} onChange={(e) => setB5Config((p) => ({ ...p, sol_t2_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.sol_t3_spread} onChange={(e) => setB5Config((p) => ({ ...p, sol_t3_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>XRP T1 / T2 / T3 (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.xrp_t1_spread} onChange={(e) => setB5Config((p) => ({ ...p, xrp_t1_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.xrp_t2_spread} onChange={(e) => setB5Config((p) => ({ ...p, xrp_t2_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.xrp_t3_spread} onChange={(e) => setB5Config((p) => ({ ...p, xrp_t3_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T2 → blocks T1 (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.t2_block_min} onChange={(e) => setB5Config((p) => ({ ...p, t2_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T1+T2 (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.t3_block_min} onChange={(e) => setB5Config((p) => ({ ...p, t3_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Position size ($)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="1" value={b5Config.position_size} onChange={(e) => setB5Config((p) => ({ ...p, position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard spread (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.early_guard_spread_pct} onChange={(e) => setB5Config((p) => ({ ...p, early_guard_spread_pct: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard cooldown (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.early_guard_cooldown_min} onChange={(e) => setB5Config((p) => ({ ...p, early_guard_cooldown_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+              </tbody>
+            </table>
+            <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save B5 config</button>
+          </form>
+        </div>
+        <p style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>B5 trades (last 200).</p>
+        {b5Positions.length === 0 ? (
+          <p style={{ color: '#666' }}>No B5 trades yet.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Tier</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Venue</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b5Positions.map((p) => {
+                const raw = (p.raw ?? {}) as Record<string, unknown>;
+                const tier = String(raw.tier ?? 'B5');
+                const result = p.outcome === 'win' ? 'Win' : p.outcome === 'loss' ? 'Loss' : 'Pending';
+                const resultColor = p.outcome === 'win' ? '#22c55e' : p.outcome === 'loss' ? '#ef4444' : '#888';
+                return (
+                  <tr key={p.id}>
+                    <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{tier}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                    <td style={{ borderBottom: '1px solid #eee', color: resultColor, fontWeight: result !== 'Pending' ? 600 : undefined }}>{result}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section style={{ marginTop: 24 }}>

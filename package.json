@@ -20,6 +20,7 @@
     "b4-kalshi-46-50": "node dist/scripts/b4-kalshi-46-50.js",
     "b4-5m": "node dist/b4-5m/run.js",
     "b5": "node dist/b5-basket/run.js",
+    "b5-spread": "node dist/b5-5m/spread-run.js",
     "b4-5m:backtest": "npx tsx src/b4-5m/backtest.ts",
     "b4-5m:download": "npx tsx src/b4-5m/download-candles.ts",
     "spreads": "node dist/scripts/current-kalshi-spreads.js",

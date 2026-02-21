@@ -6,7 +6,7 @@
  * Fill check: only resolved positions with order_id get win/loss; if order has size_matched 0 or missing, set outcome = 'no_fill' (dashboard hides these).
  * Resolution: fetch event by slug; after market closes, outcomePrices become [1,0] or [0,1].
  *
- * Wallets: B4 uses default env (D2). B1/B2/B3 orders are placed on D1; resolver uses .env.d1 on D2 for getOrder only (read-only, no placement). B1c/B2c/B3c use .env.b123c. No placement code reads .env.d1 or .env.b123c.
+ * Wallets: B4 uses default env (D2). B1/B2/B3 orders are placed on D1; resolver uses .env.d1 on D2 for getOrder only. B5 orders are placed on D3; resolver uses .env.b5 on D2 (D3's B5 wallet). B1c/B2c/B3c use .env.b123c.
  */
 import 'dotenv/config';
 import { readFileSync } from 'fs';
@@ -36,9 +36,9 @@ type PositionRow = {
   raw: Record<string, unknown> | null;
 };
 
-/** Window end (unix seconds) from slug. 5m: btc-updown-5m-{start} → end = start+300. 15m: *-updown-15m-{start} → end = start+900. */
+/** Window end (unix seconds) from slug. 5m: *-updown-5m-{start} (btc/eth/sol/xrp) → end = start+300. 15m: *-updown-15m-{start} → end = start+900. */
 function getWindowEndUnixFromSlug(slug: string): number | null {
-  const m5 = /^btc-updown-5m-(\d+)$/.exec(slug);
+  const m5 = /^[a-z]+-updown-5m-(\d+)$/.exec(slug);
   if (m5) return parseInt(m5[1], 10) + 300;
   const m15 = /^.+-updown-15m-(\d+)$/.exec(slug);
   if (m15) return parseInt(m15[1], 10) + 900;
@@ -111,7 +111,7 @@ async function main() {
     .from('positions')
     .select('id, bot, ticker_or_slug, order_id, raw')
     .eq('venue', 'polymarket')
-    .in('bot', ['B4', 'B1c', 'B2c', 'B3c', 'B1', 'B2', 'B3'])
+    .in('bot', ['B4', 'B5', 'B1c', 'B2c', 'B3c', 'B1', 'B2', 'B3'])
     .is('outcome', null)
     .not('ticker_or_slug', 'is', null);
 
@@ -128,12 +128,25 @@ async function main() {
   await applyPolyProxy();
 
   let b4Client: ClobClient | null = null;
+  let b5Client: ClobClient | null = null;
   let b123cClient: ClobClient | null = null;
-  let d1Client: ClobClient | null = null; // B1/B2/B3 orders are placed on D1; resolver on D2 needs D1 wallet to getOrder (read-only)
+  let d1Client: ClobClient | null = null; // B1/B2/B3 orders placed on D1; resolver on D2 needs D1 wallet for getOrder
   try {
     b4Client = await getOrCreateDerivedPolyClient();
   } catch (e) {
     console.warn('B4 CLOB client (derive) failed:', e instanceof Error ? e.message : e);
+  }
+  const b5EnvPath = join(process.cwd(), '.env.b5');
+  try {
+    const content = readFileSync(b5EnvPath, 'utf8');
+    const env = parseEnvFile(content);
+    const pk = env.POLYMARKET_PRIVATE_KEY?.trim();
+    const funder = env.POLYMARKET_FUNDER?.trim();
+    if (pk && funder) {
+      b5Client = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
+    }
+  } catch {
+    // .env.b5 missing on D2: B5 orders placed on D3; resolver needs D3's B5 wallet credentials here for getOrder
   }
   const b123cEnvPath = join(process.cwd(), '.env.b123c');
   try {
@@ -145,9 +158,8 @@ async function main() {
       b123cClient = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
     }
   } catch {
-    // .env.b123c missing or invalid; only B4 orders can be fill-checked
+    // .env.b123c missing or invalid
   }
-  // D1 wallet credentials: used ONLY here for getOrder (B1/B2/B3). No placement code reads .env.d1.
   const d1EnvPath = join(process.cwd(), '.env.d1');
   try {
     const content = readFileSync(d1EnvPath, 'utf8');
@@ -158,7 +170,7 @@ async function main() {
       d1Client = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
     }
   } catch {
-    // .env.d1 missing on D2: B1/B2/B3 fill check will use b4Client (wrong wallet) and stay no_fill until .env.d1 is added
+    // .env.d1 missing on D2
   }
 
   let updated = 0;
@@ -179,16 +191,17 @@ async function main() {
       continue;
     }
 
-    // B4 → b4Client. B1/B2/B3 → d1Client (D1 wallet; resolver runs on D2). B1c/B2c/B3c → b123cClient. No placement code uses these.
+    // B4 → b4Client. B5 → b5Client (D3 wallet; resolver on D2 uses .env.b5). B1/B2/B3 → d1Client. B1c/B2c/B3c → b123cClient.
     const isB123 = row.bot === 'B1' || row.bot === 'B2' || row.bot === 'B3';
     const clob =
       row.bot === 'B4'
         ? b4Client
-        : isB123
-          ? (d1Client ?? b4Client) // prefer D1 wallet so getOrder sees D1-placed orders; fallback to b4Client if .env.d1 missing
-          : b123cClient;
-    // B4 and B1/B2/B3 Poly: require CLOB client and verified fill. Never set win/loss from Gamma alone.
-    if (row.bot === 'B4' || isB123) {
+        : row.bot === 'B5'
+          ? b5Client
+          : isB123
+            ? (d1Client ?? b4Client)
+            : b123cClient;
+    if (row.bot === 'B4' || row.bot === 'B5' || isB123) {
       if (!clob) {
         const { error: updateError } = await supabase
           .from('positions')

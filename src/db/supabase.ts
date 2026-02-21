@@ -6,7 +6,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { BOT_SPREAD_THRESHOLD_PCT, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 
 export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
-export type BotId = 'B1' | 'B2' | 'B3' | 'B4' | 'B1c' | 'B2c' | 'B3c';
+export type BotId = 'B1' | 'B2' | 'B3' | 'B4' | 'B5' | 'B1c' | 'B2c' | 'B3c';
 export type Venue = 'kalshi' | 'polymarket';
 
 export interface BotConfigRow {
@@ -626,6 +626,200 @@ export async function saveB4Config(config: B4TierConfig): Promise<void> {
 export async function resetB4State(startingBankroll: number, config: B4TierConfig): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   await getDb().from('b4_state').upsert({
+    id: 'default',
+    bankroll: startingBankroll,
+    max_bankroll: startingBankroll,
+    consecutive_losses: 0,
+    cooldown_until_ms: 0,
+    results_json: config as unknown as Record<string, unknown>,
+    daily_start_bankroll: startingBankroll,
+    daily_start_date: today,
+    half_kelly_trades_left: 0,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'id' });
+}
+
+// ---------------------------------------------------------------------------
+// B5 spread-runner (D3): per-asset tier config, blocks, early guard
+// ---------------------------------------------------------------------------
+
+export interface B5TierConfig {
+  eth_t1_spread: number;
+  eth_t2_spread: number;
+  eth_t3_spread: number;
+  sol_t1_spread: number;
+  sol_t2_spread: number;
+  sol_t3_spread: number;
+  xrp_t1_spread: number;
+  xrp_t2_spread: number;
+  xrp_t3_spread: number;
+  t2_block_min: number;
+  t3_block_min: number;
+  position_size: number;
+  early_guard_spread_pct: number;
+  early_guard_cooldown_min: number;
+}
+
+export const DEFAULT_B5_CONFIG: B5TierConfig = {
+  eth_t1_spread: 0.32, eth_t2_spread: 0.181, eth_t3_spread: 0.110,
+  sol_t1_spread: 0.32, sol_t2_spread: 0.206, sol_t3_spread: 0.121,
+  xrp_t1_spread: 0.32, xrp_t2_spread: 0.206, xrp_t3_spread: 0.121,
+  t2_block_min: 5, t3_block_min: 15, position_size: 5,
+  early_guard_spread_pct: 0.45, early_guard_cooldown_min: 60,
+};
+
+export interface B5StateRow {
+  bankroll: number;
+  max_bankroll: number;
+  consecutive_losses: number;
+  cooldown_until_ms: number;
+  results_json: B5TierConfig | Record<string, unknown>;
+  daily_start_bankroll: number;
+  daily_start_date: string;
+  half_kelly_trades_left: number;
+  updated_at: string;
+}
+
+export async function isB5EmergencyOff(): Promise<boolean> {
+  try {
+    const { data } = await getDb()
+      .from('b5_state')
+      .select('cooldown_until_ms')
+      .eq('id', 'default')
+      .maybeSingle();
+    return data?.cooldown_until_ms === 1;
+  } catch {
+    return false;
+  }
+}
+
+export async function setB5EmergencyOff(off: boolean): Promise<void> {
+  await getDb().from('b5_state').update({
+    cooldown_until_ms: off ? 1 : 0,
+    updated_at: new Date().toISOString(),
+  }).eq('id', 'default');
+}
+
+export interface B5BlocksRow {
+  t1BlockedUntilMs: number;
+  t2BlockedUntilMs: number;
+  earlyGuardCooldownUntilMs: number;
+}
+
+export async function getB5Blocks(): Promise<B5BlocksRow | null> {
+  try {
+    const [tierRes, guardRes] = await Promise.all([
+      getDb().from('b5_tier_blocks').select('t1_blocked_until_ms, t2_blocked_until_ms').eq('id', 'default').maybeSingle(),
+      getDb().from('b5_early_guard').select('cooldown_until_ms').eq('id', 'default').maybeSingle(),
+    ]);
+    const tier = (tierRes as { data?: { t1_blocked_until_ms?: number; t2_blocked_until_ms?: number } | null }).data;
+    const guard = (guardRes as { data?: { cooldown_until_ms?: number } | null }).data;
+    return {
+      t1BlockedUntilMs: Number(tier?.t1_blocked_until_ms) || 0,
+      t2BlockedUntilMs: Number(tier?.t2_blocked_until_ms) || 0,
+      earlyGuardCooldownUntilMs: Number(guard?.cooldown_until_ms) || 0,
+    };
+  } catch (e) {
+    console.warn('[getB5Blocks] failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+export async function updateB5TierBlocks(t1BlockedUntilMs: number, t2BlockedUntilMs: number): Promise<void> {
+  try {
+    await getDb().from('b5_tier_blocks').upsert({
+      id: 'default',
+      t1_blocked_until_ms: t1BlockedUntilMs,
+      t2_blocked_until_ms: t2BlockedUntilMs,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+  } catch (e) {
+    console.warn('[updateB5TierBlocks] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+export async function updateB5EarlyGuard(cooldownUntilMs: number): Promise<void> {
+  try {
+    await getDb().from('b5_early_guard').upsert({
+      id: 'default',
+      cooldown_until_ms: cooldownUntilMs,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+  } catch (e) {
+    console.warn('[updateB5EarlyGuard] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+export async function loadB5Config(): Promise<B5TierConfig> {
+  try {
+    const { data } = await getDb()
+      .from('b5_state')
+      .select('results_json')
+      .eq('id', 'default')
+      .maybeSingle();
+    if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
+      const cfg = data.results_json as Record<string, unknown>;
+      const get = (k: string, d: number) => (cfg[k] != null ? Number(cfg[k]) : d);
+      return {
+        eth_t1_spread: get('eth_t1_spread', DEFAULT_B5_CONFIG.eth_t1_spread),
+        eth_t2_spread: get('eth_t2_spread', DEFAULT_B5_CONFIG.eth_t2_spread),
+        eth_t3_spread: get('eth_t3_spread', DEFAULT_B5_CONFIG.eth_t3_spread),
+        sol_t1_spread: get('sol_t1_spread', DEFAULT_B5_CONFIG.sol_t1_spread),
+        sol_t2_spread: get('sol_t2_spread', DEFAULT_B5_CONFIG.sol_t2_spread),
+        sol_t3_spread: get('sol_t3_spread', DEFAULT_B5_CONFIG.sol_t3_spread),
+        xrp_t1_spread: get('xrp_t1_spread', DEFAULT_B5_CONFIG.xrp_t1_spread),
+        xrp_t2_spread: get('xrp_t2_spread', DEFAULT_B5_CONFIG.xrp_t2_spread),
+        xrp_t3_spread: get('xrp_t3_spread', DEFAULT_B5_CONFIG.xrp_t3_spread),
+        t2_block_min: get('t2_block_min', DEFAULT_B5_CONFIG.t2_block_min),
+        t3_block_min: get('t3_block_min', DEFAULT_B5_CONFIG.t3_block_min),
+        position_size: get('position_size', DEFAULT_B5_CONFIG.position_size),
+        early_guard_spread_pct: get('early_guard_spread_pct', DEFAULT_B5_CONFIG.early_guard_spread_pct),
+        early_guard_cooldown_min: get('early_guard_cooldown_min', DEFAULT_B5_CONFIG.early_guard_cooldown_min),
+      };
+    }
+  } catch { /* ignore */ }
+  return { ...DEFAULT_B5_CONFIG };
+}
+
+export async function saveB5Config(config: B5TierConfig): Promise<void> {
+  try {
+    await getDb().from('b5_state').update({
+      results_json: config as unknown as Record<string, unknown>,
+      updated_at: new Date().toISOString(),
+    }).eq('id', 'default');
+  } catch (e) {
+    console.error('[saveB5Config] failed:', e instanceof Error ? e.message : e);
+  }
+}
+
+export async function loadB5State(): Promise<B5StateRow | null> {
+  try {
+    const { data, error } = await getDb()
+      .from('b5_state')
+      .select('*')
+      .eq('id', 'default')
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as Record<string, unknown>;
+    return {
+      bankroll: Number(row.bankroll) || 50,
+      max_bankroll: Number(row.max_bankroll) || 50,
+      consecutive_losses: Number(row.consecutive_losses) || 0,
+      cooldown_until_ms: Number(row.cooldown_until_ms) || 0,
+      results_json: (row.results_json && typeof row.results_json === 'object') ? row.results_json as B5TierConfig : {},
+      daily_start_bankroll: Number(row.daily_start_bankroll) || 50,
+      daily_start_date: String(row.daily_start_date ?? ''),
+      half_kelly_trades_left: Number(row.half_kelly_trades_left) || 0,
+      updated_at: String(row.updated_at ?? ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function resetB5State(startingBankroll: number, config: B5TierConfig): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  await getDb().from('b5_state').upsert({
     id: 'default',
     bankroll: startingBankroll,
     max_bankroll: startingBankroll,

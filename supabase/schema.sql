@@ -144,6 +144,36 @@ create table if not exists b4_early_guard (
 );
 insert into b4_early_guard (id) values ('default') on conflict (id) do nothing;
 
+-- B5 spread-runner (D3): state, tier blocks, early guard (ETH/SOL/XRP 5m).
+create table if not exists b5_state (
+  id text primary key default 'default',
+  bankroll numeric not null default 50,
+  max_bankroll numeric not null default 50,
+  consecutive_losses integer not null default 0,
+  cooldown_until_ms bigint not null default 0,
+  results_json jsonb not null default '{}',
+  daily_start_bankroll numeric not null default 50,
+  daily_start_date text not null default '',
+  half_kelly_trades_left integer not null default 0,
+  updated_at timestamptz not null default now()
+);
+insert into b5_state (id) values ('default') on conflict (id) do nothing;
+
+create table if not exists b5_tier_blocks (
+  id text primary key default 'default',
+  t1_blocked_until_ms bigint not null default 0,
+  t2_blocked_until_ms bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+insert into b5_tier_blocks (id) values ('default') on conflict (id) do nothing;
+
+create table if not exists b5_early_guard (
+  id text primary key default 'default',
+  cooldown_until_ms bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+insert into b5_early_guard (id) values ('default') on conflict (id) do nothing;
+
 -- Seed spread thresholds (B1/B2/B3 x BTC/ETH/SOL/XRP). For existing DBs: add XRP if missing.
 insert into spread_thresholds (bot, asset, threshold_pct) values
   ('B1', 'BTC', 0.21), ('B1', 'ETH', 0.23), ('B1', 'SOL', 0.27), ('B1', 'XRP', 0.27),
