@@ -337,7 +337,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     lastConfigRefreshMs = Date.now();
   }
 
-  // Per-asset: spread, stale check, tier loop
+  // Per-asset: spread, stale check, tier loop (collect spreads for periodic log like B4)
+  const spreadStatus: { asset: B5Asset; signedSpread: number; spotPrice: number; spreadDir: 'up' | 'down' }[] = [];
   for (const asset of B5_ASSETS) {
     const windowOpenPrice = await feed.getWindowOpen(asset);
     const spotPrice = await feed.getSpotPrice(asset);
@@ -358,6 +359,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     const signedSpread = (spotPrice - windowOpenPrice) / spotPrice * 100;
     const absSpread = Math.abs(signedSpread);
     const spreadDir: 'up' | 'down' = spotPrice > windowOpenPrice ? 'up' : 'down';
+    spreadStatus.push({ asset, signedSpread, spotPrice, spreadDir });
     const slug = getPolySlug5m(asset, now);
 
     let buf = spreadSampleBuffer.get(asset) ?? [];
@@ -416,7 +418,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           tickSize: result.tickSize ?? '0.01',
         });
         console.log(
-          `[B5] PLACED ${tier.name} ${asset}: ${spreadDir} at ${tier.limitPrice} | orderId=${result.orderId.slice(0, 12)}…`,
+          `[B5] PLACED ${tier.name} ${asset}: ${spreadDir} at ${tier.limitPrice} | spread=${signedSpread.toFixed(4)}% | orderId=${result.orderId.slice(0, 12)}…`,
         );
         try {
           await logPosition({
@@ -459,9 +461,22 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     }
   }
 
+  // Periodic spread % log (like B4): strike percentages and seconds left
+  if (tickCount % 3 === 0 && spreadStatus.length > 0) {
+    const secLeft = Math.round(300 - secInWindow);
+    const parts = spreadStatus.map((s) => `${s.asset} ${s.signedSpread.toFixed(4)}%`).join(' | ');
+    console.log(`[B5] ${parts} | ${secLeft}s left`);
+  }
+
   if (tickCount % 100 === 0) {
     console.log('');
     console.log(`[B5] ═══ Status @ ${new Date().toISOString()} ═══`);
+    if (spreadStatus.length > 0) {
+      const priceSpreadLine = spreadStatus
+        .map((s) => `${s.asset}=$${s.spotPrice.toFixed(2)} ${s.signedSpread.toFixed(4)}% ${s.spreadDir}`)
+        .join(' | ');
+      console.log(`[B5] ${priceSpreadLine}`);
+    }
     console.log(`[B5] Pending orders: ${openOrders.length}`);
     if (t1BlockedUntil > nowMs) console.log(`[B5] T1 blocked for ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s`);
     if (t2BlockedUntil > nowMs) console.log(`[B5] T2 blocked for ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s`);
