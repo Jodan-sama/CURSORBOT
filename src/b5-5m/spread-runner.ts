@@ -444,13 +444,13 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         if (tier.name === 'B5-T2') {
           t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t2BlockMs);
           updateB5TierBlocks(t1BlockedUntil, t2BlockedUntil);
-          console.log(`[B5] T2 entered → T1 blocked for ${t2BlockMs / 60_000} min`);
+          console.log(`[B5] T2 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1 blocked for ${t2BlockMs / 60_000} min`);
         }
         if (tier.name === 'B5-T3') {
           t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlockMs);
           t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlockMs);
           updateB5TierBlocks(t1BlockedUntil, t2BlockedUntil);
-          console.log(`[B5] T3 entered → T1+T2 blocked for ${t3BlockMs / 60_000} min`);
+          console.log(`[B5] T3 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1+T2 blocked for ${t3BlockMs / 60_000} min`);
         }
       } else {
         console.log(`[B5] ${tier.name} ${asset} order failed: ${result.error}`);
@@ -478,8 +478,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       console.log(`[B5] ${priceSpreadLine}`);
     }
     console.log(`[B5] Pending orders: ${openOrders.length}`);
-    if (t1BlockedUntil > nowMs) console.log(`[B5] T1 blocked for ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s`);
-    if (t2BlockedUntil > nowMs) console.log(`[B5] T2 blocked for ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s`);
+    if (t1BlockedUntil > nowMs) console.log(`[B5] T1 blocked for ${Math.ceil((t1BlockedUntil - nowMs) / 1000)}s (all assets)`);
+    if (t2BlockedUntil > nowMs) console.log(`[B5] T2 blocked for ${Math.ceil((t2BlockedUntil - nowMs) / 1000)}s (all assets)`);
     console.log('');
   }
 }
@@ -500,7 +500,12 @@ export async function startSpreadRunner(): Promise<void> {
     t2BlockedUntil = (blocks.t2BlockedUntilMs > now) ? blocks.t2BlockedUntilMs : 0;
     earlyGuardCooldownUntil = (blocks.earlyGuardCooldownUntilMs > now) ? blocks.earlyGuardCooldownUntilMs : 0;
     if (t1BlockedUntil > 0 || t2BlockedUntil > 0 || earlyGuardCooldownUntil > 0) {
-      console.log(`[B5] Restored blocks: T1 until ${t1BlockedUntil ? new Date(t1BlockedUntil).toISOString() : '—'}, T2 until ${t2BlockedUntil ? new Date(t2BlockedUntil).toISOString() : '—'}, early-guard until ${earlyGuardCooldownUntil ? new Date(earlyGuardCooldownUntil).toISOString() : '—'}`);
+      console.log(
+        `[B5] Blocks restored from Supabase (set by a previous run when T2/T3 placed) — ` +
+        `T1 until ${t1BlockedUntil ? new Date(t1BlockedUntil).toISOString() : '—'}, ` +
+        `T2 until ${t2BlockedUntil ? new Date(t2BlockedUntil).toISOString() : '—'}, ` +
+        `early-guard until ${earlyGuardCooldownUntil ? new Date(earlyGuardCooldownUntil).toISOString() : '—'}`,
+      );
     }
   }
 

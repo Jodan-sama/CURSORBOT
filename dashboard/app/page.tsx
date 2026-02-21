@@ -100,7 +100,6 @@ export default function Dashboard() {
   const [b123PolyFilled, setB123PolyFilled] = useState<Position[]>([]);
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [polySkips, setPolySkips] = useState<PolySkipRow[]>([]);
-  const [claimStatus, setClaimStatus] = useState<{ message: string; created_at: string } | null>(null);
   const [spreadRows, setSpreadRows] = useState<SpreadRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -120,7 +119,6 @@ export default function Dashboard() {
   const [csvLoading, setCsvLoading] = useState(false);
   const [b4CsvLoading, setB4CsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [b5MinEdge, setB5MinEdge] = useState('0.2');
   const [b5State, setB5State] = useState<{ bankroll: number; cooldown_until_ms: number; results_json: Record<string, unknown>; updated_at: string } | null>(null);
   const [b5Config, setB5Config] = useState<{
     eth_t1_spread: string; eth_t2_spread: string; eth_t3_spread: string;
@@ -155,7 +153,6 @@ export default function Dashboard() {
         { data: polySkipData },
         spreadResult,
         { data: botSizesData },
-        { data: claimLogData },
         b4StateResult,
         b5StateResult,
       ] = await Promise.all([
@@ -170,7 +167,6 @@ export default function Dashboard() {
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
         getSupabase().from('bot_position_sizes').select('bot, asset, size_kalshi, size_polymarket'),
-        getSupabase().from('polymarket_claim_log').select('message, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
         Promise.resolve(b4StatePromise).catch(() => ({ data: null })),
         Promise.resolve(b5StatePromise).catch(() => ({ data: null })),
       ]);
@@ -212,8 +208,6 @@ export default function Dashboard() {
       }
       setErrors((errData ?? []) as ErrorLog[]);
       setPolySkips((polySkipData ?? []) as PolySkipRow[]);
-      const claimRow = claimLogData as { message: string; created_at: string } | null;
-      setClaimStatus(claimRow ? { message: claimRow.message, created_at: claimRow.created_at } : null);
       const rows = ((spreadResult as { data: SpreadRow[] }).data ?? []) as SpreadRow[];
       setSpreadRows(rows);
       const defaults: Record<string, string> = {
@@ -248,12 +242,6 @@ export default function Dashboard() {
         b3EarlySpreadPct: cfg?.b3_early_high_spread_pct != null ? String(cfg.b3_early_high_spread_pct) : '1.8',
         b3EarlySpreadBlock: cfg?.b3_early_high_spread_block_min != null ? String(cfg.b3_early_high_spread_block_min) : '15',
       });
-      try {
-        const b5Res = await getSupabase().from('b5_config').select('min_edge').eq('id', 'default').maybeSingle();
-        if (b5Res.data?.min_edge != null) setB5MinEdge(String(b5Res.data.min_edge));
-      } catch {
-        // b5_config may not exist
-      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLoadError(msg);
@@ -324,6 +312,15 @@ export default function Dashboard() {
       early_guard_spread_pct: parseFloat(b5Config.early_guard_spread_pct) || 0.45, early_guard_cooldown_min: parseInt(b5Config.early_guard_cooldown_min, 10) || 60,
     };
     await getSupabase().from('b5_state').update({ results_json: config, updated_at: new Date().toISOString() }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function clearB5Blocks() {
+    if (!confirm('Clear T1/T2 blocks and early-guard cooldown in DB? Restart B5 spread service on D3 for it to take effect.')) return;
+    setSaving(true);
+    await getSupabase().from('b5_tier_blocks').upsert({ id: 'default', t1_blocked_until_ms: 0, t2_blocked_until_ms: 0, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    await getSupabase().from('b5_early_guard').upsert({ id: 'default', cooldown_until_ms: 0, updated_at: new Date().toISOString() }, { onConflict: 'id' });
     await load();
     setSaving(false);
   }
@@ -425,17 +422,6 @@ export default function Dashboard() {
     if (!Number.isNaN(b3EarlySpreadBlock) && b3EarlySpreadBlock > 0) updates.b3_early_high_spread_block_min = b3EarlySpreadBlock;
     if (Object.keys(updates).length > 0) {
       await getSupabase().from('bot_config').update(updates).eq('id', 'default');
-    }
-    await load();
-    setSaving(false);
-  }
-
-  async function saveB5MinEdge(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    const val = parseFloat(b5MinEdge);
-    if (Number.isFinite(val)) {
-      await getSupabase().from('b5_config').upsert({ id: 'default', min_edge: val, updated_at: new Date().toISOString() }, { onConflict: 'id' });
     }
     await load();
     setSaving(false);
@@ -1282,6 +1268,7 @@ export default function Dashboard() {
           <button type="button" onClick={() => setB5EmergencyOff(true)} disabled={saving || b5State?.cooldown_until_ms === 1} style={{ marginRight: 8, ...(saving || b5State?.cooldown_until_ms === 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#dc2626' }) }}>Pause B5</button>
           <button type="button" onClick={() => setB5EmergencyOff(false)} disabled={saving || b5State?.cooldown_until_ms !== 1} style={{ marginRight: 8, ...(saving || b5State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}>Resume B5</button>
           <button type="button" onClick={resetB5} disabled={saving} style={{ ...buttonStyle, background: '#7c3aed' }}>Reset B5</button>
+          <button type="button" onClick={clearB5Blocks} disabled={saving} style={{ ...buttonStyle, background: '#ca8a04' }} title="Clear T1/T2 blocks in DB. Restart B5 spread on D3 to take effect.">Clear B5 blocks</button>
           {b5State && (
             <span style={{ marginLeft: 12, fontSize: 13, color: '#aaa' }}>
               Bankroll: <strong style={{ color: '#0D9488' }}>${Number(b5State.bankroll).toFixed(2)}</strong>
@@ -1352,39 +1339,6 @@ export default function Dashboard() {
             </tbody>
           </table>
         )}
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <h2 style={headingStyle}>B5 min edge</h2>
-        <p style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>D3 B5 runner reads this from Supabase. Min edge (0–1) to enter.</p>
-        <form onSubmit={saveB5MinEdge} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <label style={{ fontWeight: 600 }}>Min edge</label>
-          <input
-            type="text"
-            value={b5MinEdge}
-            onChange={(e) => setB5MinEdge(e.target.value)}
-            style={{ width: 72, padding: '6px 8px' }}
-          />
-          <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save</button>
-        </form>
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <h2 style={headingStyle}>Polymarket claim</h2>
-        <p style={{ fontSize: 14, color: claimStatus?.message === 'NEED MORE POL' ? '#b91c1c' : '#666' }}>
-          {claimStatus ? (
-            claimStatus.message === 'NEED MORE POL' ? (
-              <strong>NEED MORE POL</strong>
-            ) : (
-              <>
-                {claimStatus.message}
-                <span style={{ marginLeft: 8, fontSize: 12 }}>({formatMst(claimStatus.created_at, true)})</span>
-              </>
-            )
-          ) : (
-            'No claim runs yet.'
-          )}
-        </p>
       </section>
     </div>
   );
