@@ -118,6 +118,7 @@ export default function Dashboard() {
   });
   const [csvLoading, setCsvLoading] = useState(false);
   const [b4CsvLoading, setB4CsvLoading] = useState(false);
+  const [b5CsvLoading, setB5CsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [b5State, setB5State] = useState<{ bankroll: number; cooldown_until_ms: number; results_json: Record<string, unknown>; updated_at: string } | null>(null);
   const [b5Config, setB5Config] = useState<{
@@ -576,6 +577,36 @@ export default function Dashboard() {
     a.click();
     URL.revokeObjectURL(url);
     setB4CsvLoading(false);
+  }
+
+  function downloadB5Csv() {
+    setB5CsvLoading(true);
+    const headers = ['time', 'bot', 'asset', 'venue', 'price_source', 'spread_pct', 'size', 'tier', 'direction', 'outcome', 'resolved_at'];
+    const rows = b5Positions.map((p) => {
+      const raw = (p.raw ?? {}) as Record<string, unknown>;
+      return [
+        escapeCsv(p.entered_at),
+        escapeCsv(p.bot),
+        escapeCsv(p.asset),
+        escapeCsv(p.venue),
+        escapeCsv(String(raw.price_source ?? '')),
+        escapeCsv(String(p.strike_spread_pct)),
+        escapeCsv(String(p.position_size)),
+        escapeCsv(String(raw.tier ?? '')),
+        escapeCsv(String(raw.direction ?? '')),
+        escapeCsv(p.outcome ?? ''),
+        escapeCsv(p.resolved_at ?? ''),
+      ].join(',');
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cursorbot-b5-trades-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setB5CsvLoading(false);
   }
 
   if (loading) return <p>Loading…</p>;
@@ -1305,7 +1336,10 @@ export default function Dashboard() {
             <button type="submit" disabled={saving} style={saving ? buttonDisabledStyle : buttonStyle}>Save B5 config</button>
           </form>
         </div>
-        <p style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>B5 trades (last 200).</p>
+        <p style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: '#666' }}>B5 trades (last 200).</span>
+          <button type="button" onClick={downloadB5Csv} disabled={b5CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b5CsvLoading ? 'Preparing…' : 'Download B5 CSV'}</button>
+        </p>
         {b5Positions.length === 0 ? (
           <p style={{ color: '#666' }}>No B5 trades yet.</p>
         ) : (
