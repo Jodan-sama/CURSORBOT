@@ -211,8 +211,10 @@ async function buyContracts(slug: string, side: 'yes' | 'no'): Promise<TradeResu
       const mid = parseMid(await client.getMidpoint(tokenId));
       if (mid <= 0.05 || mid >= 0.95) return { error: `Mid-price out of range: ${mid}` };
 
+      // CLOB minimum for many 5m markets is 0.01; Gamma may return 0.001 — use at least 0.01
+      const rawTick = market.orderPriceMinTickSize != null ? Number(market.orderPriceMinTickSize) : 0.01;
       const tickSize: CreateOrderOptions['tickSize'] =
-        (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
+        (rawTick >= 0.01 ? String(rawTick) : '0.01') as CreateOrderOptions['tickSize'];
 
       // FOK market order: fills immediately at best available price, or fails entirely
       const contracts = Math.max(1, Math.floor(POSITION_SIZE_USD / mid));

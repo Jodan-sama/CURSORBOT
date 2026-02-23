@@ -219,8 +219,10 @@ async function placeLimitOrder(
       if (!tokenId) return { error: `No ${side} token for ${slug}` };
 
       const client = await getClobClient();
+      // CLOB minimum for many 5m markets is 0.01; Gamma may return 0.001 — use at least 0.01 to avoid "invalid tick size"
+      const rawTick = market.orderPriceMinTickSize != null ? Number(market.orderPriceMinTickSize) : 0.01;
       const tickSize: CreateOrderOptions['tickSize'] =
-        (market.orderPriceMinTickSize ? String(market.orderPriceMinTickSize) : '0.01') as CreateOrderOptions['tickSize'];
+        (rawTick >= 0.01 ? String(rawTick) : '0.01') as CreateOrderOptions['tickSize'];
       const tickDecimals = String(tickSize).split('.')[1]?.length ?? 2;
       const factor = 10 ** tickDecimals;
       const price = Math.round(limitPrice * factor) / factor;
