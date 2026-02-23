@@ -7,14 +7,19 @@
  * DRY_RUN=1 to only list what would be updated.
  *
  * Screenshot times = dashboard (America/Denver). Converted to UTC for DB match.
+ * - Feb 22: 19:13 B4-T2 323, 18:56 B4-T3 323 (false losses; Polymarket data delays)  → 02:13, 01:56 UTC next day
  * - Feb 20: 11:41 B4-T3 240, 11:33 B4-T2 240, 11:29 B4-T1 240  → 18:41, 18:33, 18:29 UTC
  * - Feb 18: 13:23 B4-T2 152, 13:08 B4-T2 152, 13:04 B4-T1 152, 12:59 B4-T1 152, 12:49 B4-T1 152  → 20:23, 20:08, 20:04, 19:59, 19:49 UTC
  */
 import 'dotenv/config';
 import { getDb } from '../db/supabase.js';
 
-/** Exact false-loss slots from screenshots. timeUtc = UTC (DB stores timestamptz). */
+/** Exact false-loss slots from screenshots. timeUtc = UTC (DB stores timestamptz). Dashboard shows America/Denver so Feb 22 19:13/18:56 = Feb 23 02:13/01:56 UTC; fallback Feb 22 19:13/18:56 UTC in case DB differs. */
 const FALSE_LOSS_SLOTS: { date: string; timeUtc: string; tier: string; position_size: number }[] = [
+  { date: '2026-02-23', timeUtc: '02:13', tier: 'B4-T2', position_size: 323 },
+  { date: '2026-02-23', timeUtc: '01:56', tier: 'B4-T3', position_size: 323 },
+  { date: '2026-02-22', timeUtc: '19:13', tier: 'B4-T2', position_size: 323 },
+  { date: '2026-02-22', timeUtc: '18:56', tier: 'B4-T3', position_size: 323 },
   { date: '2026-02-20', timeUtc: '18:41', tier: 'B4-T3', position_size: 240 },
   { date: '2026-02-20', timeUtc: '18:33', tier: 'B4-T2', position_size: 240 },
   { date: '2026-02-20', timeUtc: '18:29', tier: 'B4-T1', position_size: 240 },

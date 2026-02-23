@@ -179,6 +179,10 @@ const b3cBlockUntil = new Map<Asset, number>();       // B3c placed → block B1
 const b2cHighSpreadAt = new Map<Asset, number>();      // B2c saw high spread → block B1c
 const b3cEarlyHighAt = new Map<Asset, number>();       // B3c early high spread → block B3c
 
+/** When CLOB returns "not enough balance / allowance", stop placing for this long to avoid log spam. */
+const BALANCE_ERROR_BACKOFF_MS = 5 * 60 * 1000;
+let balanceErrorBackoffUntil = 0;
+
 function isB1cBlocked(asset: Asset, now: number, b2BlockMs: number): boolean {
   const b3t = b3cBlockUntil.get(asset);
   if (b3t && now < b3t) return true;
@@ -301,8 +305,18 @@ async function tryPlace(
     } catch { /* best effort */ }
     return true;
   }
-  console.log(`[B123c] ${bot} ${asset} order failed: ${result.error}`);
-  try { await logError(new Error(result.error ?? 'order failed'), { bot, asset, slug, side }); } catch {}
+  const err = result.error ?? '';
+  const isBalanceError = /not enough balance|allowance/i.test(err);
+  if (isBalanceError && Date.now() > balanceErrorBackoffUntil) {
+    balanceErrorBackoffUntil = Date.now() + BALANCE_ERROR_BACKOFF_MS;
+    console.log(
+      '[B123c] CLOB "not enough balance / allowance" — backing off 5 min. Polymarket reserves balance for resting limit orders (even unfilled); one placed order can block the next. Same wallet for all assets. Check B123c USDC and allowance (.env.b123c).',
+    );
+  }
+  if (!isBalanceError) {
+    console.log(`[B123c] ${bot} ${asset} order failed: ${err}`);
+    try { await logError(new Error(err || 'order failed'), { bot, asset, slug, side }); } catch {}
+  }
   return false;
 }
 
@@ -337,6 +351,10 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
 
   const positionsInWindow = await getPositionsInWindowB123c(windowStartMs);
+  const skipPlacementBalance = nowMs < balanceErrorBackoffUntil;
+  if (skipPlacementBalance && tickCount % 60 === 0) {
+    console.log('[B123c] placement skipped: balance/allowance backoff (resting orders reserve balance on Polymarket) — check B123c wallet');
+  }
 
   // New window → capture open prices (Chainlink only), clear tracking
   if (windowEnd !== currentWindowEndMs) {
@@ -368,6 +386,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   }
 
   let anySkippedNoPrice = false;
+  // We do NOT limit to one order per window across assets — we allow one per (bot, asset). Polymarket CLOB reserves balance for each resting limit order (maxOrderSize = balance - openOrderSize), so one placed (unfilled) order can cause "not enough balance" for the next.
   for (const asset of ASSETS) {
     const price = await getPriceOrFallback(asset);
     const openPrice = windowOpenPrices[asset];
@@ -383,11 +402,13 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     const side: 'yes' | 'no' = signedSpread >= 0 ? 'yes' : 'no';
     const slug = getCurrentPolySlug(asset, now);
 
-    // --- B3c early high spread check (first 7 min of window) ---
-    if (minLeft > 8 && tickCount % 12 === 0 && abSpread > delays.b3EarlyHighSpreadPct) {
+    // --- B3c early guard: high spread in first 7 min → block B1c/B2c and skip B3c for this asset ---
+    if (minLeft > 8 && abSpread > delays.b3EarlyHighSpreadPct) {
       b3cEarlyHighAt.set(asset, nowMs);
       b3cBlockUntil.set(asset, nowMs + b3BlockMs);
-      console.log(`[B123c] B3c ${asset} early spread ${abSpread.toFixed(2)}% > ${delays.b3EarlyHighSpreadPct}% → block B1c/B2c ${delays.b3BlockMin}min, skip B3c ${delays.b3EarlyHighSpreadBlockMin}min`);
+      if (tickCount % 12 === 0) {
+        console.log(`[B123c] B3c ${asset} early guard: spread ${abSpread.toFixed(2)}% > ${delays.b3EarlyHighSpreadPct}% → block B1c/B2c ${delays.b3BlockMin}min, skip B3c ${delays.b3EarlyHighSpreadBlockMin}min`);
+      }
     }
 
     // --- B1c: last 2.5 min ---
@@ -400,7 +421,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (isB1Window(minLeft) && !isB1cBlocked(asset, nowMs, b2HighSpreadBlockMs)) {
       const key = windowKey('B1c', asset, windowEnd);
       if (positionsInWindow.has('B1c-' + asset)) enteredThisWindow.add(key);
-      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B1', asset, abSpread, spreadThresholds)) {
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B1', asset, abSpread, spreadThresholds) && !skipPlacementBalance) {
         const useMarket = isB1MarketOrderWindow(minLeft);
         const priceB1 = useMarket ? 0.99 : 0.96;
         console.log(`[B123c] attempting B1c ${asset} ${side} ${(priceB1 * 100).toFixed(0)}c | spread=${signedSpread.toFixed(3)}%`);
@@ -419,7 +440,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       if (abSpread > delays.b2HighSpreadThresholdPct) b2cHighSpreadAt.set(asset, nowMs);
       const key = windowKey('B2c', asset, windowEnd);
       if (positionsInWindow.has('B2c-' + asset)) enteredThisWindow.add(key);
-      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds)) {
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds) && !skipPlacementBalance) {
         console.log(`[B123c] attempting B2c ${asset} ${side} 97c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side, positionSize);
         if (placed) enteredThisWindow.add(key);
@@ -433,14 +454,14 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       if (earlyT && nowMs - earlyT < earlyBlockMs) {
         if (tickCount % 6 === 0) {
           const minLeft = Math.ceil((earlyBlockMs - (nowMs - earlyT)) / 60_000);
-          console.log(`[B123c] B3c ${asset} skip: high spread block (${minLeft} min left)`);
+          console.log(`[B123c] B3c ${asset} skip: early guard (high spread in first 7 min) — ${minLeft} min left`);
         }
         continue;
       }
 
       const key = windowKey('B3c', asset, windowEnd);
       if (positionsInWindow.has('B3c-' + asset)) enteredThisWindow.add(key);
-      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B3', asset, abSpread, spreadThresholds)) {
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B3', asset, abSpread, spreadThresholds) && !skipPlacementBalance) {
         console.log(`[B123c] attempting B3c ${asset} ${side} 97c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B3c', asset, slug, 0.97, signedSpread, side, positionSize);
         if (placed) {
