@@ -136,6 +136,7 @@ export default function Dashboard() {
     early_guard_spread_pct: '0.45', early_guard_cooldown_min: '60',
   });
   const [b5Positions, setB5Positions] = useState<Position[]>([]);
+  const [b5Unfilled, setB5Unfilled] = useState<Position[]>([]);
 
   async function load() {
     setLoadError(null);
@@ -150,6 +151,7 @@ export default function Dashboard() {
         { data: b4PosData },
         { data: b4UnfilledData },
         { data: b5PosData },
+        { data: b5UnfilledData },
         { data: b123cPosData },
         { data: b123cUnfilledData },
         { data: errData },
@@ -165,6 +167,7 @@ export default function Dashboard() {
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('positions').select('*').eq('bot', 'B5').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').eq('bot', 'B5').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -179,6 +182,7 @@ export default function Dashboard() {
       setB4Positions((b4PosData ?? []) as Position[]);
       setB4Unfilled((b4UnfilledData ?? []) as Position[]);
       setB5Positions((b5PosData ?? []) as Position[]);
+      setB5Unfilled((b5UnfilledData ?? []) as Position[]);
       setB123cPositions((b123cPosData ?? []) as Position[]);
       setB123cUnfilled((b123cUnfilledData ?? []) as Position[]);
       setB123PolyFilled((b123PolyFilledData ?? []) as Position[]);
@@ -1414,6 +1418,46 @@ export default function Dashboard() {
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct?.toFixed(3)}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
                     <td style={{ borderBottom: '1px solid #eee', color: resultColor, fontWeight: result !== 'Pending' ? 600 : undefined }}>{result}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+
+        <p style={{ marginTop: 24, marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: '#666' }}>B5 placed but not filled (last 50).</span>
+        </p>
+        {b5Unfilled.length === 0 ? (
+          <p style={{ color: '#666' }}>No B5 no-fill orders in the last 50.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Time</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Tier</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Asset</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Venue</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Price src</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
+                <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Slug</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b5Unfilled.map((p) => {
+                const raw = (p.raw ?? {}) as Record<string, unknown>;
+                const tier = String(raw.tier ?? 'B5');
+                return (
+                  <tr key={p.id}>
+                    <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{tier}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.asset}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{p.venue}</td>
+                    <td style={{ borderBottom: '1px solid #eee' }}>{String(raw.price_source ?? '—')}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct != null ? p.strike_spread_pct.toFixed(3) : '—'}</td>
+                    <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
+                    <td style={{ borderBottom: '1px solid #eee', fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.ticker_or_slug ?? ''}>{p.ticker_or_slug ?? '—'}</td>
                   </tr>
                 );
               })}
