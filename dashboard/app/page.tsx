@@ -167,7 +167,7 @@ export default function Dashboard() {
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('positions').select('*').eq('bot', 'B5').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
-        getSupabase().from('positions').select('*').eq('bot', 'B5').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(50),
+        getSupabase().from('positions').select('*').eq('bot', 'B5').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -1426,10 +1426,10 @@ export default function Dashboard() {
         )}
 
         <p style={{ marginTop: 24, marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B5 placed but not filled (last 50).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B5 placed but not filled (last 100).</span>
         </p>
         {b5Unfilled.length === 0 ? (
-          <p style={{ color: '#666' }}>No B5 no-fill orders in the last 50.</p>
+          <p style={{ color: '#666' }}>No B5 no-fill orders in the last 100.</p>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
