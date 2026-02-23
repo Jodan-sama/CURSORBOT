@@ -458,6 +458,13 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         try {
           await logError(new Error(result.error ?? 'order failed'), { bot: 'B5', tier: tier.name, asset, slug, side });
         } catch { /* ignore */ }
+        // T3 attempted but failed (e.g. insufficient balance) → still block T1+T2 for the usual duration
+        if (tier.name === 'B5-T3') {
+          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t3BlockMs);
+          t2BlockedUntil[asset] = Math.max(t2BlockedUntil[asset], nowMs + t3BlockMs);
+          updateB5TierBlocks(asset, t1BlockedUntil[asset], t2BlockedUntil[asset]);
+          console.log(`[B5] T3 attempt failed ${asset} → T1+T2 blocked for ${asset} for ${t3BlockMs / 60_000} min anyway`);
+        }
       }
     }
   }
