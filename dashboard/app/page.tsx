@@ -167,7 +167,7 @@ export default function Dashboard() {
         getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('positions').select('*').eq('bot', 'B5').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
-        getSupabase().from('positions').select('*').eq('bot', 'B5').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(100),
+        getSupabase().from('positions').select('*').eq('bot', 'B5').or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
@@ -1446,10 +1446,10 @@ export default function Dashboard() {
         )}
 
         <p style={{ marginTop: 24, marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B5 placed but not filled (last 100).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B5 placed (pending or not filled, last 100).</span>
         </p>
         {b5Unfilled.length === 0 ? (
-          <p style={{ color: '#666' }}>No B5 no-fill orders in the last 100.</p>
+          <p style={{ color: '#666' }}>No B5 pending or no-fill orders in the last 100.</p>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -1462,12 +1462,15 @@ export default function Dashboard() {
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Spread %</th>
                 <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>Size</th>
                 <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Slug</th>
+                <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>Status</th>
               </tr>
             </thead>
             <tbody>
               {b5Unfilled.map((p) => {
                 const raw = (p.raw ?? {}) as Record<string, unknown>;
                 const tier = String(raw.tier ?? 'B5');
+                const status = p.outcome === 'no_fill' ? 'No fill' : 'Pending';
+                const statusColor = p.outcome === 'no_fill' ? '#f59e0b' : '#888';
                 return (
                   <tr key={p.id}>
                     <td style={{ borderBottom: '1px solid #eee', whiteSpace: 'nowrap' }}>{formatMst(p.entered_at, true)}</td>
@@ -1478,6 +1481,7 @@ export default function Dashboard() {
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.strike_spread_pct != null ? p.strike_spread_pct.toFixed(3) : '—'}</td>
                     <td style={{ textAlign: 'right', borderBottom: '1px solid #eee' }}>{p.position_size}</td>
                     <td style={{ borderBottom: '1px solid #eee', fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.ticker_or_slug ?? ''}>{p.ticker_or_slug ?? '—'}</td>
+                    <td style={{ borderBottom: '1px solid #eee', color: statusColor, fontWeight: 500 }}>{status}</td>
                   </tr>
                 );
               })}
