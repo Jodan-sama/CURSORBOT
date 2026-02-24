@@ -19,8 +19,9 @@ import { getDb } from '../db/supabase.js';
 
 const BACKUP_PATH = join(process.cwd(), 'scripts', 'b4-false-losses-backup.json');
 
-/** Exact false-loss slots from screenshots. timeUtc = UTC (DB stores timestamptz). Dashboard shows America/Denver so Feb 22 19:13/18:56 = Feb 23 02:13/01:56 UTC; fallback Feb 22 19:13/18:56 UTC in case DB differs. */
+/** Exact false-loss slots from screenshots. timeUtc = UTC (DB stores timestamptz). Dashboard shows America/Denver so Feb 22 19:13/18:56 = Feb 23 02:13/01:56 UTC; fallback Feb 22 19:13/18:56 UTC in case DB differs. Feb 24 08:28 MST = 15:28 UTC. */
 const FALSE_LOSS_SLOTS: { date: string; timeUtc: string; tier: string; position_size: number }[] = [
+  { date: '2026-02-24', timeUtc: '15:28', tier: 'B4-T2', position_size: 145 },
   { date: '2026-02-23', timeUtc: '02:13', tier: 'B4-T2', position_size: 323 },
   { date: '2026-02-23', timeUtc: '01:56', tier: 'B4-T3', position_size: 323 },
   { date: '2026-02-22', timeUtc: '19:13', tier: 'B4-T2', position_size: 323 },

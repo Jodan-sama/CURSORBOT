@@ -215,10 +215,12 @@ async function main() {
         continue;
       }
     }
+    type OrderLike = { size_matched?: string; asset_id?: string; token_id?: string; [k: string]: unknown } | null;
+    let order: OrderLike = null;
     if (clob) {
       let filled = false;
       try {
-        const order = await clob.getOrder(row.order_id.trim());
+        order = (await clob.getOrder(row.order_id.trim())) as OrderLike;
         filled = isOrderFilled(order?.size_matched);
       } catch {
         // order not found or API error → treat as unfilled
@@ -251,6 +253,23 @@ async function main() {
     }
     if (!event.markets?.length) continue;
     const market = event.markets[0];
+    // Verify order (when we have it) is for this market — prevents false win/loss from wrong order or slug mismatch
+    const tokenIds: string[] = (typeof market.clobTokenIds === 'string'
+      ? JSON.parse(market.clobTokenIds || '[]')
+      : (market.clobTokenIds ?? [])) as string[];
+    const orderToken = order != null ? (order.asset_id ?? order.token_id) : undefined;
+    if (typeof orderToken === 'string' && tokenIds.length > 0 && !tokenIds.includes(orderToken)) {
+      const { error: updateError } = await supabase
+        .from('positions')
+        .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+        .eq('id', row.id);
+      if (updateError) console.error(`Update no_fill (order token mismatch) ${row.id}:`, updateError.message);
+      else {
+        updated++;
+        console.log(`Resolved ${row.bot} ${slug}: no_fill (order token does not match market — avoid false win/loss)`);
+      }
+      continue;
+    }
     const outcomePrices = (typeof market.outcomePrices === 'string'
       ? JSON.parse(market.outcomePrices || '[]')
       : market.outcomePrices) as string[];
@@ -261,7 +280,19 @@ async function main() {
     if (winningIdx == null) continue; // not resolved yet
     const winningSide = getWinningSide(outcomes, winningIdx);
     const ourSide = getOurSide(row.raw ?? null);
-    if (winningSide == null || ourSide == null) continue;
+    if (ourSide == null) {
+      const { error: updateError } = await supabase
+        .from('positions')
+        .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+        .eq('id', row.id);
+      if (updateError) console.error(`Update no_fill (missing direction) ${row.id}:`, updateError.message);
+      else {
+        updated++;
+        console.log(`Resolved ${row.bot} ${slug}: no_fill (missing direction in raw — avoid wrong win/loss)`);
+      }
+      continue;
+    }
+    if (winningSide == null) continue;
     const outcome = ourSide === winningSide ? 'win' : 'loss';
 
     const { error: updateError } = await supabase
