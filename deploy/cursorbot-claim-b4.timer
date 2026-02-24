@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Polymarket B4 claim every 5 min at :02,:07,:12,... (D2)
+Persistent=true
+
+[Timer]
+OnCalendar=*-*-* *:02,07,12,17,22,27,32,37,42,47,52,57:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

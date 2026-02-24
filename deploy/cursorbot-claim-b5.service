@@ -1,0 +1,15 @@
+[Unit]
+Description=Polymarket claim (B5 wallet only, D3)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/cursorbot
+Environment=DOTENV_CONFIG_PATH=/root/cursorbot/.env
+ExecStart=/usr/bin/node dist/scripts/claim-polymarket.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cursorbot-claim-b5
+
+[Install]
+WantedBy=multi-user.target

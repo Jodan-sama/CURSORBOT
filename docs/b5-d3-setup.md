@@ -66,7 +66,7 @@ crontab -e
 Add or keep:
 
 ```
-0,5,10,15,20,25,30,35,40,45,50,55 * * * * cd /root/cursorbot && DOTENV_CONFIG_PATH=.env /usr/bin/node dist/scripts/claim-polymarket.js >> /var/log/cursorbot-claim-b5.log 2>&1
+# B5 claim: systemd timer every 5 min at :02,:07,:12,... (deploy-d3-b5.sh installs cursorbot-claim-b5.timer; persists across reboot)
 ```
 
 ## 5. Resolver on D2: `.env.b5` (B5 wallet for getOrder)

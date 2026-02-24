@@ -23,13 +23,19 @@ ssh -o StrictHostKeyChecking=no "root@${D3_IP}" "
   npm install && npm run build
   cp deploy/cursorbot-b5.service /etc/systemd/system/
   cp deploy/cursorbot-b5-spread.service /etc/systemd/system/ 2>/dev/null || true
+  cp deploy/cursorbot-claim-b5.service deploy/cursorbot-claim-b5.timer /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now cursorbot-b5
   systemctl restart cursorbot-b5-spread 2>/dev/null || true
-  (crontab -l 2>/dev/null | grep -v cursorbot-claim-b5; echo '0,5,10,15,20,25,30,35,40,45,50,55 * * * * cd /root/cursorbot && DOTENV_CONFIG_PATH=.env /usr/bin/node dist/scripts/claim-polymarket.js >> /var/log/cursorbot-claim-b5.log 2>&1') | crontab -
+  systemctl enable --now cursorbot-claim-b5.timer
+  (crontab -l 2>/dev/null | grep -v cursorbot-claim-b5 || true) | crontab - 2>/dev/null || true
   systemctl status cursorbot-b5 --no-pager
   systemctl status cursorbot-b5-spread --no-pager 2>/dev/null || true
   echo ''
+  echo 'Claim timer (persist across reboot):'
+  systemctl list-timers cursorbot-claim-b5.timer --no-pager 2>/dev/null || true
+  echo ''
   echo 'Done. B5 basket: journalctl -u cursorbot-b5 -f'
   echo 'B5 spread: journalctl -u cursorbot-b5-spread -f'
+  echo 'B5 claim: journalctl -u cursorbot-claim-b5.service -f'
 "

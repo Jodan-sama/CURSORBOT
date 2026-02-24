@@ -104,7 +104,7 @@ crontab -e
 If asked, choose `nano`. Add this **single line** at the end of the file (replace with your path if different):
 
 ```
-6,21,36,51 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js
+# Every 5 min at :02,:07,:12,... — use systemd timer (see D2/D3 deploy); e.g. 2,7,12,17,22,27,32,37,42,47,52,57 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js
 ```
 
 Save (`Ctrl+O`, `Enter`) and exit (`Ctrl+X`).  
@@ -115,16 +115,16 @@ Cron will run the script at **:06, :21, :36, :51** every hour (6 minutes into ea
 **Optional:** To log each run (date, time, status only), use:
 
 ```
-6,21,36,51 * * * * cd /root/cursorbot && mkdir -p logs && /usr/bin/node dist/scripts/claim-polymarket.js >> logs/claim-polymarket.log 2>&1
+# Or cron: 2,7,12,17,22,27,32,37,42,47,52,57 * * * * cd /root/cursorbot && /usr/bin/node dist/scripts/claim-polymarket.js >> logs/claim-polymarket.log 2>&1
 ```
 
 The script also writes a **one-line summary** (date, time, message) to `logs/claim-polymarket.log` and to Supabase `polymarket_claim_log`. The dashboard shows the latest status: **ALL ITEMS CLAIMED**, **NEED MORE POL**, or **CLAIM INCOMPLETE**.
 
-**D1 vs D2:** **D1** is the B1/B2/B3 (Kalshi/Poly) droplet — the cron above (6,21,36,51) is for D1 if you run claim there. **Do not** run B4 claim on D1. **D2** is the B4 + B1c/B2c/B3c droplet — see **D2 only** below for B4 every 3 min and B123c at :06/:21/:36/:51.
+**D1 vs D2:** **D1** is the B1/B2/B3 (Kalshi/Poly) droplet — use the schedule above if you run claim there. **Do not** run B4 claim on D1. **D2** is the B4 + B1c/B2c/B3c droplet — see **D2 only** below: B4 and B123c claim via **systemd timers** every 5 min at :02,:07,:12,... (persist across reboot).
 
-### 6b. D2 only: B4 wallet every 3 min, B123c wallet at :06/:21/:36/:51
+### 6b. D2 only: B4 and B123c claim via systemd timers (persist across reboot)
 
-On **D2** (B4 + B1c/B2c/B3c droplet) you want:
+On **D2** (B4 + B1c/B2c/B3c droplet) use **systemd timers** (every 5 min at :02, :07, :12, :17, :22, :27, :32, :37, :42, :47, :52, :57). Run `./deploy/deploy-d2-b123c.sh` to install; timers survive reboot. Alternatively you can use cron:
 
 - **B4 wallet** claimed **every 3 minutes** (only B4).
 - **B1c/B2c/B3c wallet** claimed at **:06, :21, :36, :51** (only that wallet).

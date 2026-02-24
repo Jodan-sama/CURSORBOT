@@ -12,7 +12,7 @@
  *   node dist/scripts/claim-polymarket.js [conditionId1] [conditionId2] ...
  *   Or set CONDITION_IDS=id1,id2 in .env. Or run with no args for auto-discovery.
  *
- * Cron runs at :06, :21, :36, :51 each hour.
+ * Runs every 5 min at :02, :07, :12, :17, :22, :27, :32, :37, :42, :47, :52, :57 (systemd timer on D2/D3; persists across reboot).
  *
  * Logs: date, time, and status (ALL ITEMS CLAIMED | NEED MORE POL | CLAIM INCOMPLETE) to
  *   logs/claim-polymarket.log and Supabase polymarket_claim_log.
