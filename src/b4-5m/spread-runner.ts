@@ -149,13 +149,19 @@ let lastConfigRefreshMs = 0;
 // ---------------------------------------------------------------------------
 
 const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const WALLET_ADDRESS = process.env.POLYMARKET_PROXY_WALLET?.trim()
-  ?? process.env.POLYMARKET_FUNDER?.trim()
+// Use same wallet as order placement (POLYMARKET_FUNDER) so balance = wallet that needs USDC + allowance
+const WALLET_ADDRESS = process.env.POLYMARKET_FUNDER?.trim()
+  ?? process.env.POLYMARKET_PROXY_WALLET?.trim()
   ?? process.env.POLYGUN_CLAIM_SAFE_ADDRESS?.trim()
   ?? '0x25695dB083FeF07d6C1CA0f5E0cbbff915C5613D';
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
 const BALANCE_POLL_MS = 15 * 60_000; // 15 minutes
 let lastBalancePoll = 0;
+
+/** When CLOB returns "not enough balance / allowance", stop placing for this long and log hint (often allowance, not balance). */
+const BALANCE_ERROR_BACKOFF_MS = 5 * 60 * 1000;
+let balanceErrorBackoffUntil = 0;
+let balanceErrorHintLogged = false;
 
 async function pollWalletBalance(): Promise<void> {
   const now = Date.now();
@@ -426,6 +432,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     lastConfigRefreshMs = Date.now();
   }
 
+  if (nowMs < balanceErrorBackoffUntil && tickCount % 20 === 0) {
+    console.log(`[B4] balance/allowance backoff: ${Math.ceil((balanceErrorBackoffUntil - nowMs) / 60_000)} min left`);
+  }
+
   // Check tiers from HIGHEST to LOWEST (T3 first → T2 → T1)
   // This ensures higher tier blocks take effect before lower tiers are checked
   for (let i = activeTiers.length - 1; i >= 0; i--) {
@@ -467,11 +477,13 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       continue;
     }
 
+    if (nowMs < balanceErrorBackoffUntil) continue;
+
     const side: 'yes' | 'no' = spreadDir === 'up' ? 'yes' : 'no';
 
     if (tier.name === 'B4-T1' && effectiveThreshold > tier.spreadPct) {
       console.log(
-        `[B4] T1 threshold Mon–Fri 7–11am MST bump active: +${t1MstBumpPct}% (effective T1 threshold ${effectiveThreshold.toFixed(2)}%)`,
+        `[B4] T1 threshold Mon–Fri 7–11am MST bump active: +${t1MstBumpPct}% (effective T1 threshold ${effectiveThreshold.toFixed(3)}%)`,
       );
     }
     console.log(
@@ -542,10 +554,31 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         console.log(`[B4] T3 entered → T2 blocked for ${t3BlocksT2Ms / 60_000} min, T1 blocked for ${t3BlocksT1Ms / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
       }
     } else {
-      console.log(`[B4] ${tier.name} order failed: ${result.error}`);
+      const err = result.error ?? '';
+      const isBalanceError = /not enough balance|allowance/i.test(err);
+      if (isBalanceError) {
+        balanceErrorBackoffUntil = nowMs + BALANCE_ERROR_BACKOFF_MS;
+        if (!balanceErrorHintLogged) {
+          balanceErrorHintLogged = true;
+          console.log(
+            '[B4] CLOB "not enough balance / allowance" — backing off 5 min. ' +
+            'Usually this is USDC allowance: the Polymarket exchange must be allowed to spend USDC. ' +
+            'Deposit/approve on Polymarket so the exchange can use your USDC. Balance poll uses POLYMARKET_FUNDER.',
+          );
+        }
+      }
+      console.log(`[B4] ${tier.name} order failed: ${err}`);
       try {
-        await logError(new Error(result.error ?? 'order failed'), { bot: 'B4', tier: tier.name, slug, side });
+        await logError(new Error(err || 'order failed'), { bot: 'B4', tier: tier.name, slug, side });
       } catch { /* ignore */ }
+      // T3 attempted but failed (e.g. insufficient balance/allowance) → still block T1+T2 for the usual duration (like B5)
+      if (tier.name === 'B4-T3') {
+        placedThisWindow.add(tierKey);
+        t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlocksT1Ms);
+        t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlocksT2Ms);
+        updateB4TierBlocks(t1BlockedUntil, t2BlockedUntil);
+        console.log(`[B4] T3 attempt failed → T2 blocked for ${t3BlocksT2Ms / 60_000} min, T1 blocked for ${t3BlocksT1Ms / 60_000} min anyway`);
+      }
     }
   }
 
