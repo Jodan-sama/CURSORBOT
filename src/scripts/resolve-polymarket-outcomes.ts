@@ -178,17 +178,21 @@ async function main() {
     const slug = row.ticker_or_slug!.trim();
 
     // Fill check: only set win/loss if order was filled. Otherwise set no_fill (dashboard hides).
+    // B5 with null order_id: backfilled from Data API trades; treat as filled and resolve from Gamma.
     if (!row.order_id?.trim()) {
-      const { error: updateError } = await supabase
-        .from('positions')
-        .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
-        .eq('id', row.id);
-      if (updateError) console.error(`Update no_fill (no order_id) ${row.id}:`, updateError.message);
-      else {
-        updated++;
-        console.log(`Resolved ${row.bot} ${slug}: no_fill (no order_id)`);
+      if (row.bot !== 'B5') {
+        const { error: updateError } = await supabase
+          .from('positions')
+          .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (updateError) console.error(`Update no_fill (no order_id) ${row.id}:`, updateError.message);
+        else {
+          updated++;
+          console.log(`Resolved ${row.bot} ${slug}: no_fill (no order_id)`);
+        }
+        continue;
       }
-      continue;
+      // B5 backfilled: no order_id; continue to Gamma resolution below (skip getOrder fill check).
     }
 
     // B4 → b4Client. B5 → b5Client (D3 wallet; resolver on D2 uses .env.b5). B1/B2/B3 → d1Client. B1c/B2c/B3c → b123cClient.
@@ -217,7 +221,7 @@ async function main() {
     }
     type OrderLike = { size_matched?: string; asset_id?: string; token_id?: string; [k: string]: unknown } | null;
     let order: OrderLike = null;
-    if (clob) {
+    if (clob && row.order_id?.trim()) {
       let filled = false;
       try {
         order = (await clob.getOrder(row.order_id.trim())) as unknown as OrderLike;
