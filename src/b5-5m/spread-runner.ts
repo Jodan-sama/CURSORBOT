@@ -444,7 +444,9 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
               price_source: 'chainlink',
             },
           });
-        } catch { /* best effort */ }
+        } catch (e) {
+          console.warn(`[B5] position log failed (dashboard will not show this trade): ${asset}:`, e instanceof Error ? e.message : e);
+        }
 
         if (tier.name === 'B5-T2') {
           t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t2BlockMs);

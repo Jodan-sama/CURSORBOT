@@ -14,7 +14,7 @@
 
 **B4 placement (D2):** The B4 spread-runner **does** place limit orders when spread exceeds tier thresholds; journal logs show `[B4] PLACED` with orderIds. Some attempts fail with `not enough balance / allowance` (e.g. when T1 and T2 fire in the same window and balance is tied up). So B4 is placing; the issue was the resolver marking Win without checking fill. After deploying the resolver fix and rebuilding on D2, run `cd /root/cursorbot && git pull && npm run build` so the next cron run uses the new script.
 
-**B1c/B2c/B3c (D2):** B123c uses **derive-only** Polymarket CLOB (same as B4 and D1 runner); static API keys are not used. After code changes: on D2 run `cd /root/cursorbot && git pull origin main && npm run build && systemctl restart cursorbot-b123c`. To verify placement: `node dist/scripts/place-b123c-test-order.js` (uses same derive + proxy; ensure `.env` or env has POLYMARKET_* and HTTPS_PROXY for the B123c wallet).
+**B1c/B2c/B3c (D2):** B123c uses **derive-only** Polymarket CLOB (same as B4 and D1 runner); static API keys are not used. After code changes: on D2 run `cd /root/cursorbot && git pull origin main && npm run build && systemctl restart cursorbot-b123c`. To verify placement on the **B123c wallet**: `node dist/scripts/place-b123c-test-order.js` — the script loads `.env` then `.env.b123c` (override), same as the cursorbot-b123c service, so the order appears in the B123c wallet.
 
 D2 uses password auth by default; add your SSH key with `ssh-copy-id root@161.35.149.219` for key-based checks.
 
@@ -123,6 +123,14 @@ When Polymarket skips show “no orderId or error” but no Poly error appears i
    ```
    This places a single test order and prints the full request params and raw API response. Use it to reproduce the failure locally.
 3. **Polymarket skips** – The skip reason now includes up to 400 chars of the actual error when available. Check the “Polymarket skips” table in the dashboard for the real API message.
+
+## B4 / B5 trades not showing on dashboard
+
+If **B4 trades** or **B5 trades** (or "placed but not filled") don't update while other bots (B1/B2/B3, B1c/B2c/B3c) do:
+
+1. **Same Supabase project** – The dashboard uses `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. B4 runs on D2 and B5 on D3; each uses `SUPABASE_URL` and `SUPABASE_ANON_KEY` from that droplet's `.env`. If D2 or D3 point at a different project (or wrong URL/key), B4/B5 positions are written elsewhere and won't appear. On D2: `grep SUPABASE_URL /root/cursorbot/.env` and compare to the dashboard's env (e.g. Vercel → Settings → Environment Variables). They must match.
+2. **Position log failures** – After a place, the bot logs the position to Supabase. If that insert fails, you'll see `[B4] position log failed (dashboard will not show this trade): …` or `[B5] position log failed …` in the service logs. On D2: `journalctl -u cursorbot-b4-5m -n 500 | grep -i "position log failed"`. On D3: same for `cursorbot-b5-spread` (or the B5 unit name). Fix Supabase credentials or RLS so the anon key can `INSERT` into `positions`.
+3. **Resolver (B4/B5 outcome)** – The **Polymarket outcome resolver** runs on **D2 only** (cron every 10 min). It reads unresolved B4/B5 positions from Supabase, checks fill via CLOB and market result via Gamma, then updates `outcome` and `resolved_at`. So B4/B5 rows appear as "Pending" until the resolver runs (and the market has closed). Resolver cron: `crontab -l` on D2 should show something like `*/10 * * * * cd /root/cursorbot && node dist/scripts/resolve-polymarket-outcomes.js …`. Run it once by hand: `cd /root/cursorbot && node dist/scripts/resolve-polymarket-outcomes.js` and check for errors. Resolver needs the same proxy as B4 (HTTPS_PROXY/HTTP_PROXY in `.env`) so CLOB getOrder works.
 
 ## Kalshi only (no Polymarket)
 
