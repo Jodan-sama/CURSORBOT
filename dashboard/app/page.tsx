@@ -93,8 +93,8 @@ export default function Dashboard() {
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
   const [b4Unfilled, setB4Unfilled] = useState<Position[]>([]);
   const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
-  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string; b123c_position_size: string; early_guard_spread_pct: string; early_guard_cooldown_min: string }>({
-    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60',
+  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string; b123c_position_size: string; early_guard_spread_pct: string; early_guard_cooldown_min: string; t1_mst_bump_pct: string }>({
+    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60', t1_mst_bump_pct: '0',
   });
   const [b123cPositions, setB123cPositions] = useState<Position[]>([]);
   const [b123cUnfilled, setB123cUnfilled] = useState<Position[]>([]);
@@ -200,6 +200,7 @@ export default function Dashboard() {
           b123c_position_size: cfg.b123c_position_size != null ? String(cfg.b123c_position_size) : '5',
           early_guard_spread_pct: cfg.early_guard_spread_pct != null ? String(cfg.early_guard_spread_pct) : '0.6',
           early_guard_cooldown_min: cfg.early_guard_cooldown_min != null ? String(cfg.early_guard_cooldown_min) : '60',
+          t1_mst_bump_pct: cfg.t1_mst_bump_pct != null ? String(cfg.t1_mst_bump_pct) : '0',
         });
       }
       const b5Row = (b5StateResult as { data: unknown }).data as typeof b5State;
@@ -294,6 +295,7 @@ export default function Dashboard() {
       b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
       early_guard_spread_pct: parseFloat(b4Config.early_guard_spread_pct) || 0.6,
       early_guard_cooldown_min: parseInt(b4Config.early_guard_cooldown_min, 10) || 60,
+      t1_mst_bump_pct: parseFloat(b4Config.t1_mst_bump_pct) || 0,
     };
     await getSupabase().from('b4_state').update({
       results_json: config,
@@ -378,6 +380,7 @@ export default function Dashboard() {
       b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
       early_guard_spread_pct: parseFloat(b4Config.early_guard_spread_pct) || 0.6,
       early_guard_cooldown_min: parseInt(b4Config.early_guard_cooldown_min, 10) || 60,
+      t1_mst_bump_pct: parseFloat(b4Config.t1_mst_bump_pct) || 0,
     };
     const startBankroll = 11;
     const today = new Date().toISOString().slice(0, 10);
@@ -1050,6 +1053,13 @@ export default function Dashboard() {
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard cooldown (min)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" min="1" value={b4Config.early_guard_cooldown_min} onChange={(e) => setB4Config((p) => ({ ...p, early_guard_cooldown_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T1 add during Mon–Fri 7–11am MST (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" step="any" min="0" value={b4Config.t1_mst_bump_pct} onChange={(e) => setB4Config((p) => ({ ...p, t1_mst_bump_pct: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                    <span style={{ marginLeft: 6, fontSize: 12, color: '#888' }}>0 = off</span>
                   </td>
                 </tr>
               </tbody>

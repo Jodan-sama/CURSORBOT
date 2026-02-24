@@ -77,6 +77,24 @@ const EARLY_GUARD_WINDOW_SEC = 100;
 const EARLY_GUARD_CHECK_TICKS = 5;           // every 5 ticks = 15s at 3s/tick
 let earlyGuardSpreadPct = 0.6;               // configurable from dashboard
 let earlyGuardCooldownMs = 60 * 60_000;      // configurable from dashboard
+/** T1 threshold bump (e.g. 0.01) applied only Mon–Fri 7–11am America/Denver. 0 = off. */
+let t1MstBumpPct = 0;
+
+/** True if the given time is Mon–Fri 7:00–10:59am in America/Denver (MST/MDT). */
+function isMstMonFri7to11(now: Date): boolean {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Denver',
+    hour: 'numeric',
+    hour12: false,
+    weekday: 'short',
+  });
+  const parts = formatter.formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  const hour = parseInt(get('hour'), 10) || 0;
+  const weekday = get('weekday');
+  const isWeekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(weekday);
+  return isWeekday && hour >= 7 && hour < 11;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -206,7 +224,8 @@ async function refreshConfig(): Promise<void> {
     t3BlockMs = cfg.t3_block_min * 60_000;
     earlyGuardSpreadPct = cfg.early_guard_spread_pct;
     earlyGuardCooldownMs = cfg.early_guard_cooldown_min * 60_000;
-    console.log(`[B4] config refreshed — early_guard_spread_pct=${earlyGuardSpreadPct}%`);
+    t1MstBumpPct = cfg.t1_mst_bump_pct ?? 0;
+    console.log(`[B4] config refreshed — early_guard_spread_pct=${earlyGuardSpreadPct}%${t1MstBumpPct > 0 ? `, t1_mst_bump_pct=${t1MstBumpPct}% (Mon–Fri 7–11am MST)` : ''}`);
   } catch (e) {
     console.warn('[B4] config refresh failed, using current values:', e instanceof Error ? e.message : e);
   }
@@ -420,8 +439,12 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     // T3 only in its window: do not enter or block T1/T2 after T2 starts (secInWindow >= 180)
     if (tier.name === 'B4-T3' && secInWindow >= T3_WINDOW_END_SEC) continue;
 
-    // Spread check
-    if (absSpread < tier.spreadPct) continue;
+    // Spread check (T1: optional bump Mon–Fri 7–11am MST)
+    const effectiveThreshold =
+      tier.name === 'B4-T1' && t1MstBumpPct > 0 && isMstMonFri7to11(new Date())
+        ? tier.spreadPct + t1MstBumpPct
+        : tier.spreadPct;
+    if (absSpread < effectiveThreshold) continue;
 
     // Already have this tier open for this window
     if (openOrders.some(o => o.tier === tier.name && o.windowStart === windowStartMs)) continue;
@@ -444,8 +467,13 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
     const side: 'yes' | 'no' = spreadDir === 'up' ? 'yes' : 'no';
 
+    if (tier.name === 'B4-T1' && effectiveThreshold > tier.spreadPct) {
+      console.log(
+        `[B4] T1 threshold Mon–Fri 7–11am MST bump active: +${t1MstBumpPct}% (effective T1 threshold ${effectiveThreshold.toFixed(2)}%)`,
+      );
+    }
     console.log(
-      `[B4] SIGNAL ${tier.name}: spread=${absSpread.toFixed(4)}% (threshold ${tier.spreadPct}%) ` +
+      `[B4] SIGNAL ${tier.name}: spread=${absSpread.toFixed(4)}% (threshold ${effectiveThreshold.toFixed(2)}%) ` +
       `| dir=${spreadDir} | limit=${tier.limitPrice} | ${secInWindow.toFixed(0)}s into window`,
     );
 

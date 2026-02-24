@@ -422,6 +422,8 @@ export interface B4TierConfig {
   b123c_position_size: number;
   early_guard_spread_pct: number;
   early_guard_cooldown_min: number;
+  /** Add this % to T1 threshold Mon–Fri 7–11am MST only. 0 = off. */
+  t1_mst_bump_pct?: number;
 }
 
 export const DEFAULT_B4_CONFIG: B4TierConfig = {
@@ -434,6 +436,7 @@ export const DEFAULT_B4_CONFIG: B4TierConfig = {
   b123c_position_size: 5,
   early_guard_spread_pct: 0.6,
   early_guard_cooldown_min: 60,
+  t1_mst_bump_pct: 0,
 };
 
 export interface B4StateRow {
@@ -593,6 +596,7 @@ export async function loadB4Config(): Promise<B4TierConfig> {
     if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
       const cfg = data.results_json as Record<string, unknown>;
       if (cfg.t1_spread != null) {
+        const bump = cfg.t1_mst_bump_pct != null ? Number(cfg.t1_mst_bump_pct) : DEFAULT_B4_CONFIG.t1_mst_bump_pct ?? 0;
         return {
           t1_spread: Number(cfg.t1_spread) || DEFAULT_B4_CONFIG.t1_spread,
           t2_spread: Number(cfg.t2_spread) || DEFAULT_B4_CONFIG.t2_spread,
@@ -603,6 +607,7 @@ export async function loadB4Config(): Promise<B4TierConfig> {
           b123c_position_size: Number(cfg.b123c_position_size) || DEFAULT_B4_CONFIG.b123c_position_size,
           early_guard_spread_pct: Number(cfg.early_guard_spread_pct) || DEFAULT_B4_CONFIG.early_guard_spread_pct,
           early_guard_cooldown_min: Number(cfg.early_guard_cooldown_min) || DEFAULT_B4_CONFIG.early_guard_cooldown_min,
+          t1_mst_bump_pct: bump,
         };
       }
     }
