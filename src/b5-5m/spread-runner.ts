@@ -32,6 +32,7 @@ import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
+  AssetType,
   type ClobClient,
   type CreateOrderOptions,
 } from '@polymarket/clob-client';
@@ -126,8 +127,9 @@ let earlyGuardCooldownUntil = 0;
 // ---------------------------------------------------------------------------
 
 const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const WALLET_ADDRESS = process.env.POLYMARKET_PROXY_WALLET?.trim()
-  ?? process.env.POLYMARKET_FUNDER?.trim()
+// Use same wallet as order placement (POLYMARKET_FUNDER) so balance = wallet that needs USDC + allowance
+const WALLET_ADDRESS = process.env.POLYMARKET_FUNDER?.trim()
+  ?? process.env.POLYMARKET_PROXY_WALLET?.trim()
   ?? '0x439BfEB801c12E63C8571Dffc04e74a8C3Dba6eb';
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
 const BALANCE_POLL_MS = 15 * 60_000;
@@ -540,6 +542,17 @@ export async function startSpreadRunner(): Promise<void> {
   console.log(`[B5] Blocking: T2→T1 ${t2BlockMs / 60_000}min | T3→T2 ${t3BlocksT2Ms / 60_000}min, T3→T1 ${t3BlocksT1Ms / 60_000}min (per asset)`);
   console.log(`[B5] Early guard: spread>${earlyGuardSpreadPct}% in first ${EARLY_GUARD_WINDOW_SEC}s → ${earlyGuardCooldownMs / 60_000}min cooldown`);
   console.log('');
+
+  // Refresh USDC balance/allowance with CLOB so orders don't fail with "not enough balance / allowance"
+  try {
+    await withPolyProxy(async () => {
+      const client = await getClobClient();
+      await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      console.log('[B5] USDC balance/allowance updated for CLOB');
+    });
+  } catch (e) {
+    console.warn('[B5] Balance/allowance update failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
 
   const feed = new PriceFeed();
   await new Promise((r) => setTimeout(r, 5_000));
