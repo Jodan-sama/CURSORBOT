@@ -49,6 +49,27 @@ function roundPriceToTick(price: number, tick: CreateOrderOptions['tickSize']): 
 const CHAIN_ID = 137; // Polygon
 const SIGNATURE_TYPE = 2; // API key auth
 
+/**
+ * Fallback fee rate (bps) when GET /fee-rate returns 404 "fee rate not found for market" or base_fee 0.
+ * Server rejects orders with "invalid fee rate (0), current market's maker fee: 1000" for those markets (e.g. btc-updown-5m).
+ */
+const FEE_RATE_BPS_FALLBACK = 1000;
+
+/** Wrap client so getFeeRateBps returns FEE_RATE_BPS_FALLBACK when API returns 0/undefined/404. Prevents "invalid fee rate (0)" on order post. */
+function wrapClobClientFeeRate(client: ClobClient): ClobClient {
+  const orig = client.getFeeRateBps.bind(client);
+  client.getFeeRateBps = async (tokenID: string) => {
+    try {
+      const r = await orig(tokenID);
+      if (r != null && Number(r) > 0) return r;
+    } catch {
+      /* use fallback */
+    }
+    return FEE_RATE_BPS_FALLBACK;
+  };
+  return client;
+}
+
 export interface PolyClobConfig {
   /** Wallet private key (hex, with or without 0x) */
   privateKey: string;
@@ -168,7 +189,7 @@ export async function getOrCreateDerivedPolyClient(): Promise<ClobClient> {
     undefined,
     true
   );
-  return cachedDerivedClient;
+  return wrapClobClientFeeRate(cachedDerivedClient);
 }
 
 /**
@@ -214,7 +235,7 @@ export async function createDerivedPolyClientFromConfig(config: {
   if (!creds?.key || !creds?.secret || !creds?.passphrase) {
     throw new Error('createDerivedPolyClientFromConfig: derive/create did not return key/secret/passphrase');
   }
-  return new ClobClient(
+  const client = new ClobClient(
     CLOB_HOST,
     CHAIN_ID as 137,
     signer,
@@ -224,6 +245,7 @@ export async function createDerivedPolyClientFromConfig(config: {
     undefined,
     true
   );
+  return wrapClobClientFeeRate(client);
 }
 
 /**
@@ -238,7 +260,7 @@ export function createPolyClobClient(config: PolyClobConfig): ClobClient {
     secret: config.apiSecret,
     passphrase: config.apiPassphrase,
   };
-  return new ClobClient(
+  const client = new ClobClient(
     CLOB_HOST,
     CHAIN_ID as 137,
     signer,
@@ -248,6 +270,7 @@ export function createPolyClobClient(config: PolyClobConfig): ClobClient {
     undefined, // geoBlockToken
     true // useServerTime: use Polymarket server time for L2 signing to avoid 401 from clock skew
   );
+  return wrapClobClientFeeRate(client);
 }
 
 /** Polymarket order response (API may use orderId or orderID). */
