@@ -666,7 +666,10 @@ export interface B5TierConfig {
   xrp_t2_spread: number;
   xrp_t3_spread: number;
   t2_block_min: number;
-  t3_block_min: number;
+  /** How long T3 blocks T2 (min). Per-asset blocks, same duration for all assets. */
+  t3_blocks_t2_min: number;
+  /** How long T3 blocks T1 (min). Per-asset blocks, same duration for all assets. */
+  t3_blocks_t1_min: number;
   position_size: number;
   early_guard_spread_pct: number;
   early_guard_cooldown_min: number;
@@ -676,7 +679,7 @@ export const DEFAULT_B5_CONFIG: B5TierConfig = {
   eth_t1_spread: 0.32, eth_t2_spread: 0.181, eth_t3_spread: 0.110,
   sol_t1_spread: 0.32, sol_t2_spread: 0.206, sol_t3_spread: 0.121,
   xrp_t1_spread: 0.32, xrp_t2_spread: 0.206, xrp_t3_spread: 0.121,
-  t2_block_min: 5, t3_block_min: 15, position_size: 5,
+  t2_block_min: 5, t3_blocks_t2_min: 15, t3_blocks_t1_min: 60, position_size: 5,
   early_guard_spread_pct: 0.45, early_guard_cooldown_min: 60,
 };
 
@@ -792,6 +795,8 @@ export async function loadB5Config(): Promise<B5TierConfig> {
     if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
       const cfg = data.results_json as Record<string, unknown>;
       const get = (k: string, d: number) => (cfg[k] != null ? Number(cfg[k]) : d);
+      const t3BlocksT2 = cfg.t3_blocks_t2_min != null ? Number(cfg.t3_blocks_t2_min) : (cfg.t3_block_min != null ? Number(cfg.t3_block_min) : DEFAULT_B5_CONFIG.t3_blocks_t2_min);
+      const t3BlocksT1 = cfg.t3_blocks_t1_min != null ? Number(cfg.t3_blocks_t1_min) : DEFAULT_B5_CONFIG.t3_blocks_t1_min;
       return {
         eth_t1_spread: get('eth_t1_spread', DEFAULT_B5_CONFIG.eth_t1_spread),
         eth_t2_spread: get('eth_t2_spread', DEFAULT_B5_CONFIG.eth_t2_spread),
@@ -803,7 +808,8 @@ export async function loadB5Config(): Promise<B5TierConfig> {
         xrp_t2_spread: get('xrp_t2_spread', DEFAULT_B5_CONFIG.xrp_t2_spread),
         xrp_t3_spread: get('xrp_t3_spread', DEFAULT_B5_CONFIG.xrp_t3_spread),
         t2_block_min: get('t2_block_min', DEFAULT_B5_CONFIG.t2_block_min),
-        t3_block_min: get('t3_block_min', DEFAULT_B5_CONFIG.t3_block_min),
+        t3_blocks_t2_min: t3BlocksT2,
+        t3_blocks_t1_min: t3BlocksT1,
         position_size: get('position_size', DEFAULT_B5_CONFIG.position_size),
         early_guard_spread_pct: get('early_guard_spread_pct', DEFAULT_B5_CONFIG.early_guard_spread_pct),
         early_guard_cooldown_min: get('early_guard_cooldown_min', DEFAULT_B5_CONFIG.early_guard_cooldown_min),

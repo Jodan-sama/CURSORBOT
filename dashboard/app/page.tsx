@@ -126,13 +126,13 @@ export default function Dashboard() {
     eth_t1_spread: string; eth_t2_spread: string; eth_t3_spread: string;
     sol_t1_spread: string; sol_t2_spread: string; sol_t3_spread: string;
     xrp_t1_spread: string; xrp_t2_spread: string; xrp_t3_spread: string;
-    t2_block_min: string; t3_block_min: string; position_size: string;
+    t2_block_min: string; t3_blocks_t2_min: string; t3_blocks_t1_min: string; position_size: string;
     early_guard_spread_pct: string; early_guard_cooldown_min: string;
   }>({
     eth_t1_spread: '0.32', eth_t2_spread: '0.181', eth_t3_spread: '0.110',
     sol_t1_spread: '0.32', sol_t2_spread: '0.206', sol_t3_spread: '0.121',
     xrp_t1_spread: '0.32', xrp_t2_spread: '0.206', xrp_t3_spread: '0.121',
-    t2_block_min: '5', t3_block_min: '15', position_size: '5',
+    t2_block_min: '5', t3_blocks_t2_min: '15', t3_blocks_t1_min: '60', position_size: '5',
     early_guard_spread_pct: '0.45', early_guard_cooldown_min: '60',
   });
   const [b5Positions, setB5Positions] = useState<Position[]>([]);
@@ -213,7 +213,7 @@ export default function Dashboard() {
           eth_t1_spread: s('eth_t1_spread', '0.32'), eth_t2_spread: s('eth_t2_spread', '0.181'), eth_t3_spread: s('eth_t3_spread', '0.110'),
           sol_t1_spread: s('sol_t1_spread', '0.32'), sol_t2_spread: s('sol_t2_spread', '0.206'), sol_t3_spread: s('sol_t3_spread', '0.121'),
           xrp_t1_spread: s('xrp_t1_spread', '0.32'), xrp_t2_spread: s('xrp_t2_spread', '0.206'), xrp_t3_spread: s('xrp_t3_spread', '0.121'),
-          t2_block_min: s('t2_block_min', '5'), t3_block_min: s('t3_block_min', '15'), position_size: s('position_size', '5'),
+          t2_block_min: s('t2_block_min', '5'), t3_blocks_t2_min: s('t3_blocks_t2_min', cfg.t3_block_min != null ? String(cfg.t3_block_min) : '15'), t3_blocks_t1_min: s('t3_blocks_t1_min', '60'), position_size: s('position_size', '5'),
           early_guard_spread_pct: s('early_guard_spread_pct', '0.45'), early_guard_cooldown_min: s('early_guard_cooldown_min', '60'),
         });
       }
@@ -321,7 +321,7 @@ export default function Dashboard() {
       eth_t1_spread: parseFloat(b5Config.eth_t1_spread) || 0.32, eth_t2_spread: parseFloat(b5Config.eth_t2_spread) || 0.181, eth_t3_spread: parseFloat(b5Config.eth_t3_spread) || 0.110,
       sol_t1_spread: parseFloat(b5Config.sol_t1_spread) || 0.32, sol_t2_spread: parseFloat(b5Config.sol_t2_spread) || 0.206, sol_t3_spread: parseFloat(b5Config.sol_t3_spread) || 0.121,
       xrp_t1_spread: parseFloat(b5Config.xrp_t1_spread) || 0.32, xrp_t2_spread: parseFloat(b5Config.xrp_t2_spread) || 0.206, xrp_t3_spread: parseFloat(b5Config.xrp_t3_spread) || 0.121,
-      t2_block_min: parseInt(b5Config.t2_block_min, 10) || 5, t3_block_min: parseInt(b5Config.t3_block_min, 10) || 15, position_size: parseFloat(b5Config.position_size) || 5,
+      t2_block_min: parseInt(b5Config.t2_block_min, 10) || 5, t3_blocks_t2_min: parseInt(b5Config.t3_blocks_t2_min, 10) || 15, t3_blocks_t1_min: parseInt(b5Config.t3_blocks_t1_min, 10) || 60, position_size: parseFloat(b5Config.position_size) || 5,
       early_guard_spread_pct: parseFloat(b5Config.early_guard_spread_pct) || 0.45, early_guard_cooldown_min: parseInt(b5Config.early_guard_cooldown_min, 10) || 60,
     };
     await getSupabase().from('b5_state').update({ results_json: config, updated_at: new Date().toISOString() }).eq('id', 'default');
@@ -348,7 +348,7 @@ export default function Dashboard() {
       eth_t1_spread: parseFloat(b5Config.eth_t1_spread) || 0.32, eth_t2_spread: parseFloat(b5Config.eth_t2_spread) || 0.181, eth_t3_spread: parseFloat(b5Config.eth_t3_spread) || 0.110,
       sol_t1_spread: parseFloat(b5Config.sol_t1_spread) || 0.32, sol_t2_spread: parseFloat(b5Config.sol_t2_spread) || 0.206, sol_t3_spread: parseFloat(b5Config.sol_t3_spread) || 0.121,
       xrp_t1_spread: parseFloat(b5Config.xrp_t1_spread) || 0.32, xrp_t2_spread: parseFloat(b5Config.xrp_t2_spread) || 0.206, xrp_t3_spread: parseFloat(b5Config.xrp_t3_spread) || 0.121,
-      t2_block_min: parseInt(b5Config.t2_block_min, 10) || 5, t3_block_min: parseInt(b5Config.t3_block_min, 10) || 15, position_size: parseFloat(b5Config.position_size) || 5,
+      t2_block_min: parseInt(b5Config.t2_block_min, 10) || 5, t3_blocks_t2_min: parseInt(b5Config.t3_blocks_t2_min, 10) || 15, t3_blocks_t1_min: parseInt(b5Config.t3_blocks_t1_min, 10) || 60, position_size: parseFloat(b5Config.position_size) || 5,
       early_guard_spread_pct: parseFloat(b5Config.early_guard_spread_pct) || 0.45, early_guard_cooldown_min: parseInt(b5Config.early_guard_cooldown_min, 10) || 60,
     };
     const startBankroll = 50;
@@ -1380,7 +1380,7 @@ export default function Dashboard() {
         </div>
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
           <h3 style={{ ...headingStyle, margin: '0 0 12px', fontSize: 16, color: '#fff' }}>B5 Spread Tier Config</h3>
-          <p style={{ fontSize: 13, color: '#ccc', marginBottom: 12 }}>Per-asset tier spreads (%). T1 = lowest spread (enters last 50s), T3 = highest spread (enters first, blocks T1+T2). Order: T3 / T2 / T1. One position size for all.</p>
+          <p style={{ fontSize: 13, color: '#ccc', marginBottom: 12 }}>Per-asset tier spreads (%). T1 = lowest spread (enters last 50s), T3 = highest spread (enters first, blocks T2 and T1 separately per asset). Order: T3 / T2 / T1. One position size for all.</p>
           <form onSubmit={saveB5Config}>
             <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
               <thead>
@@ -1394,7 +1394,8 @@ export default function Dashboard() {
                 <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>SOL T3 / T2 / T1 (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.sol_t1_spread} onChange={(e) => setB5Config((p) => ({ ...p, sol_t1_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.sol_t2_spread} onChange={(e) => setB5Config((p) => ({ ...p, sol_t2_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.sol_t3_spread} onChange={(e) => setB5Config((p) => ({ ...p, sol_t3_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px' }} /></td></tr>
                 <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>XRP T3 / T2 / T1 (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.xrp_t1_spread} onChange={(e) => setB5Config((p) => ({ ...p, xrp_t1_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.xrp_t2_spread} onChange={(e) => setB5Config((p) => ({ ...p, xrp_t2_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px', marginRight: 4 }} /><input type="number" step="any" min="0" value={b5Config.xrp_t3_spread} onChange={(e) => setB5Config((p) => ({ ...p, xrp_t3_spread: e.target.value }))} style={{ width: 56, padding: '4px 6px' }} /></td></tr>
                 <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T2 → blocks T1 (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.t2_block_min} onChange={(e) => setB5Config((p) => ({ ...p, t2_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
-                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T1+T2 (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.t3_block_min} onChange={(e) => setB5Config((p) => ({ ...p, t3_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T2 (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.t3_blocks_t2_min} onChange={(e) => setB5Config((p) => ({ ...p, t3_blocks_t2_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
+                <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T1 (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.t3_blocks_t1_min} onChange={(e) => setB5Config((p) => ({ ...p, t3_blocks_t1_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
                 <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Position size ($)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="1" value={b5Config.position_size} onChange={(e) => setB5Config((p) => ({ ...p, position_size: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
                 <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard spread (%)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" step="any" min="0" value={b5Config.early_guard_spread_pct} onChange={(e) => setB5Config((p) => ({ ...p, early_guard_spread_pct: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>
                 <tr><td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>Early guard cooldown (min)</td><td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}><input type="number" min="1" value={b5Config.early_guard_cooldown_min} onChange={(e) => setB5Config((p) => ({ ...p, early_guard_cooldown_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} /></td></tr>

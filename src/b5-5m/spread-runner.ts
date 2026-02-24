@@ -71,12 +71,13 @@ let b5Config: B5TierConfig = {
   eth_t1_spread: 0.32, eth_t2_spread: 0.181, eth_t3_spread: 0.110,
   sol_t1_spread: 0.32, sol_t2_spread: 0.206, sol_t3_spread: 0.121,
   xrp_t1_spread: 0.32, xrp_t2_spread: 0.206, xrp_t3_spread: 0.121,
-  t2_block_min: 5, t3_block_min: 15, position_size: 5,
+  t2_block_min: 5, t3_blocks_t2_min: 15, t3_blocks_t1_min: 60, position_size: 5,
   early_guard_spread_pct: 0.45, early_guard_cooldown_min: 60,
 };
 
 let t2BlockMs = 5 * 60_000;
-let t3BlockMs = 15 * 60_000;
+let t3BlocksT2Ms = 15 * 60_000;
+let t3BlocksT1Ms = 60 * 60_000;
 let earlyGuardSpreadPct = 0.45;
 let earlyGuardCooldownMs = 60 * 60_000;
 let lastConfigRefreshMs = 0;
@@ -191,7 +192,8 @@ async function refreshConfig(): Promise<void> {
     const cfg = await loadB5Config();
     b5Config = cfg;
     t2BlockMs = cfg.t2_block_min * 60_000;
-    t3BlockMs = cfg.t3_block_min * 60_000;
+    t3BlocksT2Ms = cfg.t3_blocks_t2_min * 60_000;
+    t3BlocksT1Ms = cfg.t3_blocks_t1_min * 60_000;
     earlyGuardSpreadPct = cfg.early_guard_spread_pct;
     earlyGuardCooldownMs = cfg.early_guard_cooldown_min * 60_000;
     console.log(`[B5] config refreshed — early_guard_spread_pct=${earlyGuardSpreadPct}%`);
@@ -450,10 +452,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           console.log(`[B5] T2 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1 blocked for ${asset} for ${t2BlockMs / 60_000} min`);
         }
         if (tier.name === 'B5-T3') {
-          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t3BlockMs);
-          t2BlockedUntil[asset] = Math.max(t2BlockedUntil[asset], nowMs + t3BlockMs);
+          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t3BlocksT1Ms);
+          t2BlockedUntil[asset] = Math.max(t2BlockedUntil[asset], nowMs + t3BlocksT2Ms);
           updateB5TierBlocks(asset, t1BlockedUntil[asset], t2BlockedUntil[asset]);
-          console.log(`[B5] T3 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T1+T2 blocked for ${asset} for ${t3BlockMs / 60_000} min`);
+          console.log(`[B5] T3 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T2 blocked ${t3BlocksT2Ms / 60_000} min, T1 blocked ${t3BlocksT1Ms / 60_000} min for ${asset}`);
         }
       } else {
         console.log(`[B5] ${tier.name} ${asset} order failed: ${result.error}`);
@@ -462,10 +464,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         } catch { /* ignore */ }
         // T3 attempted but failed (e.g. insufficient balance) → still block T1+T2 for the usual duration
         if (tier.name === 'B5-T3') {
-          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t3BlockMs);
-          t2BlockedUntil[asset] = Math.max(t2BlockedUntil[asset], nowMs + t3BlockMs);
+          t1BlockedUntil[asset] = Math.max(t1BlockedUntil[asset], nowMs + t3BlocksT1Ms);
+          t2BlockedUntil[asset] = Math.max(t2BlockedUntil[asset], nowMs + t3BlocksT2Ms);
           updateB5TierBlocks(asset, t1BlockedUntil[asset], t2BlockedUntil[asset]);
-          console.log(`[B5] T3 attempt failed ${asset} → T1+T2 blocked for ${asset} for ${t3BlockMs / 60_000} min anyway`);
+          console.log(`[B5] T3 attempt failed ${asset} → T2 blocked ${t3BlocksT2Ms / 60_000} min, T1 blocked ${t3BlocksT1Ms / 60_000} min for ${asset} anyway`);
         }
       }
     }
@@ -533,7 +535,7 @@ export async function startSpreadRunner(): Promise<void> {
     const tiers = getTiersForAsset(b5Config, asset);
     console.log(`[B5] ${asset}: T1>${tiers[0].spreadPct}% T2>${tiers[1].spreadPct}% T3>${tiers[2].spreadPct}%`);
   }
-  console.log(`[B5] Blocking: T2→T1 ${t2BlockMs / 60_000}min | T3→T1+T2 ${t3BlockMs / 60_000}min`);
+  console.log(`[B5] Blocking: T2→T1 ${t2BlockMs / 60_000}min | T3→T2 ${t3BlocksT2Ms / 60_000}min, T3→T1 ${t3BlocksT1Ms / 60_000}min (per asset)`);
   console.log(`[B5] Early guard: spread>${earlyGuardSpreadPct}% in first ${EARLY_GUARD_WINDOW_SEC}s → ${earlyGuardCooldownMs / 60_000}min cooldown`);
   console.log('');
 
