@@ -65,8 +65,9 @@ let positionSize = parseFloat(process.env.B4_POSITION_SIZE || '5');
 const MIN_TICK_DELAY_MS = 1_000;
 
 // Blocking durations (configurable)
-let t2BlockMs = 5 * 60_000;   // T2 → blocks T1 for 5 min
-let t3BlockMs = 15 * 60_000;  // T3 → blocks T1 + T2 for 15 min
+let t2BlockMs = 5 * 60_000;        // T2 → blocks T1
+let t3BlocksT2Ms = 15 * 60_000;   // T3 → blocks T2 for this long
+let t3BlocksT1Ms = 45 * 60_000;   // T3 → blocks T1 for this long
 
 /** T3 may only enter before T2 starts. After this second, T3 cannot enter and cannot block T1/T2. */
 const T3_WINDOW_END_SEC = 180;  // same as T2 entryAfterSec: T3 window = [100, 180), then T2 starts
@@ -221,7 +222,8 @@ async function refreshConfig(): Promise<void> {
     ];
     positionSize = cfg.position_size;
     t2BlockMs = cfg.t2_block_min * 60_000;
-    t3BlockMs = cfg.t3_block_min * 60_000;
+    t3BlocksT2Ms = cfg.t3_blocks_t2_min * 60_000;
+    t3BlocksT1Ms = cfg.t3_blocks_t1_min * 60_000;
     earlyGuardSpreadPct = cfg.early_guard_spread_pct;
     earlyGuardCooldownMs = cfg.early_guard_cooldown_min * 60_000;
     t1MstBumpPct = cfg.t1_mst_bump_pct ?? 0;
@@ -534,10 +536,10 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
         console.log(`[B4] T2 entered → T1 blocked for ${t2BlockMs / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
       }
       if (tier.name === 'B4-T3') {
-        t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlockMs);
-        t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlockMs);
+        t1BlockedUntil = Math.max(t1BlockedUntil, nowMs + t3BlocksT1Ms);
+        t2BlockedUntil = Math.max(t2BlockedUntil, nowMs + t3BlocksT2Ms);
         updateB4TierBlocks(t1BlockedUntil, t2BlockedUntil);
-        console.log(`[B4] T3 entered → T1+T2 blocked for ${t3BlockMs / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
+        console.log(`[B4] T3 entered → T2 blocked for ${t3BlocksT2Ms / 60_000} min, T1 blocked for ${t3BlocksT1Ms / 60_000} min (until ${new Date(t1BlockedUntil).toISOString()})`);
       }
     } else {
       console.log(`[B4] ${tier.name} order failed: ${result.error}`);
@@ -593,7 +595,7 @@ export async function startSpreadRunner(): Promise<void> {
   for (const t of activeTiers) {
     console.log(`[B4]   ${t.name}: spread>${t.spreadPct}%, entry after ${t.entryAfterSec}s, limit ${t.limitPrice}`);
   }
-  console.log(`[B4] Blocking: T2→T1 for ${t2BlockMs / 60_000}min | T3→T1+T2 for ${t3BlockMs / 60_000}min`);
+  console.log(`[B4] Blocking: T2→T1 for ${t2BlockMs / 60_000}min | T3→T2 for ${t3BlocksT2Ms / 60_000}min, T3→T1 for ${t3BlocksT1Ms / 60_000}min`);
   console.log(`[B4] Early guard: spread>${earlyGuardSpreadPct}% in first ${EARLY_GUARD_WINDOW_SEC}s → ${earlyGuardCooldownMs / 60_000}min cooldown`);
   console.log('[B4] Strategy: buy at limit, hold to window resolution ($1 or $0)');
   console.log('');

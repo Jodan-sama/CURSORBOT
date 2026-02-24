@@ -93,8 +93,8 @@ export default function Dashboard() {
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
   const [b4Unfilled, setB4Unfilled] = useState<Position[]>([]);
   const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
-  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_block_min: string; position_size: string; b123c_position_size: string; early_guard_spread_pct: string; early_guard_cooldown_min: string; t1_mst_bump_pct: string }>({
-    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_block_min: '15', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60', t1_mst_bump_pct: '0',
+  const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_blocks_t2_min: string; t3_blocks_t1_min: string; position_size: string; b123c_position_size: string; early_guard_spread_pct: string; early_guard_cooldown_min: string; t1_mst_bump_pct: string }>({
+    t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_blocks_t2_min: '15', t3_blocks_t1_min: '45', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60', t1_mst_bump_pct: '0',
   });
   const [b123cPositions, setB123cPositions] = useState<Position[]>([]);
   const [b123cUnfilled, setB123cUnfilled] = useState<Position[]>([]);
@@ -195,7 +195,8 @@ export default function Dashboard() {
           t2_spread: cfg.t2_spread != null ? String(cfg.t2_spread) : '0.21',
           t3_spread: cfg.t3_spread != null ? String(cfg.t3_spread) : '0.45',
           t2_block_min: cfg.t2_block_min != null ? String(cfg.t2_block_min) : '5',
-          t3_block_min: cfg.t3_block_min != null ? String(cfg.t3_block_min) : '15',
+          t3_blocks_t2_min: cfg.t3_blocks_t2_min != null ? String(cfg.t3_blocks_t2_min) : (cfg.t3_block_min != null ? String(cfg.t3_block_min) : '15'),
+          t3_blocks_t1_min: cfg.t3_blocks_t1_min != null ? String(cfg.t3_blocks_t1_min) : '45',
           position_size: cfg.position_size != null ? String(cfg.position_size) : '5',
           b123c_position_size: cfg.b123c_position_size != null ? String(cfg.b123c_position_size) : '5',
           early_guard_spread_pct: cfg.early_guard_spread_pct != null ? String(cfg.early_guard_spread_pct) : '0.6',
@@ -290,7 +291,8 @@ export default function Dashboard() {
       t2_spread: parseFloat(b4Config.t2_spread) || 0.21,
       t3_spread: parseFloat(b4Config.t3_spread) || 0.45,
       t2_block_min: parseInt(b4Config.t2_block_min, 10) || 5,
-      t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
+      t3_blocks_t2_min: parseInt(b4Config.t3_blocks_t2_min, 10) || 15,
+      t3_blocks_t1_min: parseInt(b4Config.t3_blocks_t1_min, 10) || 45,
       position_size: parseFloat(b4Config.position_size) || 5,
       b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
       early_guard_spread_pct: parseFloat(b4Config.early_guard_spread_pct) || 0.6,
@@ -375,7 +377,8 @@ export default function Dashboard() {
       t2_spread: parseFloat(b4Config.t2_spread) || 0.21,
       t3_spread: parseFloat(b4Config.t3_spread) || 0.45,
       t2_block_min: parseInt(b4Config.t2_block_min, 10) || 5,
-      t3_block_min: parseInt(b4Config.t3_block_min, 10) || 15,
+      t3_blocks_t2_min: parseInt(b4Config.t3_blocks_t2_min, 10) || 15,
+      t3_blocks_t1_min: parseInt(b4Config.t3_blocks_t1_min, 10) || 45,
       position_size: parseFloat(b4Config.position_size) || 5,
       b123c_position_size: parseFloat(b4Config.b123c_position_size) || 5,
       early_guard_spread_pct: parseFloat(b4Config.early_guard_spread_pct) || 0.6,
@@ -990,7 +993,7 @@ export default function Dashboard() {
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
           <h3 style={{ ...headingStyle, margin: '0 0 12px', fontSize: 16, color: '#fff' }}>B4 Spread Tier Config</h3>
           <p style={{ fontSize: 13, color: '#ccc', marginBottom: 12 }}>
-            T1: last 50s, T2: last 100s (blocks T1), T3: last 160s (blocks T1+T2). Saved to Supabase, picked up by bot within ~90s.
+            T1: last 50s, T2: last 100s (blocks T1), T3: last 160s (blocks T2 and T1 separately). Saved to Supabase, picked up by bot within ~1h.
           </p>
           <form onSubmit={saveB4TierConfig}>
             <table style={{ borderCollapse: 'collapse', marginBottom: 12 }}>
@@ -1026,9 +1029,15 @@ export default function Dashboard() {
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T1+T2 (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T2 (min)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
-                    <input type="number" min="1" value={b4Config.t3_block_min} onChange={(e) => setB4Config((p) => ({ ...p, t3_block_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                    <input type="number" min="1" value={b4Config.t3_blocks_t2_min} onChange={(e) => setB4Config((p) => ({ ...p, t3_blocks_t2_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>T3 → blocks T1 (min)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
+                    <input type="number" min="1" value={b4Config.t3_blocks_t1_min} onChange={(e) => setB4Config((p) => ({ ...p, t3_blocks_t1_min: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                   </td>
                 </tr>
                 <tr>

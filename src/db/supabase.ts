@@ -417,7 +417,10 @@ export interface B4TierConfig {
   t2_spread: number;
   t3_spread: number;
   t2_block_min: number;
-  t3_block_min: number;
+  /** How long T3 blocks T2 (min). */
+  t3_blocks_t2_min: number;
+  /** How long T3 blocks T1 (min). */
+  t3_blocks_t1_min: number;
   position_size: number;
   b123c_position_size: number;
   early_guard_spread_pct: number;
@@ -431,7 +434,8 @@ export const DEFAULT_B4_CONFIG: B4TierConfig = {
   t2_spread: 0.21,
   t3_spread: 0.45,
   t2_block_min: 5,
-  t3_block_min: 15,
+  t3_blocks_t2_min: 15,
+  t3_blocks_t1_min: 45,
   position_size: 5,
   b123c_position_size: 5,
   early_guard_spread_pct: 0.6,
@@ -597,12 +601,15 @@ export async function loadB4Config(): Promise<B4TierConfig> {
       const cfg = data.results_json as Record<string, unknown>;
       if (cfg.t1_spread != null) {
         const bump = cfg.t1_mst_bump_pct != null ? Number(cfg.t1_mst_bump_pct) : DEFAULT_B4_CONFIG.t1_mst_bump_pct ?? 0;
+        const t3BlocksT2 = cfg.t3_blocks_t2_min != null ? Number(cfg.t3_blocks_t2_min) : (cfg.t3_block_min != null ? Number(cfg.t3_block_min) : DEFAULT_B4_CONFIG.t3_blocks_t2_min);
+        const t3BlocksT1 = cfg.t3_blocks_t1_min != null ? Number(cfg.t3_blocks_t1_min) : DEFAULT_B4_CONFIG.t3_blocks_t1_min;
         return {
           t1_spread: Number(cfg.t1_spread) || DEFAULT_B4_CONFIG.t1_spread,
           t2_spread: Number(cfg.t2_spread) || DEFAULT_B4_CONFIG.t2_spread,
           t3_spread: Number(cfg.t3_spread) || DEFAULT_B4_CONFIG.t3_spread,
           t2_block_min: Number(cfg.t2_block_min) || DEFAULT_B4_CONFIG.t2_block_min,
-          t3_block_min: Number(cfg.t3_block_min) || DEFAULT_B4_CONFIG.t3_block_min,
+          t3_blocks_t2_min: t3BlocksT2,
+          t3_blocks_t1_min: t3BlocksT1,
           position_size: Number(cfg.position_size) || DEFAULT_B4_CONFIG.position_size,
           b123c_position_size: Number(cfg.b123c_position_size) || DEFAULT_B4_CONFIG.b123c_position_size,
           early_guard_spread_pct: Number(cfg.early_guard_spread_pct) || DEFAULT_B4_CONFIG.early_guard_spread_pct,
