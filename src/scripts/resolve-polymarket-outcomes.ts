@@ -220,7 +220,7 @@ async function main() {
     if (clob) {
       let filled = false;
       try {
-        order = (await clob.getOrder(row.order_id.trim())) as OrderLike;
+        order = (await clob.getOrder(row.order_id.trim())) as unknown as OrderLike;
         filled = isOrderFilled(order?.size_matched);
       } catch {
         // order not found or API error → treat as unfilled
