@@ -139,8 +139,8 @@ let t1BlockedUntil = 0;
 let t2BlockedUntil = 0;
 let earlyGuardCooldownUntil = 0;
 
-/** Config (early_guard_spread_pct, tiers, etc.) from Supabase — fetch at most once per 5 min, then compare vs live price. */
-const CONFIG_CACHE_MS = 5 * 60 * 1000;
+/** Config (early_guard_spread_pct, tiers, t1_mst_bump_pct, etc.) from Supabase — fetch at most once per hour. */
+const CONFIG_CACHE_MS = 60 * 60 * 1000;
 let lastConfigRefreshMs = 0;
 
 // ---------------------------------------------------------------------------
