@@ -122,6 +122,11 @@ const t1BlockedUntil: Record<B5Asset, number> = { ETH: 0, SOL: 0, XRP: 0 };
 const t2BlockedUntil: Record<B5Asset, number> = { ETH: 0, SOL: 0, XRP: 0 };
 let earlyGuardCooldownUntil = 0;
 
+/** When CLOB returns "not enough balance / allowance", stop placing for this long (avoid log spam and API hammer). */
+const BALANCE_ERROR_BACKOFF_MS = 5 * 60 * 1000;
+let balanceErrorBackoffUntil = 0;
+let balanceErrorHintLogged = false;
+
 // ---------------------------------------------------------------------------
 // Wallet balance polling
 // ---------------------------------------------------------------------------
@@ -339,6 +344,12 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
   await pollWalletBalance();
 
+  if (nowMs >= balanceErrorBackoffUntil) {
+    balanceErrorHintLogged = false;
+  } else if (tickCount % 20 === 0) {
+    console.log(`[B5] balance/allowance backoff: ${Math.ceil((balanceErrorBackoffUntil - nowMs) / 60_000)} min left`);
+  }
+
   if (Date.now() - lastConfigRefreshMs > CONFIG_CACHE_MS) {
     await refreshConfig();
     lastConfigRefreshMs = Date.now();
@@ -395,6 +406,7 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
       if (openOrders.some(o => o.tier === tier.name && o.windowStart === windowStartMs && o.asset === asset)) continue;
       if (tier.name === 'B5-T1' && nowMs < t1BlockedUntil[asset]) continue;
       if (tier.name === 'B5-T2' && nowMs < t2BlockedUntil[asset]) continue;
+      if (nowMs < balanceErrorBackoffUntil) continue;
 
       const side: 'yes' | 'no' = spreadDir === 'up' ? 'yes' : 'no';
       console.log(
@@ -462,9 +474,21 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           console.log(`[B5] T3 placed ${asset} orderId=${result.orderId.slice(0, 14)}… spread=${signedSpread.toFixed(4)}% → T2 blocked ${t3BlocksT2Ms / 60_000} min, T1 blocked ${t3BlocksT1Ms / 60_000} min for ${asset}`);
         }
       } else {
-        console.log(`[B5] ${tier.name} ${asset} order failed: ${result.error}`);
+        const err = result.error ?? '';
+        const isBalanceError = /not enough balance|allowance/i.test(err);
+        if (isBalanceError) {
+          balanceErrorBackoffUntil = nowMs + BALANCE_ERROR_BACKOFF_MS;
+          if (!balanceErrorHintLogged) {
+            balanceErrorHintLogged = true;
+            console.log(
+              '[B5] CLOB "not enough balance / allowance" — backing off 5 min. Deposit/approve USDC on Polymarket. Balance poll uses POLYMARKET_FUNDER.',
+            );
+          }
+          placedThisWindow.add(tierKey);
+        }
+        console.log(`[B5] ${tier.name} ${asset} order failed: ${err}`);
         try {
-          await logError(new Error(result.error ?? 'order failed'), { bot: 'B5', tier: tier.name, asset, slug, side });
+          await logError(new Error(err || 'order failed'), { bot: 'B5', tier: tier.name, asset, slug, side });
         } catch { /* ignore */ }
         // T3 attempted but failed (e.g. insufficient balance) → still block T1+T2 for the usual duration
         if (tier.name === 'B5-T3') {
