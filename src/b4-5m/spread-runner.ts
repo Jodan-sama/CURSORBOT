@@ -39,6 +39,7 @@ import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
+  AssetType,
   type ClobClient,
   type CreateOrderOptions,
 } from '@polymarket/clob-client';
@@ -632,6 +633,17 @@ export async function startSpreadRunner(): Promise<void> {
   console.log(`[B4] Early guard: spread>${earlyGuardSpreadPct}% in first ${EARLY_GUARD_WINDOW_SEC}s → ${earlyGuardCooldownMs / 60_000}min cooldown`);
   console.log('[B4] Strategy: buy at limit, hold to window resolution ($1 or $0)');
   console.log('');
+
+  // Refresh USDC balance/allowance with CLOB so orders don't fail with "not enough balance / allowance"
+  try {
+    await withPolyProxy(async () => {
+      const client = await getClobClient();
+      await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      console.log('[B4] USDC balance/allowance updated for CLOB');
+    });
+  } catch (e) {
+    console.warn('[B4] Balance/allowance update failed (non-fatal):', e instanceof Error ? e.message : e);
+  }
 
   const feed = new PriceFeed();
 
