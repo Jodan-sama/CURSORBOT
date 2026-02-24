@@ -66,7 +66,7 @@ function assetFromSlug(slug: string): Asset {
 
 async function main(): Promise<void> {
   const sinceDays = Math.max(1, parseInt(process.argv[2] ?? '1', 10));
-  const sinceMs = Date.now() - sinceDays * 24 * 60 * 60 * 1000;
+  const sinceSec = Math.floor(Date.now() / 1000) - sinceDays * 24 * 60 * 60;
 
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY;
@@ -106,7 +106,7 @@ async function main(): Promise<void> {
     (t) =>
       t.slug &&
       B5_SLUG_RE.test(t.slug) &&
-      (t.timestamp ?? 0) >= sinceMs &&
+      (t.timestamp ?? 0) >= sinceSec &&
       (t.side === 'BUY' || t.side === 'SELL')
   );
   // Prefer BUY as entry; if we have both BUY and SELL for same slug in same window, we only want the entry (BUY)
@@ -130,8 +130,9 @@ async function main(): Promise<void> {
   let skipped = 0;
   for (const t of toInsert) {
     const slug = t.slug!;
-    const ts = t.timestamp ?? 0;
-    const enteredAt = new Date(ts).toISOString();
+    const tsSec = t.timestamp ?? 0;
+    const ts = tsSec * 1000;
+    const enteredAt = new Date(tsSec * 1000).toISOString();
     const asset = assetFromSlug(slug);
     const outcome = (t.outcome ?? '').toLowerCase();
     const direction = outcome === 'up' || outcome === 'down' ? outcome : 'up';
@@ -144,8 +145,8 @@ async function main(): Promise<void> {
       .select('id')
       .eq('bot', 'B5')
       .eq('ticker_or_slug', slug)
-      .gte('entered_at', new Date(ts - 120_000).toISOString())
-      .lte('entered_at', new Date(ts + 120_000).toISOString())
+      .gte('entered_at', new Date((tsSec - 120) * 1000).toISOString())
+      .lte('entered_at', new Date((tsSec + 120) * 1000).toISOString())
       .limit(1)
       .maybeSingle();
 
@@ -166,7 +167,7 @@ async function main(): Promise<void> {
         strategy: 'spread',
         direction,
         source: 'backfill',
-        trade_timestamp: ts,
+        trade_timestamp: tsSec,
         size,
         price,
       },
