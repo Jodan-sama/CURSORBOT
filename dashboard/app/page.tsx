@@ -92,7 +92,7 @@ export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [b4Positions, setB4Positions] = useState<Position[]>([]);
   const [b4Unfilled, setB4Unfilled] = useState<Position[]>([]);
-  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
+  const [b4State, setB4State] = useState<{ bankroll: number; max_bankroll: number; daily_start_bankroll: number; daily_start_date: string; half_kelly_trades_left: number; consecutive_losses: number; cooldown_until_ms: number; b123c_cooldown_until_ms?: number; results_json: Record<string, unknown> | boolean[]; updated_at: string } | null>(null);
   const [b4Config, setB4Config] = useState<{ t1_spread: string; t2_spread: string; t3_spread: string; t2_block_min: string; t3_blocks_t2_min: string; t3_blocks_t1_min: string; position_size: string; b123c_position_size: string; early_guard_spread_pct: string; early_guard_cooldown_min: string; t1_mst_bump_pct: string }>({
     t1_spread: '0.10', t2_spread: '0.21', t3_spread: '0.45', t2_block_min: '5', t3_blocks_t2_min: '15', t3_blocks_t1_min: '45', position_size: '5', b123c_position_size: '5', early_guard_spread_pct: '0.6', early_guard_cooldown_min: '60', t1_mst_bump_pct: '0',
   });
@@ -279,6 +279,13 @@ export default function Dashboard() {
   async function setB4EmergencyOff(off: boolean) {
     setSaving(true);
     await getSupabase().from('b4_state').update({ cooldown_until_ms: off ? 1 : 0, updated_at: new Date().toISOString() }).eq('id', 'default');
+    await load();
+    setSaving(false);
+  }
+
+  async function setB123cEmergencyOff(off: boolean) {
+    setSaving(true);
+    await getSupabase().from('b4_state').update({ b123c_cooldown_until_ms: off ? 1 : 0, updated_at: new Date().toISOString() }).eq('id', 'default');
     await load();
     setSaving(false);
   }
@@ -956,6 +963,8 @@ export default function Dashboard() {
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
           <p style={{ margin: 0, marginBottom: 8, color: '#e5e5e5' }}>
             B4 Status: <strong style={{ color: b4State?.cooldown_until_ms === 1 ? '#ef4444' : '#22c55e' }}>{b4State?.cooldown_until_ms === 1 ? 'OFF (paused)' : 'Running'}</strong>
+            {' · '}
+            B123c Status: <strong style={{ color: (b4State?.b123c_cooldown_until_ms ?? 0) === 1 ? '#ef4444' : '#22c55e' }}>{(b4State?.b123c_cooldown_until_ms ?? 0) === 1 ? 'OFF (paused)' : 'Running'}</strong>
           </p>
           <button
             type="button"
@@ -972,6 +981,24 @@ export default function Dashboard() {
             style={{ marginRight: 8, ...(saving || b4State?.cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}
           >
             Resume B4
+          </button>
+          <span style={{ marginLeft: 16, marginRight: 8, color: '#666' }}>|</span>
+          <span style={{ marginRight: 8, color: '#e5e5e5' }}>B123c:</span>
+          <button
+            type="button"
+            onClick={() => setB123cEmergencyOff(true)}
+            disabled={saving || b4State?.b123c_cooldown_until_ms === 1}
+            style={{ marginRight: 8, ...(saving || b4State?.b123c_cooldown_until_ms === 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#dc2626' }) }}
+          >
+            Pause B123c
+          </button>
+          <button
+            type="button"
+            onClick={() => setB123cEmergencyOff(false)}
+            disabled={saving || b4State?.b123c_cooldown_until_ms !== 1}
+            style={{ marginRight: 8, ...(saving || b4State?.b123c_cooldown_until_ms !== 1 ? buttonDisabledStyle : { ...buttonStyle, background: '#16a34a' }) }}
+          >
+            Resume B123c
           </button>
           <button
             type="button"
@@ -1164,7 +1191,7 @@ export default function Dashboard() {
       <section style={{ marginBottom: 24 }}>
         <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 200)</h2>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
-          Chainlink-only clone of B1/B2/B3 on the B4 droplet. Uses same spread thresholds and blocking rules. Paused/resumed with the B4 button above.
+          Chainlink-only clone of B1/B2/B3 on the B4 droplet. Uses same spread thresholds and blocking rules. B4 and B123c have separate Pause/Resume buttons above.
         </p>
         {b123cPositions.length === 0 ? (
           <p style={{ color: '#666' }}>No B1c/B2c/B3c trades yet.</p>

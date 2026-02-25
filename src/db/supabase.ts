@@ -316,10 +316,10 @@ export async function getB123cDashboardConfig(): Promise<{
   const [spreadThresholds, delays, b4Res] = await Promise.all([
     getSpreadThresholds(),
     getBotDelays(),
-    getDb().from('b4_state').select('cooldown_until_ms, results_json').eq('id', 'default').maybeSingle(),
+    getDb().from('b4_state').select('cooldown_until_ms, b123c_cooldown_until_ms, results_json').eq('id', 'default').maybeSingle(),
   ]);
-  const data = b4Res.data as { cooldown_until_ms?: number; results_json?: Record<string, unknown> } | null;
-  const emergencyOff = data?.cooldown_until_ms === 1;
+  const data = b4Res.data as { cooldown_until_ms?: number; b123c_cooldown_until_ms?: number; results_json?: Record<string, unknown> } | null;
+  const emergencyOff = data?.b123c_cooldown_until_ms === 1;
   let positionSize = DEFAULT_B4_CONFIG.b123c_position_size;
   if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
     const v = (data.results_json as Record<string, unknown>).b123c_position_size;

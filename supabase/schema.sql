@@ -119,6 +119,7 @@ create table if not exists b4_state (
   max_bankroll numeric not null default 30,
   consecutive_losses integer not null default 0,
   cooldown_until_ms bigint not null default 0,
+  b123c_cooldown_until_ms bigint not null default 0,
   results_json jsonb not null default '[]',
   daily_start_bankroll numeric not null default 30,
   daily_start_date text not null default '',
