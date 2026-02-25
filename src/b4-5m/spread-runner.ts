@@ -81,6 +81,8 @@ let earlyGuardSpreadPct = 0.6;               // configurable from dashboard
 let earlyGuardCooldownMs = 60 * 60_000;      // configurable from dashboard
 /** T1 threshold bump (e.g. 0.01) applied only Mon–Fri 7–11am America/Denver. 0 = off. */
 let t1MstBumpPct = 0;
+/** T2 threshold bump (e.g. 0.015) applied only Mon–Fri 7–11am America/Denver. 0 = off. */
+let t2MstBumpPct = 0.015;
 
 /** True if the given time is Mon–Fri 7:00–10:59am in America/Denver (MST/MDT). */
 function isMstMonFri7to11(now: Date): boolean {
@@ -158,6 +160,8 @@ const WALLET_ADDRESS = process.env.POLYMARKET_FUNDER?.trim()
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
 const BALANCE_POLL_MS = 15 * 60_000; // 15 minutes
 let lastBalancePoll = 0;
+const CLOB_REFRESH_MS = 15 * 60_000; // refresh CLOB balance/allowance cache every 15 min
+let lastClobRefreshMs = 0;
 
 /** When CLOB returns "not enough balance / allowance", stop placing for this long and log hint (often allowance, not balance). */
 const BALANCE_ERROR_BACKOFF_MS = 5 * 60 * 1000;
@@ -234,7 +238,8 @@ async function refreshConfig(): Promise<void> {
     earlyGuardSpreadPct = cfg.early_guard_spread_pct;
     earlyGuardCooldownMs = cfg.early_guard_cooldown_min * 60_000;
     t1MstBumpPct = cfg.t1_mst_bump_pct ?? 0;
-    console.log(`[B4] config refreshed — early_guard_spread_pct=${earlyGuardSpreadPct}%${t1MstBumpPct > 0 ? `, t1_mst_bump_pct=${t1MstBumpPct}% (Mon–Fri 7–11am MST)` : ''}`);
+    t2MstBumpPct = cfg.t2_mst_bump_pct ?? 0.015;
+    console.log(`[B4] config refreshed — early_guard_spread_pct=${earlyGuardSpreadPct}%${t1MstBumpPct > 0 ? `, t1_mst_bump_pct=${t1MstBumpPct}%` : ''}${t2MstBumpPct > 0 ? `, t2_mst_bump_pct=${t2MstBumpPct}% (Mon–Fri 7–11am MST)` : ''}`);
   } catch (e) {
     console.warn('[B4] config refresh failed, using current values:', e instanceof Error ? e.message : e);
   }
@@ -427,6 +432,20 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   // Poll wallet balance every ~15 min
   await pollWalletBalance();
 
+  // Refresh CLOB balance/allowance cache every 15 min (avoids stale data → "not enough balance/allowance")
+  if (nowMs - lastClobRefreshMs >= CLOB_REFRESH_MS) {
+    lastClobRefreshMs = nowMs;
+    try {
+      await withPolyProxy(async () => {
+        const client = await getClobClient();
+        await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+        console.log('[B4] USDC balance/allowance refreshed for CLOB');
+      });
+    } catch (e) {
+      console.warn('[B4] CLOB balance/allowance refresh failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+  }
+
   // Refresh config from Supabase once per 5 min; early guard compares cached threshold to live spread
   if (Date.now() - lastConfigRefreshMs > CONFIG_CACHE_MS) {
     await refreshConfig();
@@ -452,11 +471,15 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     // T3 only in its window: do not enter or block T1/T2 after T2 starts (secInWindow >= 180)
     if (tier.name === 'B4-T3' && secInWindow >= T3_WINDOW_END_SEC) continue;
 
-    // Spread check (T1: optional bump Mon–Fri 7–11am MST)
+    // Spread check (T1/T2: optional bump Mon–Fri 7–11am MST)
+    const nowDate = new Date();
+    const inMstWindow = isMstMonFri7to11(nowDate);
     const effectiveThreshold =
-      tier.name === 'B4-T1' && t1MstBumpPct > 0 && isMstMonFri7to11(new Date())
+      tier.name === 'B4-T1' && t1MstBumpPct > 0 && inMstWindow
         ? tier.spreadPct + t1MstBumpPct
-        : tier.spreadPct;
+        : tier.name === 'B4-T2' && t2MstBumpPct > 0 && inMstWindow
+          ? tier.spreadPct + t2MstBumpPct
+          : tier.spreadPct;
     if (absSpread < effectiveThreshold) continue;
 
     // Already have this tier open for this window
@@ -485,6 +508,11 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     if (tier.name === 'B4-T1' && effectiveThreshold > tier.spreadPct) {
       console.log(
         `[B4] T1 threshold Mon–Fri 7–11am MST bump active: +${t1MstBumpPct}% (effective T1 threshold ${effectiveThreshold.toFixed(3)}%)`,
+      );
+    }
+    if (tier.name === 'B4-T2' && effectiveThreshold > tier.spreadPct) {
+      console.log(
+        `[B4] T2 threshold Mon–Fri 7–11am MST bump active: +${t2MstBumpPct}% (effective T2 threshold ${effectiveThreshold.toFixed(3)}%)`,
       );
     }
     console.log(
