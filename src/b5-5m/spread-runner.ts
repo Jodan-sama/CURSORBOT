@@ -1,9 +1,10 @@
 /**
  * B5 Spread Runner — Live 5-Minute ETH/SOL/XRP Spread Strategy (D3)
  *
- * Full B4 parity: T2→T1 block 5 min, T3→T1+T2 block 15 min; early guard;
- * T3 window [100s, 180s). Per-asset tier spreads from b5_state.results_json.
- * One position size for all assets. Resolver on D2 uses .env.b5 (B5 wallet).
+ * Price source: Chainlink only (no Binance). Full B4 parity: T2→T1 block 5 min,
+ * T3→T1+T2 block 15 min; early guard; T3 window [100s, 180s). Per-asset tier
+ * spreads from b5_state.results_json. One position size for all assets.
+ * Resolver on D2 uses .env.b5 (B5 wallet).
  */
 
 import 'dotenv/config';
@@ -139,6 +140,8 @@ const WALLET_ADDRESS = process.env.POLYMARKET_FUNDER?.trim()
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
 const BALANCE_POLL_MS = 15 * 60_000;
 let lastBalancePoll = 0;
+const CLOB_REFRESH_MS = 15 * 60_000;
+let lastClobRefreshMs = 0;
 
 async function pollWalletBalance(): Promise<void> {
   const now = Date.now();
@@ -343,6 +346,19 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   }
 
   await pollWalletBalance();
+
+  if (nowMs - lastClobRefreshMs >= CLOB_REFRESH_MS) {
+    lastClobRefreshMs = nowMs;
+    try {
+      await withPolyProxy(async () => {
+        const client = await getClobClient();
+        await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+        console.log('[B5] USDC balance/allowance refreshed for CLOB');
+      });
+    } catch (e) {
+      console.warn('[B5] CLOB balance/allowance refresh failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+  }
 
   if (nowMs >= balanceErrorBackoffUntil) {
     balanceErrorHintLogged = false;

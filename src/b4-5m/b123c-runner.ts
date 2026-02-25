@@ -148,6 +148,8 @@ const MIN_TICK_DELAY_MS = 1_000;
 const DASHBOARD_CACHE_MS = 15 * 60 * 1000;
 type DashboardCache = Awaited<ReturnType<typeof getB123cDashboardConfig>> & { ts: number };
 let dashboardCache: DashboardCache | null = null;
+const CLOB_REFRESH_MS = 15 * 60 * 1000;
+let lastClobRefreshMs = 0;
 
 // ---------------------------------------------------------------------------
 // State — 15-minute window tracking
@@ -340,6 +342,19 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   if (dashboardCache.emergencyOff) {
     if (tickCount % 100 === 0) console.log('[B123c] paused');
     return;
+  }
+
+  if (nowMs - lastClobRefreshMs >= CLOB_REFRESH_MS) {
+    lastClobRefreshMs = nowMs;
+    try {
+      await withPolyProxy(async () => {
+        const client = await getClobClient();
+        await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+        console.log('[B123c] USDC balance/allowance refreshed for CLOB');
+      });
+    } catch (e) {
+      console.warn('[B123c] CLOB balance/allowance refresh failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
   }
 
   const minLeft = minutesLeftInWindow(now);
