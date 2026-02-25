@@ -124,7 +124,7 @@ const t2BlockedUntil: Record<B5Asset, number> = { ETH: 0, SOL: 0, XRP: 0 };
 let earlyGuardCooldownUntil = 0;
 
 /** When CLOB returns "not enough balance / allowance", stop placing for this long (avoid log spam and API hammer). */
-const BALANCE_ERROR_BACKOFF_MS = 5 * 60 * 1000;
+const BALANCE_ERROR_BACKOFF_MS = 3 * 60 * 1000;
 let balanceErrorBackoffUntil = 0;
 let balanceErrorHintLogged = false;
 
