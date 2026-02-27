@@ -120,6 +120,7 @@ export default function Dashboard() {
   const [csvLoading, setCsvLoading] = useState(false);
   const [b4CsvLoading, setB4CsvLoading] = useState(false);
   const [b5CsvLoading, setB5CsvLoading] = useState(false);
+  const [b123cCsvLoading, setB123cCsvLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [b5State, setB5State] = useState<{ bankroll: number; cooldown_until_ms: number; results_json: Record<string, unknown>; updated_at: string } | null>(null);
   const [b5Config, setB5Config] = useState<{
@@ -601,6 +602,38 @@ export default function Dashboard() {
     a.click();
     URL.revokeObjectURL(url);
     setB4CsvLoading(false);
+  }
+
+  function downloadB123cCsv() {
+    setB123cCsvLoading(true);
+    const list = [...b123cPositions].sort((a, b) => new Date(b.entered_at).getTime() - new Date(a.entered_at).getTime());
+    const headers = ['entered_at', 'bot', 'asset', 'venue', 'price_source', 'strike_spread_pct', 'position_size', 'direction', 'ticker_or_slug', 'order_id', 'outcome', 'resolved_at'];
+    const rows = list.map((p) => {
+      const raw = (p.raw ?? {}) as Record<string, unknown>;
+      return [
+        escapeCsv(p.entered_at),
+        escapeCsv(p.bot),
+        escapeCsv(p.asset),
+        escapeCsv(p.venue),
+        escapeCsv(String(raw.price_source ?? 'chainlink')),
+        escapeCsv(String(p.strike_spread_pct ?? '')),
+        escapeCsv(String(p.position_size ?? '')),
+        escapeCsv(String(raw.direction ?? '')),
+        escapeCsv(p.ticker_or_slug ?? ''),
+        escapeCsv(p.order_id ?? ''),
+        escapeCsv(p.outcome ?? ''),
+        escapeCsv(p.resolved_at ?? ''),
+      ].join(',');
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cursorbot-b123c-trades-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setB123cCsvLoading(false);
   }
 
   function downloadB5Csv() {
@@ -1202,6 +1235,9 @@ export default function Dashboard() {
         <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 200)</h2>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
           Chainlink-only clone of B1/B2/B3 on the B4 droplet. Uses same spread thresholds and blocking rules. B4 and B123c have separate Pause/Resume buttons above.
+        </p>
+        <p style={{ marginBottom: 8 }}>
+          <button type="button" onClick={downloadB123cCsv} disabled={b123cCsvLoading} style={{ ...buttonStyle }}>{b123cCsvLoading ? 'Preparing…' : 'Download B1/2/3c CSV'}</button>
         </p>
         {b123cPositions.length === 0 ? (
           <p style={{ color: '#666' }}>No B1c/B2c/B3c trades yet.</p>

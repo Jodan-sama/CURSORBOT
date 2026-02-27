@@ -158,6 +158,8 @@ async function main() {
   let b4Wallet: string | null = process.env.POLYMARKET_FUNDER?.trim() || process.env.POLYMARKET_PROXY_WALLET?.trim() || null;
   let b5Wallet: string | null = null;
   let b123cWallet: string | null = null;
+  /** Proxy wallet for B123c (derive mode). Data API may list trades under proxy; try both funder and proxy. */
+  let b123cProxyWallet: string | null = null;
   let d1Wallet: string | null = null;
   try {
     b4Client = await getOrCreateDerivedPolyClient();
@@ -183,9 +185,11 @@ async function main() {
     const env = parseEnvFile(content);
     const pk = env.POLYMARKET_PRIVATE_KEY?.trim();
     const funder = env.POLYMARKET_FUNDER?.trim();
+    const proxy = env.POLYMARKET_PROXY_WALLET?.trim();
     if (pk && funder) {
       b123cClient = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
       b123cWallet = funder;
+      if (proxy) b123cProxyWallet = proxy;
     }
   } catch {
     // .env.b123c missing or invalid
@@ -269,12 +273,21 @@ async function main() {
       }
       if (!filled) {
         const wallet = getWalletForBot(row.bot);
+        const isB123c = row.bot === 'B1c' || row.bot === 'B2c' || row.bot === 'B3c';
         if (wallet) {
           try {
             if (await hasTradeForSlug(wallet, slug)) {
               filled = true;
               order = null;
               console.log(`Resolved ${row.bot} ${slug}: fill from Data API (getOrder failed or size_matched 0)`);
+            }
+            // B123c: Data API may list trades under proxy wallet (derive mode). Try proxy if funder had no trade.
+            if (!filled && isB123c && b123cProxyWallet && b123cProxyWallet !== wallet) {
+              if (await hasTradeForSlug(b123cProxyWallet, slug)) {
+                filled = true;
+                order = null;
+                console.log(`Resolved ${row.bot} ${slug}: fill from Data API (proxy wallet)`);
+              }
             }
           } catch (e) {
             console.warn(`Data API fallback ${row.bot} ${slug}:`, e instanceof Error ? e.message : e);

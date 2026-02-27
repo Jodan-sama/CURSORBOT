@@ -27,10 +27,12 @@ function parseEnvFile(content: string): Record<string, string> {
   return out;
 }
 
-function getWalletFromEnv(envPath: string): string | null {
-  if (!existsSync(envPath)) return null;
+function getWalletFromEnv(envPath: string): { funder: string | null; proxy: string | null } {
+  if (!existsSync(envPath)) return { funder: null, proxy: null };
   const env = parseEnvFile(readFileSync(envPath, 'utf8'));
-  return env.POLYMARKET_FUNDER?.trim() || env.POLYMARKET_PROXY_WALLET?.trim() || null;
+  const funder = env.POLYMARKET_FUNDER?.trim() || null;
+  const proxy = env.POLYMARKET_PROXY_WALLET?.trim() || null;
+  return { funder, proxy: proxy && proxy !== funder ? proxy : null };
 }
 
 async function hasTradeForSlug(wallet: string, slug: string, sinceSec: number): Promise<boolean> {
@@ -85,16 +87,22 @@ async function main() {
     process.exit(1);
   }
   const cwd = process.cwd();
-  const b123cWallet = getWalletFromEnv(join(cwd, '.env.b123c'));
-  const b5Wallet = getWalletFromEnv(join(cwd, '.env.b5'));
-  const d1Wallet = getWalletFromEnv(join(cwd, '.env.d1'));
+  const b123cEnv = getWalletFromEnv(join(cwd, '.env.b123c'));
+  const b5Env = getWalletFromEnv(join(cwd, '.env.b5'));
+  const d1Env = getWalletFromEnv(join(cwd, '.env.d1'));
   const b4Wallet = process.env.POLYMARKET_FUNDER?.trim() || process.env.POLYMARKET_PROXY_WALLET?.trim() || null;
 
   function walletForBot(bot: string): string | null {
     if (bot === 'B4') return b4Wallet;
-    if (bot === 'B5') return b5Wallet;
-    if (bot === 'B1c' || bot === 'B2c' || bot === 'B3c') return b123cWallet;
-    if (bot === 'B1' || bot === 'B2' || bot === 'B3') return d1Wallet;
+    if (bot === 'B5') return b5Env.funder;
+    if (bot === 'B1c' || bot === 'B2c' || bot === 'B3c') return b123cEnv.funder;
+    if (bot === 'B1' || bot === 'B2' || bot === 'B3') return d1Env.funder;
+    return null;
+  }
+
+  /** For B123c, also try proxy wallet (Data API may list trades under proxy). */
+  function proxyWalletForBot(bot: string): string | null {
+    if (bot === 'B1c' || bot === 'B2c' || bot === 'B3c') return b123cEnv.proxy;
     return null;
   }
 
@@ -122,7 +130,11 @@ async function main() {
       console.warn(`No wallet for ${row.bot}, skip ${slug}`);
       continue;
     }
-    const hasTrade = await hasTradeForSlug(wallet, slug, sinceSec);
+    let hasTrade = await hasTradeForSlug(wallet, slug, sinceSec);
+    if (!hasTrade) {
+      const proxy = proxyWalletForBot(row.bot);
+      if (proxy) hasTrade = await hasTradeForSlug(proxy, slug, sinceSec);
+    }
     if (!hasTrade) continue;
 
     let event: Awaited<ReturnType<typeof fetchGammaEvent>>;
