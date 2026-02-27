@@ -147,19 +147,23 @@ export default function Dashboard() {
       const b4StatePromise = getSupabase().from('b4_state').select('*').eq('id', 'default').maybeSingle();
       const b5StatePromise = getSupabase().from('b5_state').select('*').eq('id', 'default').maybeSingle();
       const supabase = getSupabase();
-      // Direct queries for last 200 filled: no client-side filter, DB returns exactly what we need
-      const kalshiFilledQuery = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'kalshi').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).range(0, 199);
-      const polyFilledQuery = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).range(0, 199);
-      // Positions for pending/no-fill only (B1/B2/B3): 2 pages enough for 100 unfilled
+      // Kalshi + Poly: fetch 2 pages (2000 rows) per venue, filter to win/loss client-side, take 200
+      const kalshiBase = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'kalshi').order('entered_at', { ascending: false });
+      const polyBase = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').order('entered_at', { ascending: false });
       const b123AllBase = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false });
-      const [kalshiFilledRes, polyFilledRes, posPage0, posPage1] = await Promise.all([
-        kalshiFilledQuery(),
-        polyFilledQuery(),
+      const [kalshiPage0, kalshiPage1, polyPage0, polyPage1, posPage0, posPage1] = await Promise.all([
+        kalshiBase().range(0, 999),
+        kalshiBase().range(1000, 1999),
+        polyBase().range(0, 999),
+        polyBase().range(1000, 1999),
         b123AllBase().range(0, 999),
         b123AllBase().range(1000, 1999),
       ]);
-      const b123KalshiFilledData = (kalshiFilledRes.data ?? []) as Position[];
-      const b123PolyFilledMerged = (polyFilledRes.data ?? []) as Position[];
+      const isFilledOutcome = (o: string | null | undefined) => (String(o ?? '').toLowerCase() === 'win' || String(o ?? '').toLowerCase() === 'loss');
+      const kalshiMerged = [...(kalshiPage0.data ?? []), ...(kalshiPage1.data ?? [])];
+      const polyMerged = [...(polyPage0.data ?? []), ...(polyPage1.data ?? [])];
+      const b123KalshiFilledData = (kalshiMerged as Position[]).filter((p) => isFilledOutcome(p.outcome)).slice(0, 200);
+      const b123PolyFilledMerged = (polyMerged as Position[]).filter((p) => isFilledOutcome(p.outcome)).slice(0, 200);
       const posData = [...(posPage0.data ?? []), ...(posPage1.data ?? [])];
       const [
         { data: configData },
