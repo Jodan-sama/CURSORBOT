@@ -1,5 +1,6 @@
 # Env and secrets – never commit
 .env
+backup/
 .env.local
 .env.*.local
 .env.droplet
