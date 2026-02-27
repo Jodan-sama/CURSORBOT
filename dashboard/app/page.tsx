@@ -147,20 +147,27 @@ export default function Dashboard() {
       const b5StatePromise = getSupabase().from('b5_state').select('*').eq('id', 'default').maybeSingle();
       const supabase = getSupabase();
       const b123Base = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false });
-      const [page0, page1, page2] = await Promise.all([
+      const [page0, page1, page2, page3, page4] = await Promise.all([
         b123Base().range(0, 999),
         b123Base().range(1000, 1999),
         b123Base().range(2000, 2999),
+        b123Base().range(3000, 3999),
+        b123Base().range(4000, 4999),
       ]);
       const posData = [
         ...(page0.data ?? []),
         ...(page1.data ?? []),
         ...(page2.data ?? []),
+        ...(page3.data ?? []),
+        ...(page4.data ?? []),
       ];
+      const b123PolyBase = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false });
+      const [polyPage0, polyPage1] = await Promise.all([b123PolyBase().range(0, 999), b123PolyBase().range(1000, 1999)]);
+      const b123PolyFilledMerged = [...(polyPage0.data ?? []), ...(polyPage1.data ?? [])].slice(0, 200);
       const [
         { data: configData },
         _posPlaceholder,
-        { data: b123PolyFilledData },
+        _b123PolyPlaceholder,
         { data: b4PosData },
         { data: b4UnfilledData },
         { data: b5PosData },
@@ -176,7 +183,7 @@ export default function Dashboard() {
       ] = await Promise.all([
         supabase.from('bot_config').select('*').eq('id', 'default').single(),
         Promise.resolve({ data: null }),
-        supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
+        Promise.resolve({ data: null }),
         getSupabase().from('positions').select('*').eq('bot', 'B4').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('positions').select('*').eq('bot', 'B5').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
@@ -198,7 +205,7 @@ export default function Dashboard() {
       setB5Unfilled((b5UnfilledData ?? []) as Position[]);
       setB123cPositions((b123cPosData ?? []) as Position[]);
       setB123cUnfilled((b123cUnfilledData ?? []) as Position[]);
-      setB123PolyFilled((b123PolyFilledData ?? []) as Position[]);
+      setB123PolyFilled(b123PolyFilledMerged as Position[]);
       const b4Row = (b4StateResult as { data: unknown }).data as typeof b4State;
       setB4State(b4Row ?? null);
       if (b4Row?.results_json && typeof b4Row.results_json === 'object' && !Array.isArray(b4Row.results_json)) {
