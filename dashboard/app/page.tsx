@@ -163,14 +163,14 @@ export default function Dashboard() {
         b5StateResult,
       ] = await Promise.all([
         getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1000),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(100),
-        getSupabase().from('positions').select('*').eq('bot', 'B4').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
-        getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(50),
-        getSupabase().from('positions').select('*').eq('bot', 'B5').neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1500),
+        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').eq('bot', 'B4').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(100),
+        getSupabase().from('positions').select('*').eq('bot', 'B5').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B5').or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(100),
-        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).neq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(200),
-        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(50),
+        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
+        getSupabase().from('positions').select('*').in('bot', ['B1c', 'B2c', 'B3c']).or('outcome.eq.no_fill,outcome.is.null').order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('error_log').select('*').order('created_at', { ascending: false }).limit(10),
         getSupabase().from('poly_skip_log').select('*').order('created_at', { ascending: false }).limit(50),
         Promise.resolve(spreadPromise).catch(() => ({ data: [] })),
@@ -520,8 +520,8 @@ export default function Dashboard() {
   const isKalshi = (v: string) => (v ?? '').toLowerCase() === 'kalshi';
   const isPolymarket = (v: string) => (v ?? '').toLowerCase() === 'polymarket';
   const isFilled = (o: string | null | undefined) => (o ?? '').toLowerCase() === 'win' || (o ?? '').toLowerCase() === 'loss';
-  const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 100);
-  // B1/B2/B3 Polymarket: only Win/Loss here (no fill and pending are in the section below)
+  const positionsFilledKalshi = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome)).slice(0, 200);
+  // B1/B2/B3 Polymarket: 200 filled (win/loss) — used for table and win rate
   const b123PolyResolved = b123PolyFilled.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
   const b123PolyWins = b123PolyResolved.filter((p) => p.outcome === 'win').length;
   const b123PolyLosses = b123PolyResolved.filter((p) => p.outcome === 'loss').length;
@@ -535,7 +535,7 @@ export default function Dashboard() {
     if (rb !== ra) return rb - ra;
     return new Date(b.entered_at).getTime() - new Date(a.entered_at).getTime();
   });
-  const positionsPendingNoFill = positions.filter((p) => !isFilled(p.outcome)).slice(0, 200);
+  const positionsPendingNoFill = positions.filter((p) => !isFilled(p.outcome)).slice(0, 100);
 
   function downloadCsvFromList(list: Position[], filename: string) {
     setCsvLoading(true);
@@ -943,9 +943,9 @@ export default function Dashboard() {
         <h2 style={headingStyle}>Win rate (resolved)</h2>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 16 }}>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B1/B2/B3 Kalshi</strong> (last 400):{' '}
+            <strong>B1/B2/B3 Kalshi</strong> (last 200 filled):{' '}
             {(() => {
-              const kalshiResolved = positions.filter((p) => isKalshi(p.venue) && isFilled(p.outcome));
+              const kalshiResolved = positionsFilledKalshi;
               const wins = kalshiResolved.filter((p) => p.outcome === 'win').length;
               const n = kalshiResolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
@@ -953,9 +953,9 @@ export default function Dashboard() {
             })()}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B4</strong> (last 200, one per 5m window):{' '}
+            <strong>B4</strong> (last 200 filled):{' '}
             {(() => {
-              const resolved = b4PositionsGrouped.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const resolved = b4Positions;
               const wins = resolved.filter((p) => p.outcome === 'win').length;
               const n = resolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
@@ -963,9 +963,9 @@ export default function Dashboard() {
             })()}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B1c/B2c/B3c</strong> (last 200):{' '}
+            <strong>B1c/B2c/B3c</strong> (last 200 filled):{' '}
             {(() => {
-              const resolved = b123cPositions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const resolved = b123cPositions;
               const wins = resolved.filter((p) => p.outcome === 'win').length;
               const n = resolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
@@ -973,7 +973,7 @@ export default function Dashboard() {
             })()}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B1/B2/B3 Polymarket</strong> (last 100):{' '}
+            <strong>B1/B2/B3 Polymarket</strong> (last 200 filled):{' '}
             {b123PolyResolved.length === 0 ? (
               <span style={{ color: '#888' }}>no resolved yet</span>
             ) : (
@@ -981,9 +981,9 @@ export default function Dashboard() {
             )}
           </div>
           <div style={{ padding: '12px 16px', border: '1px solid #444', borderRadius: 8, background: '#111', color: '#e5e5e5' }}>
-            <strong>B5</strong> (last 200):{' '}
+            <strong>B5</strong> (last 200 filled):{' '}
             {(() => {
-              const resolved = b5Positions.filter((p) => p.outcome === 'win' || p.outcome === 'loss');
+              const resolved = b5Positions;
               const wins = resolved.filter((p) => p.outcome === 'win').length;
               const n = resolved.length;
               if (n === 0) return <span style={{ color: '#888' }}>no resolved yet</span>;
@@ -1148,7 +1148,7 @@ export default function Dashboard() {
         </div>
 
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 200).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B4 trades (last 200 filled).</span>
           <button type="button" onClick={downloadB4Csv} disabled={b4CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b4CsvLoading ? 'Preparing…' : 'Download B4 CSV'}</button>
         </p>
         {b4PositionsGrouped.length === 0 ? (
@@ -1191,10 +1191,10 @@ export default function Dashboard() {
         )}
 
         <p style={{ marginTop: 24, marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B4 placed but not filled (last 50).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B4 placed but not filled (last 100).</span>
         </p>
         {b4Unfilled.length === 0 ? (
-          <p style={{ color: '#666' }}>No B4 no-fill orders in the last 50.</p>
+          <p style={{ color: '#666' }}>No B4 no-fill orders in the last 100.</p>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -1232,12 +1232,13 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 200)</h2>
+        <h2 style={headingStyle}>B1c / B2c / B3c — Chainlink Clone (last 200 filled)</h2>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
           Chainlink-only clone of B1/B2/B3 on the B4 droplet. Uses same spread thresholds and blocking rules. B4 and B123c have separate Pause/Resume buttons above.
         </p>
         <p style={{ marginBottom: 8 }}>
-          <button type="button" onClick={downloadB123cCsv} disabled={b123cCsvLoading} style={{ ...buttonStyle }}>{b123cCsvLoading ? 'Preparing…' : 'Download B1/2/3c CSV'}</button>
+          <span style={{ fontSize: 13, color: '#666' }}>B1c / B2c / B3c trades (last 200 filled).</span>
+          <button type="button" onClick={downloadB123cCsv} disabled={b123cCsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b123cCsvLoading ? 'Preparing…' : 'Download B1/2/3c CSV'}</button>
         </p>
         {b123cPositions.length === 0 ? (
           <p style={{ color: '#666' }}>No B1c/B2c/B3c trades yet.</p>
@@ -1279,12 +1280,12 @@ export default function Dashboard() {
       </section>
 
       <section style={{ marginBottom: 24 }}>
-        <h2 style={headingStyle}>B1c / B2c / B3c — Unfilled / no-fill (last 50)</h2>
+        <h2 style={headingStyle}>B1c / B2c / B3c — Unfilled / no-fill (last 100)</h2>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
           Limit orders that were placed but not filled (outcome = No fill) or not yet resolved (Pending). Useful for debugging balance/allowance or fill rate.
         </p>
         {b123cUnfilled.length === 0 ? (
-          <p style={{ color: '#666' }}>No unfilled B1c/B2c/B3c orders in the last 50.</p>
+          <p style={{ color: '#666' }}>No unfilled B1c/B2c/B3c orders in the last 100.</p>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -1320,10 +1321,10 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 – Kalshi filled (last 100)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Kalshi filled (last 200)</h2>
         <p style={{ marginBottom: 8 }}>
           <span style={{ fontSize: 13, color: '#666' }}>Kalshi orders that <strong>filled</strong> (win or loss).</span>
-          <button type="button" onClick={downloadCsvKalshiFilled} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 100)'}</button>
+          <button type="button" onClick={downloadCsvKalshiFilled} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV (last 200)'}</button>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -1358,9 +1359,9 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (most recent first)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Polymarket (last 200 filled)</h2>
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders sorted by time so the latest (including new wins/losses) is at the top. B1/B2/B3 Poly are placed from D1; Win/Loss appear once the resolver has run (every ~10 min). Page auto-refreshes every 90s.</span>
+          <span style={{ fontSize: 13, color: '#666' }}>Polymarket orders (win/loss) sorted by time. B1/B2/B3 Poly are placed from D1; Win/Loss appear once the resolver has run (every ~10 min). Page auto-refreshes every 90s.</span>
           <button type="button" onClick={downloadCsvPoly} disabled={csvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{csvLoading ? 'Preparing…' : 'Download CSV'}</button>
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1396,7 +1397,7 @@ export default function Dashboard() {
       </section>
 
       <section>
-        <h2 style={headingStyle}>B1/B2/B3 – Pending / no fill (last 200)</h2>
+        <h2 style={headingStyle}>B1/B2/B3 – Pending / no fill (last 100)</h2>
         <p style={{ marginBottom: 8 }}>
           <span style={{ fontSize: 13, color: '#666' }}>Orders not yet filled (pending or no fill) from both Kalshi and Polymarket. No CSV download.</span>
         </p>
@@ -1478,7 +1479,7 @@ export default function Dashboard() {
           </form>
         </div>
         <p style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>B5 trades (last 200).</span>
+          <span style={{ fontSize: 13, color: '#666' }}>B5 trades (last 200 filled).</span>
           <button type="button" onClick={downloadB5Csv} disabled={b5CsvLoading} style={{ ...buttonStyle, marginLeft: 12 }}>{b5CsvLoading ? 'Preparing…' : 'Download B5 CSV'}</button>
         </p>
         {b5Positions.length === 0 ? (
