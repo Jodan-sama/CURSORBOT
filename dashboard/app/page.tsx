@@ -145,9 +145,21 @@ export default function Dashboard() {
       const spreadPromise = getSupabase().from('spread_thresholds').select('bot, asset, threshold_pct');
       const b4StatePromise = getSupabase().from('b4_state').select('*').eq('id', 'default').maybeSingle();
       const b5StatePromise = getSupabase().from('b5_state').select('*').eq('id', 'default').maybeSingle();
+      const supabase = getSupabase();
+      const b123Base = () => supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false });
+      const [page0, page1, page2] = await Promise.all([
+        b123Base().range(0, 999),
+        b123Base().range(1000, 1999),
+        b123Base().range(2000, 2999),
+      ]);
+      const posData = [
+        ...(page0.data ?? []),
+        ...(page1.data ?? []),
+        ...(page2.data ?? []),
+      ];
       const [
         { data: configData },
-        { data: posData },
+        _posPlaceholder,
         { data: b123PolyFilledData },
         { data: b4PosData },
         { data: b4UnfilledData },
@@ -162,9 +174,9 @@ export default function Dashboard() {
         b4StateResult,
         b5StateResult,
       ] = await Promise.all([
-        getSupabase().from('bot_config').select('*').eq('id', 'default').single(),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).order('entered_at', { ascending: false }).limit(1500),
-        getSupabase().from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
+        supabase.from('bot_config').select('*').eq('id', 'default').single(),
+        Promise.resolve({ data: null }),
+        supabase.from('positions').select('*').in('bot', ['B1', 'B2', 'B3']).eq('venue', 'polymarket').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
         getSupabase().from('positions').select('*').eq('bot', 'B4').eq('outcome', 'no_fill').order('entered_at', { ascending: false }).limit(100),
         getSupabase().from('positions').select('*').eq('bot', 'B5').in('outcome', ['win', 'loss']).order('entered_at', { ascending: false }).limit(200),
