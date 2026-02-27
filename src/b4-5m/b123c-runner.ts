@@ -162,6 +162,15 @@ function getWindowEndMs(now: Date = new Date()): number {
   return ms - (ms % WINDOW_MS) + WINDOW_MS;
 }
 
+/** True if now is Mon–Fri 7:30–7:44am America/Denver (MST/MDT). Used for B2c SOL/XRP spread add only. */
+function isMstMonFri7h30to7h45(now: Date): boolean {
+  const hour = parseInt(now.toLocaleString('en-US', { timeZone: 'America/Denver', hour: 'numeric', hour12: false }), 10);
+  const min = parseInt(now.toLocaleString('en-US', { timeZone: 'America/Denver', minute: '2-digit' }), 10);
+  const day = now.toLocaleString('en-US', { timeZone: 'America/Denver', weekday: 'short' });
+  const isWeekday = day !== 'Sat' && day !== 'Sun';
+  return isWeekday && hour === 7 && min >= 30 && min < 45;
+}
+
 let currentWindowEndMs = 0;
 const windowOpenPrices: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
 /** First time we had no price this window; after 2 min we soft-reset and log (same as B4). */
@@ -361,8 +370,9 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   const windowEnd = getWindowEndMs(now);
   const windowStartMs = windowEnd - WINDOW_MS;
   const positionSize = dashboardCache.positionSize;
-  const { spreadThresholds, delays } = dashboardCache;
+  const { spreadThresholds, delays, b123cB2SolXrpMstBumpPct } = dashboardCache;
   const b3BlockMs = delays.b3BlockMin * 60_000;
+  const inB2SolXrpMstWindow = isMstMonFri7h30to7h45(now);
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
 
   const positionsInWindow = await getPositionsInWindowB123c(windowStartMs);
@@ -455,7 +465,10 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       if (abSpread > delays.b2HighSpreadThresholdPct) b2cHighSpreadAt.set(asset, nowMs);
       const key = windowKey('B2c', asset, windowEnd);
       if (positionsInWindow.has('B2c-' + asset)) enteredThisWindow.add(key);
-      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, abSpread, spreadThresholds) && !skipPlacementBalance) {
+      const bumpPct = (asset === 'SOL' || asset === 'XRP') && inB2SolXrpMstWindow && b123cB2SolXrpMstBumpPct > 0 ? b123cB2SolXrpMstBumpPct : 0;
+      const spreadForB2 = abSpread + bumpPct;
+      if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, spreadForB2, spreadThresholds) && !skipPlacementBalance) {
+        if (bumpPct > 0 && tickCount % 6 === 0) console.log(`[B123c] B2c ${asset} 7:30-7:45 MST bump +${bumpPct}% → spread ${abSpread.toFixed(3)}% → ${spreadForB2.toFixed(3)}%`);
         console.log(`[B123c] attempting B2c ${asset} ${side} 97c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side, positionSize);
         if (placed) enteredThisWindow.add(key);

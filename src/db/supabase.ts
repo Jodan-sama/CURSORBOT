@@ -306,12 +306,14 @@ export async function getPositionsInWindowB123c(windowStartMs: number): Promise<
   return set;
 }
 
-/** B123c dashboard config: thresholds, delays, position size, emergency off. One burst every 15 min. */
+/** B123c dashboard config: thresholds, delays, position size, emergency off, B2 SOL/XRP 7:30-7:45 MST bump. One burst every 15 min. */
 export async function getB123cDashboardConfig(): Promise<{
   spreadThresholds: SpreadThresholdsMatrix;
   delays: Awaited<ReturnType<typeof getBotDelays>>;
   positionSize: number;
   emergencyOff: boolean;
+  /** Add this % to spread for B2c SOL/XRP only during Mon–Fri 7:30–7:45am MST (Utah). 0 = off. */
+  b123cB2SolXrpMstBumpPct: number;
 }> {
   const [spreadThresholds, delays, b4Res] = await Promise.all([
     getSpreadThresholds(),
@@ -321,11 +323,15 @@ export async function getB123cDashboardConfig(): Promise<{
   const data = b4Res.data as { cooldown_until_ms?: number; b123c_cooldown_until_ms?: number; results_json?: Record<string, unknown> } | null;
   const emergencyOff = data?.b123c_cooldown_until_ms === 1;
   let positionSize = DEFAULT_B4_CONFIG.b123c_position_size;
+  let b123cB2SolXrpMstBumpPct = 0.05;
   if (data?.results_json && typeof data.results_json === 'object' && !Array.isArray(data.results_json)) {
-    const v = (data.results_json as Record<string, unknown>).b123c_position_size;
+    const cfg = data.results_json as Record<string, unknown>;
+    const v = cfg.b123c_position_size;
     if (typeof v === 'number' && v > 0) positionSize = v;
+    const bump = cfg.b123c_b2_sol_xrp_mst_bump_pct;
+    if (typeof bump === 'number' && bump >= 0) b123cB2SolXrpMstBumpPct = bump;
   }
-  return { spreadThresholds, delays, positionSize, emergencyOff };
+  return { spreadThresholds, delays, positionSize, emergencyOff, b123cB2SolXrpMstBumpPct };
 }
 
 /** True if at least one Kalshi position was logged in the last N hours. */
