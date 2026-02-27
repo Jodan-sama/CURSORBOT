@@ -24,6 +24,16 @@ Add:
 
 Adjust paths if your app lives elsewhere (`/root/cursorbot`, `tsx` path).
 
+## One-off: re-resolve loss / no_fill (mislabeled)
+
+To re-check Kalshi positions already marked `loss` or `no_fill` and correct if mislabeled, on **D1** run once:
+
+```bash
+cd /root/cursorbot && npx tsx src/scripts/re-resolve-kalshi-outcomes.ts
+```
+
+Optional: `npx tsx src/scripts/re-resolve-kalshi-outcomes.ts 30` to limit to last 30 days (default).
+
 ## Rollback
 
 To stop resolving and leave D1 as before:

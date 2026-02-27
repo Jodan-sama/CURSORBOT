@@ -77,6 +77,16 @@ You’ll see “Cursorbot starting…” and then either nothing (idle until a w
 sudo journalctl -u cursorbot -n 100
 ```
 
+**Last 1 hour (B1/B2/B3 on D1, B1c/B2c/B3c on D2):**
+
+```bash
+# B1/B2/B3 (Kalshi + Polymarket) — run on D1
+ssh root@188.166.15.165 "journalctl -u cursorbot --since '1 hour ago' --no-pager"
+
+# B1c/B2c/B3c (Chainlink Polymarket) — run on D2
+ssh root@161.35.149.219 "journalctl -u cursorbot-b123c --since '1 hour ago' --no-pager"
+```
+
 ## Check if Polymarket is working
 
 1. **Heartbeat** – Every ~60s the log should show `[cursorbot] alive | ... | Kalshi + Polymarket` (not "Kalshi only") when `ENABLE_POLYMARKET=true` in `.env`. If it says "Kalshi only", Poly is off or env is wrong.

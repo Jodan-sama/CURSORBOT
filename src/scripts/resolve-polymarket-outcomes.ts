@@ -96,6 +96,30 @@ function isOrderFilled(sizeMatched: string | undefined): boolean {
   return Number.isFinite(n) && n > 0;
 }
 
+const DATA_API_BASE = 'https://data-api.polymarket.com';
+const DATA_API_LOOKBACK_DAYS = 14;
+
+/** Return true if the wallet has any trade for this slug in the last N days (fill fallback when getOrder fails). */
+async function hasTradeForSlug(wallet: string, slug: string): Promise<boolean> {
+  const sinceSec = Math.floor(Date.now() / 1000) - DATA_API_LOOKBACK_DAYS * 24 * 3600;
+  let offset = 0;
+  const limit = 100;
+  for (let i = 0; i < 15; i++) {
+    const res = await fetch(
+      `${DATA_API_BASE}/trades?user=${encodeURIComponent(wallet)}&limit=${limit}&offset=${offset}`
+    );
+    if (!res.ok) return false;
+    const page = (await res.json()) as { slug?: string; timestamp?: number }[];
+    for (const t of page) {
+      if (t.slug === slug && (t.timestamp ?? 0) >= sinceSec) return true;
+    }
+    if (page.length < limit) break;
+    offset += limit;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return false;
+}
+
 async function main() {
   const url = process.env.SUPABASE_URL?.trim();
   const key = process.env.SUPABASE_ANON_KEY?.trim();
@@ -131,6 +155,10 @@ async function main() {
   let b5Client: ClobClient | null = null;
   let b123cClient: ClobClient | null = null;
   let d1Client: ClobClient | null = null; // B1/B2/B3 orders placed on D1; resolver on D2 needs D1 wallet for getOrder
+  let b4Wallet: string | null = process.env.POLYMARKET_FUNDER?.trim() || process.env.POLYMARKET_PROXY_WALLET?.trim() || null;
+  let b5Wallet: string | null = null;
+  let b123cWallet: string | null = null;
+  let d1Wallet: string | null = null;
   try {
     b4Client = await getOrCreateDerivedPolyClient();
   } catch (e) {
@@ -144,6 +172,7 @@ async function main() {
     const funder = env.POLYMARKET_FUNDER?.trim();
     if (pk && funder) {
       b5Client = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
+      b5Wallet = funder;
     }
   } catch {
     // .env.b5 missing on D2: B5 orders placed on D3; resolver needs D3's B5 wallet credentials here for getOrder
@@ -156,6 +185,7 @@ async function main() {
     const funder = env.POLYMARKET_FUNDER?.trim();
     if (pk && funder) {
       b123cClient = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
+      b123cWallet = funder;
     }
   } catch {
     // .env.b123c missing or invalid
@@ -168,9 +198,17 @@ async function main() {
     const funder = env.POLYMARKET_FUNDER?.trim();
     if (pk && funder) {
       d1Client = await createDerivedPolyClientFromConfig({ privateKey: pk, funder });
+      d1Wallet = funder;
     }
   } catch {
     // .env.d1 missing on D2
+  }
+  function getWalletForBot(bot: string): string | null {
+    if (bot === 'B4') return b4Wallet;
+    if (bot === 'B5') return b5Wallet;
+    if (bot === 'B1c' || bot === 'B2c' || bot === 'B3c') return b123cWallet;
+    if (bot === 'B1' || bot === 'B2' || bot === 'B3') return d1Wallet;
+    return null;
   }
 
   let updated = 0;
@@ -227,19 +265,33 @@ async function main() {
         order = (await clob.getOrder(row.order_id.trim())) as unknown as OrderLike;
         filled = isOrderFilled(order?.size_matched);
       } catch {
-        // order not found or API error → treat as unfilled
+        // order not found or API error → try Data API fallback before no_fill
       }
       if (!filled) {
-        const { error: updateError } = await supabase
-          .from('positions')
-          .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
-          .eq('id', row.id);
-        if (updateError) console.error(`Update no_fill ${row.id}:`, updateError.message);
-        else {
-          updated++;
-          console.log(`Resolved ${row.bot} ${slug}: no_fill (order not filled)`);
+        const wallet = getWalletForBot(row.bot);
+        if (wallet) {
+          try {
+            if (await hasTradeForSlug(wallet, slug)) {
+              filled = true;
+              order = null;
+              console.log(`Resolved ${row.bot} ${slug}: fill from Data API (getOrder failed or size_matched 0)`);
+            }
+          } catch (e) {
+            console.warn(`Data API fallback ${row.bot} ${slug}:`, e instanceof Error ? e.message : e);
+          }
         }
-        continue;
+        if (!filled) {
+          const { error: updateError } = await supabase
+            .from('positions')
+            .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+            .eq('id', row.id);
+          if (updateError) console.error(`Update no_fill ${row.id}:`, updateError.message);
+          else {
+            updated++;
+            console.log(`Resolved ${row.bot} ${slug}: no_fill (order not filled)`);
+          }
+          continue;
+        }
       }
     }
     // No CLOB client for this bot → skip fill check; still allow Gamma resolution below (B123c only when .env.b123c missing)
