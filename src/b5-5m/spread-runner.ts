@@ -30,7 +30,7 @@ import {
   type B5TierConfig,
 } from '../db/supabase.js';
 import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
-import { getPolyMarketBySlug } from '../polymarket/gamma.js';
+import { getPolyMarketBySlug, getTokenIdForOutcome } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
@@ -232,8 +232,10 @@ async function placeLimitOrder(
       const market = await getPolyMarketBySlug(slug);
       if (!market) return { error: `Market not found: ${slug}` };
 
-      const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
-      if (!tokenId) return { error: `No ${side} token for ${slug}` };
+      const wantUp = side === 'yes';
+      const tokenId = getTokenIdForOutcome(market, wantUp);
+      const outcomeName = wantUp ? 'Up' : 'Down';
+      if (!tokenId) return { error: `No ${outcomeName} token for ${slug} (outcomes: ${market.outcomes.join(',')})` };
 
       const client = await getClobClient();
       // CLOB minimum for many 5m markets is 0.01; Gamma may return 0.001 — use at least 0.01 to avoid "invalid tick size"
@@ -246,7 +248,7 @@ async function placeLimitOrder(
       const minSharesForNotional = Math.ceil(1 / price);
       const shares = Math.max(minSharesForNotional, Math.floor(size / price));
 
-      console.log(`[B5] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`);
+      console.log(`[B5] LIMIT BUY ${outcomeName} (${side}) price=${price} size=${shares} ($${size}) | ${slug}`);
 
       const result = await client.createAndPostOrder(
         { tokenID: tokenId, price, size: shares, side: Side.BUY },

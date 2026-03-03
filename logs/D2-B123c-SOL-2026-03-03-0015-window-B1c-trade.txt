@@ -1,0 +1,35 @@
+# D2 B123c — Solana 7:15–7:30 PM ET (00:15–00:30 UTC Mar 3) — B1c trade
+
+## Root cause (wrong side)
+
+We actually bought the **Up** token (wrong side) due to token selection by index; Gamma’s outcome order for this market was [Down, Up], so index 1 was Up. We intended Down at 96c but got filled on the Up book at 4c. Fix: resolve token by outcome name (see docs/B123c-UP-4C-BUG-ROOT-CAUSE.md).
+
+## Trade (from logs)
+
+- **Time (UTC):** 2026-03-03 00:13:21–00:13:23
+- **Market:** Solana Up or Down 15m, slug `sol-updown-15m-1772496000` (window 00:15–00:30 UTC = 7:15–7:30 PM ET)
+- **Bot:** B1c
+- **Action:** LIMIT BUY **no** (Down) at **96c**, 15 shares ($15)
+- **Spread at placement:** -0.372% (Chainlink: price below window open → bet Down)
+- **Order ID:** 0x6655834554…
+
+Log lines:
+```
+Mar 03 00:13:21 ... [B123c] attempting B1c SOL no 96c | spread=-0.372%
+Mar 03 00:13:22 ... [B123c] LIMIT BUY no price=0.96 shares=15 ($15) | sol-updown-15m-1772496000
+Mar 03 00:13:23 ... [B123c] B1c SOL no 96c placed | orderId=0x6655834554… spread=-0.372%
+```
+
+## Why the UI shows "Up 4c"
+
+We are **not** buying 4c. The bot always places at **96c, 97c, or 99c** (B1c/B2c/B3c).
+
+- We bought the **Down** outcome at **96c** (spread was negative, so strategy chose "no" = Down).
+- In a binary market, Down at 96c implies the other side (Up) trades at ~4c (100 − 96).
+- Polymarket’s History can show the **other** outcome’s price (4c) next to the outcome name, so you see "Up 4c" even though we bought **Down at 96c**.
+
+So: **we bought Down 96c**. The "Up 4c" in the UI is the complementary outcome’s price, not our fill price. Nothing changed with the restart; the strategy and placement logic are correct.
+
+## Outcome
+
+SOL spread stayed negative through the window (e.g. -0.37% at placement, then -0.28% near close). The market resolved **Up** (price above window open at settlement), so our **Down** position lost. The "Lost" line in History is for that same B1c SOL Down 96c order.

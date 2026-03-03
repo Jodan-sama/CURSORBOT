@@ -34,7 +34,7 @@ import {
 } from '../db/supabase.js';
 import { fetchAllPricesOnce, isOutsideSpreadThreshold, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
-import { getPolyMarketBySlug } from '../polymarket/gamma.js';
+import { getPolyMarketBySlug, getTokenIdForOutcome } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
@@ -269,8 +269,11 @@ async function placeLimitOrder(
     return await withPolyProxy(async () => {
       const market = await getPolyMarketBySlug(slug);
       if (!market) return { error: `Market not found: ${slug}` };
-      const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
-      if (!tokenId) return { error: `No ${side} token for ${slug}` };
+      // Resolve token by outcome name (Up/Down) so we never buy the wrong side if Gamma order differs.
+      const wantUp = side === 'yes';
+      const tokenId = getTokenIdForOutcome(market, wantUp);
+      const outcomeName = wantUp ? 'Up' : 'Down';
+      if (!tokenId) return { error: `No ${outcomeName} token for ${slug} (outcomes: ${market.outcomes.join(',')})` };
       const client = await getClobClient();
       // CLOB minimum for many 15m markets is 0.01; Gamma may return 0.001 — use at least 0.01 to avoid "invalid tick size" (B1c/2c/3c).
       const rawTick = market.orderPriceMinTickSize != null ? Number(market.orderPriceMinTickSize) : 0.01;
@@ -281,7 +284,7 @@ async function placeLimitOrder(
       const price = Math.round(limitPrice * factor) / factor;
       const minShares = market.orderMinSize ?? 1;
       const shares = Math.max(minShares, Math.floor(size / price));
-      console.log(`[B123c] LIMIT BUY ${side} price=${price} shares=${shares} ($${size}) | ${slug}`);
+      console.log(`[B123c] LIMIT BUY ${outcomeName} (${side}) price=${price} shares=${shares} ($${size}) | ${slug}`);
       const result = await client.createAndPostOrder(
         { tokenID: tokenId, price, size: shares, side: Side.BUY },
         { tickSize, negRisk: market.negRisk ?? false },

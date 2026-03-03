@@ -16,6 +16,24 @@ export const POLY_15M_SLUG_PREFIX: Record<Asset, string> = {
 };
 
 /**
+ * Get CLOB token ID for the given outcome in an Up/Down (or Yes/No) market.
+ * Uses outcome name so we don't rely on Gamma's array order (which can differ by market).
+ * - wantUp: true → token for "Up" (or "Yes"); false → token for "Down" (or "No").
+ * Returns tokenId or null if outcome not found.
+ */
+export function getTokenIdForOutcome(market: ParsedPolyMarket, wantUp: boolean): string | null {
+  const target = wantUp ? 'Up' : 'Down';
+  const fallback = wantUp ? 'Yes' : 'No';
+  const idx = market.outcomes.findIndex(
+    (o) => o.toLowerCase() === target.toLowerCase() || o.toLowerCase() === fallback.toLowerCase()
+  );
+  if (idx >= 0 && market.clobTokenIds[idx]) return market.clobTokenIds[idx];
+  // Legacy: assume outcomes order [Up/Yes, Down/No] → index 0 = first, 1 = second
+  const legacyIdx = wantUp ? 0 : 1;
+  return market.clobTokenIds[legacyIdx] ?? null;
+}
+
+/**
  * Fetch event by slug. Returns full Gamma event.
  * Uses cache-busting and no-cache headers so each call gets a fresh response (Gamma can still
  * update outcomePrices on their backend with ~1s+ delay; for true real-time use CLOB WebSocket).
