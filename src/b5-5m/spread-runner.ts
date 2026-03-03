@@ -17,6 +17,7 @@ import {
   B5_ASSETS,
   type B5Asset,
 } from './clock.js';
+import { fetchAllPricesOnce } from '../kalshi/spread.js';
 import {
   isB5EmergencyOff,
   logError,
@@ -127,6 +128,10 @@ let earlyGuardCooldownUntil = 0;
 const BALANCE_ERROR_BACKOFF_MS = 3 * 60 * 1000;
 let balanceErrorBackoffUntil = 0;
 let balanceErrorHintLogged = false;
+
+/** Binance vs Chainlink skew (5-min): when |spread_cl - spread_binance_vs_open| >= 0.1% for any asset, skip all B5 entries until check passes. */
+const BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT = 0.1;
+let binanceChainlinkSkewBlocked = false;
 
 // ---------------------------------------------------------------------------
 // Wallet balance polling
@@ -308,6 +313,22 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
   cleanupOldOrders();
 
+  // Every 10 ticks: fetch Binance (ETH/SOL/XRP) for skew check vs Chainlink 5-min spread
+  let lastBinancePrices: Record<string, number> | null = null;
+  if (tickCount % 10 === 0) {
+    try {
+      const res = await fetchAllPricesOnce();
+      lastBinancePrices = res.prices;
+    } catch (e) {
+      if (tickCount % 30 === 0) {
+        console.warn('[B5] Binance/CoinGecko fetch failed (skew check skipped):', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
+  let anyBinanceChainlinkSkew = false;
+  const skewCheckParts: string[] = [];
+
   // Early guard: during first 100s, if any asset has |spread| >= threshold → cooldown
   if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
     for (const asset of B5_ASSETS) {
@@ -394,6 +415,16 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     const absSpread = Math.abs(signedSpread);
     const spreadDir: 'up' | 'down' = spotPrice > windowOpenPrice ? 'up' : 'down';
     spreadStatus.push({ asset, signedSpread, spotPrice, spreadDir });
+
+    // Binance vs Chainlink skew (every 10 ticks): block all entries if |diff| >= 0.1% for any asset
+    if (tickCount % 10 === 0 && lastBinancePrices != null && lastBinancePrices[asset] != null && lastBinancePrices[asset] > 0 && windowOpenPrice > 0) {
+      const spreadBinanceVsOpen = (lastBinancePrices[asset] - windowOpenPrice) / lastBinancePrices[asset] * 100;
+      const diffPct = Math.abs(signedSpread - spreadBinanceVsOpen);
+      if (diffPct >= BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT) anyBinanceChainlinkSkew = true;
+      skewCheckParts.push(`${asset}: CL=${signedSpread.toFixed(3)}% BN=${spreadBinanceVsOpen.toFixed(3)}% diff=${diffPct.toFixed(3)}%`);
+    }
+    if (binanceChainlinkSkewBlocked) continue;
+
     const slug = getPolySlug5m(asset, now);
 
     let buf = spreadSampleBuffer.get(asset) ?? [];
@@ -514,6 +545,21 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
           console.log(`[B5] T3 attempt failed ${asset} → T2 blocked ${t3BlocksT2Ms / 60_000} min, T1 blocked ${t3BlocksT1Ms / 60_000} min for ${asset} anyway`);
         }
       }
+    }
+  }
+
+  // Update skew block state when we ran the check (every 10 ticks), log comparison, and log on block state change
+  if (tickCount % 10 === 0 && lastBinancePrices != null) {
+    if (skewCheckParts.length > 0) {
+      console.log('[B5] skew check | ' + skewCheckParts.join(' | '));
+    }
+    const prev = binanceChainlinkSkewBlocked;
+    binanceChainlinkSkewBlocked = anyBinanceChainlinkSkew;
+    if (binanceChainlinkSkewBlocked && !prev) {
+      console.log('[B5] Binance/Chainlink spread diff >= 0.1% — skipping all entries until check passes');
+    }
+    if (!binanceChainlinkSkewBlocked && prev) {
+      console.log('[B5] Binance/Chainlink spread diff < 0.1% — resuming entries');
     }
   }
 

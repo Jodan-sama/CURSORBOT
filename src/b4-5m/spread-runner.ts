@@ -24,6 +24,7 @@ import {
   getPolySlug5m,
   secondsIntoWindow,
 } from './clock.js';
+import { fetchBinancePrice } from '../kalshi/spread.js';
 import {
   isB4EmergencyOff,
   logError,
@@ -146,6 +147,10 @@ let earlyGuardCooldownUntil = 0;
 /** Config (early_guard_spread_pct, tiers, t1_mst_bump_pct, etc.) from Supabase — fetch at most once per hour. */
 const CONFIG_CACHE_MS = 60 * 60 * 1000;
 let lastConfigRefreshMs = 0;
+
+/** Binance vs Chainlink skew (5-min): when |spread_cl - spread_binance_vs_open| >= 0.1%, skip all B4 entries until check passes. */
+const BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT = 0.1;
+let binanceChainlinkSkewBlocked = false;
 
 // ---------------------------------------------------------------------------
 // Wallet balance polling (every ~15 min → updates b4_state.bankroll)
@@ -392,6 +397,34 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     }
   }
   if (staleSpreadThisWindow) return;
+
+  // --- Binance vs Chainlink skew check (every 10 ticks): same 5-min window open; block if |diff| >= 0.1% ---
+  if (tickCount % 10 === 0) {
+    try {
+      const binanceBtc = await fetchBinancePrice('BTC');
+      if (binanceBtc > 0 && windowOpenPrice > 0) {
+        const spreadBinanceVsOpen = (binanceBtc - windowOpenPrice) / binanceBtc * 100;
+        const diffPct = Math.abs(signedSpread - spreadBinanceVsOpen);
+        const prev = binanceChainlinkSkewBlocked;
+        binanceChainlinkSkewBlocked = diffPct >= BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT;
+        console.log(`[B4] skew check | BTC: CL=${signedSpread.toFixed(3)}% BN=${spreadBinanceVsOpen.toFixed(3)}% diff=${diffPct.toFixed(3)}%`);
+        if (binanceChainlinkSkewBlocked && !prev) {
+          console.log('[B4] Binance/Chainlink spread diff >= 0.1% — skipping all entries until check passes');
+        }
+        if (!binanceChainlinkSkewBlocked && prev) {
+          console.log('[B4] Binance/Chainlink spread diff < 0.1% — resuming entries');
+        }
+      }
+    } catch (e) {
+      if (tickCount % 30 === 0) {
+        console.warn('[B4] Binance/CoinGecko fetch failed (skew check skipped):', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+  if (binanceChainlinkSkewBlocked) {
+    if (tickCount % 20 === 0) console.log('[B4] Binance/Chainlink skew >= 0.1% — skipping entries');
+    return;
+  }
 
   // --- Early-window high-spread guard (runs even when B4 is paused so block is set before un-pause) ---
   // During first 100s, check every ~15s: if |spread| >= threshold (either + or -) → cooldown on B4 spread bot
