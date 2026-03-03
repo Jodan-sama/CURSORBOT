@@ -32,7 +32,7 @@ import {
   type BotId,
   type Asset,
 } from '../db/supabase.js';
-import { isOutsideSpreadThreshold, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
+import { fetchAllPricesOnce, isOutsideSpreadThreshold, type SpreadThresholdsMatrix } from '../kalshi/spread.js';
 import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
 import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
@@ -193,6 +193,10 @@ const b3cEarlyHighAt = new Map<Asset, number>();       // B3c early high spread 
 /** When CLOB returns "not enough balance / allowance", stop placing for this long to avoid log spam. */
 const BALANCE_ERROR_BACKOFF_MS = 5 * 60 * 1000;
 let balanceErrorBackoffUntil = 0;
+
+/** Binance vs Chainlink skew check: when |spread_cl - spread_binance_vs_open| >= 0.2% for any asset, skip all B1c/B2c/B3c entries until check passes. */
+const BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT = 0.2;
+let binanceChainlinkSkewBlocked = false;
 
 function isB1cBlocked(asset: Asset, now: number, b2BlockMs: number): boolean {
   const b3t = b3cBlockUntil.get(asset);
@@ -410,6 +414,21 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     } catch { /* best effort */ }
   }
 
+  // Every 10 ticks (~10s): fetch Binance (or CoinGecko) and compare spread vs Chainlink; if |diff| >= 0.2% for any asset, skip all entries until check passes.
+  let lastBinancePrices: Record<Asset, number> | null = null;
+  if (tickCount % 10 === 0) {
+    try {
+      const res = await fetchAllPricesOnce();
+      lastBinancePrices = res.prices;
+    } catch (e) {
+      if (tickCount % 30 === 0) {
+        console.warn('[B123c] Binance/CoinGecko fetch failed (skew check skipped):', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
+  let anyBinanceChainlinkSkew = false;
+  const skewCheckParts: string[] = [];
   let anySkippedNoPrice = false;
   // We do NOT limit to one order per window across assets — we allow one per (bot, asset). Polymarket CLOB reserves balance for each resting limit order (maxOrderSize = balance - openOrderSize), so one placed (unfilled) order can cause "not enough balance" for the next.
   for (const asset of ASSETS) {
@@ -424,6 +443,16 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     const abSpread = Math.abs(signedSpread);
     if (abSpread === 0) continue;
     if (abSpread > 2) { if (tickCount % 20 === 0) console.log(`[B123c] ${asset} skip: |spread| ${abSpread.toFixed(2)}% > 2% failsafe`); continue; }
+
+    // Binance vs Chainlink skew (every 10 ticks): same reference (window open), different price feed. Block all entries if |diff| >= 0.2%.
+    if (tickCount % 10 === 0 && lastBinancePrices && lastBinancePrices[asset] != null && lastBinancePrices[asset] > 0 && openPrice > 0) {
+      const spreadBinanceVsOpen = ((lastBinancePrices[asset] - openPrice) / lastBinancePrices[asset]) * 100;
+      const diffPct = Math.abs(signedSpread - spreadBinanceVsOpen);
+      if (diffPct >= BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT) anyBinanceChainlinkSkew = true;
+      skewCheckParts.push(`${asset}: CL=${signedSpread.toFixed(3)}% BN=${spreadBinanceVsOpen.toFixed(3)}% diff=${diffPct.toFixed(3)}%`);
+    }
+    if (binanceChainlinkSkewBlocked) continue;
+
     const side: 'yes' | 'no' = signedSpread >= 0 ? 'yes' : 'no';
     const slug = getCurrentPolySlug(asset, now);
 
@@ -498,6 +527,21 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
           console.log(`[B123c] B3c ${asset} placed → block B1c/B2c for ${delays.b3BlockMin}min`);
         }
       }
+    }
+  }
+
+  // Update skew block state when we ran the check (every 10 ticks), log comparison every time, and log on block state change
+  if (tickCount % 10 === 0 && lastBinancePrices != null) {
+    if (skewCheckParts.length > 0) {
+      console.log('[B123c] skew check | ' + skewCheckParts.join(' | '));
+    }
+    const prev = binanceChainlinkSkewBlocked;
+    binanceChainlinkSkewBlocked = anyBinanceChainlinkSkew;
+    if (binanceChainlinkSkewBlocked && !prev) {
+      console.log('[B123c] Binance/Chainlink spread diff >= 0.2% — skipping all entries until check passes');
+    }
+    if (!binanceChainlinkSkewBlocked && prev) {
+      console.log('[B123c] Binance/Chainlink spread diff < 0.2% — resuming entries');
     }
   }
 
