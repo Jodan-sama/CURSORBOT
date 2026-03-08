@@ -30,7 +30,7 @@ import {
   type B5TierConfig,
 } from '../db/supabase.js';
 import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
-import { getPolyMarketBySlug, getTokenIdForOutcome } from '../polymarket/gamma.js';
+import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
@@ -232,10 +232,8 @@ async function placeLimitOrder(
       const market = await getPolyMarketBySlug(slug);
       if (!market) return { error: `Market not found: ${slug}` };
 
-      const wantUp = side === 'yes';
-      const tokenId = getTokenIdForOutcome(market, wantUp);
-      const outcomeName = wantUp ? 'Up' : 'Down';
-      if (!tokenId) return { error: `No ${outcomeName} token for ${slug} (outcomes: ${market.outcomes.join(',')})` };
+      const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
+      if (!tokenId) return { error: `No ${side} token for ${slug}` };
 
       const client = await getClobClient();
       // CLOB minimum for many 5m markets is 0.01; Gamma may return 0.001 — use at least 0.01 to avoid "invalid tick size"
@@ -248,7 +246,7 @@ async function placeLimitOrder(
       const minSharesForNotional = Math.ceil(1 / price);
       const shares = Math.max(minSharesForNotional, Math.floor(size / price));
 
-      console.log(`[B5] LIMIT BUY ${outcomeName} (${side}) price=${price} size=${shares} ($${size}) | ${slug}`);
+      console.log(`[B5] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`);
 
       const result = await client.createAndPostOrder(
         { tokenID: tokenId, price, size: shares, side: Side.BUY },
@@ -315,9 +313,9 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
 
   cleanupOldOrders();
 
-  // Every 10 ticks: fetch Binance (ETH/SOL/XRP) for skew check vs Chainlink 5-min spread
+  // Every 5 ticks: fetch Binance (ETH/SOL/XRP) for skew check vs Chainlink 5-min spread
   let lastBinancePrices: Record<string, number> | null = null;
-  if (tickCount % 10 === 0) {
+  if (tickCount % 5 === 0) {
     try {
       const res = await fetchAllPricesOnce();
       lastBinancePrices = res.prices;
@@ -418,8 +416,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     const spreadDir: 'up' | 'down' = spotPrice > windowOpenPrice ? 'up' : 'down';
     spreadStatus.push({ asset, signedSpread, spotPrice, spreadDir });
 
-    // Binance vs Chainlink skew (every 10 ticks): block all entries if |diff| >= 0.1% for any asset
-    if (tickCount % 10 === 0 && lastBinancePrices != null && lastBinancePrices[asset] != null && lastBinancePrices[asset] > 0 && windowOpenPrice > 0) {
+    // Binance vs Chainlink skew (every 5 ticks): block all entries if |diff| >= 0.1% for any asset
+    if (tickCount % 5 === 0 && lastBinancePrices != null && lastBinancePrices[asset] != null && lastBinancePrices[asset] > 0 && windowOpenPrice > 0) {
       const spreadBinanceVsOpen = (lastBinancePrices[asset] - windowOpenPrice) / lastBinancePrices[asset] * 100;
       const diffPct = Math.abs(signedSpread - spreadBinanceVsOpen);
       if (diffPct >= BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT) anyBinanceChainlinkSkew = true;
@@ -550,8 +548,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
     }
   }
 
-  // Update skew block state when we ran the check (every 10 ticks), log comparison, and log on block state change
-  if (tickCount % 10 === 0 && lastBinancePrices != null) {
+  // Update skew block state when we ran the check (every 5 ticks), log comparison, and log on block state change
+  if (tickCount % 5 === 0 && lastBinancePrices != null) {
     if (skewCheckParts.length > 0) {
       console.log('[B5] skew check | ' + skewCheckParts.join(' | '));
     }

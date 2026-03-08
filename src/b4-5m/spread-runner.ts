@@ -36,7 +36,7 @@ import {
   updateB4EarlyGuard,
 } from '../db/supabase.js';
 import { getOrCreateDerivedPolyClient } from '../polymarket/clob.js';
-import { getPolyMarketBySlug, getTokenIdForOutcome } from '../polymarket/gamma.js';
+import { getPolyMarketBySlug } from '../polymarket/gamma.js';
 import {
   Side,
   OrderType,
@@ -265,10 +265,8 @@ async function placeLimitOrder(
       const market = await getPolyMarketBySlug(slug);
       if (!market) return { error: `Market not found: ${slug}` };
 
-      const wantUp = side === 'yes';
-      const tokenId = getTokenIdForOutcome(market, wantUp);
-      const outcomeName = wantUp ? 'Up' : 'Down';
-      if (!tokenId) return { error: `No ${outcomeName} token for ${slug} (outcomes: ${market.outcomes.join(',')})` };
+      const tokenId = side === 'yes' ? market.clobTokenIds[0] : market.clobTokenIds[1];
+      if (!tokenId) return { error: `No ${side} token for ${slug}` };
 
       const client = await getClobClient();
 
@@ -287,7 +285,7 @@ async function placeLimitOrder(
       const shares = Math.max(minSharesForNotional, Math.floor(size / price));
 
       console.log(
-        `[B4] LIMIT BUY ${outcomeName} (${side}) price=${price} size=${shares} ($${size}) | ${slug}`,
+        `[B4] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`,
       );
 
       const result = await client.createAndPostOrder(
@@ -400,8 +398,8 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   }
   if (staleSpreadThisWindow) return;
 
-  // --- Binance vs Chainlink skew check (every 10 ticks): same 5-min window open; block if |diff| >= 0.1% ---
-  if (tickCount % 10 === 0) {
+  // --- Binance vs Chainlink skew check (every 5 ticks): same 5-min window open; block if |diff| >= 0.1% ---
+  if (tickCount % 5 === 0) {
     try {
       const binanceBtc = await fetchBinancePrice('BTC');
       if (binanceBtc > 0 && windowOpenPrice > 0) {

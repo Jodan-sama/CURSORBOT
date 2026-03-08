@@ -417,9 +417,9 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     } catch { /* best effort */ }
   }
 
-  // Every 10 ticks (~10s): fetch Binance (or CoinGecko) and compare spread vs Chainlink; if |diff| >= 0.2% for any asset, skip all entries until check passes.
+  // Every 5 ticks (~5s): fetch Binance (or CoinGecko) and compare spread vs Chainlink; if |diff| >= 0.2% for any asset, skip all entries until check passes.
   let lastBinancePrices: Record<Asset, number> | null = null;
-  if (tickCount % 10 === 0) {
+  if (tickCount % 5 === 0) {
     try {
       const res = await fetchAllPricesOnce();
       lastBinancePrices = res.prices;
@@ -447,8 +447,8 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     if (abSpread === 0) continue;
     if (abSpread > 2) { if (tickCount % 20 === 0) console.log(`[B123c] ${asset} skip: |spread| ${abSpread.toFixed(2)}% > 2% failsafe`); continue; }
 
-    // Binance vs Chainlink skew (every 10 ticks): same reference (window open), different price feed. Block all entries if |diff| >= 0.2%.
-    if (tickCount % 10 === 0 && lastBinancePrices && lastBinancePrices[asset] != null && lastBinancePrices[asset] > 0 && openPrice > 0) {
+    // Binance vs Chainlink skew (every 5 ticks): same reference (window open), different price feed. Block all entries if |diff| >= 0.2%.
+    if (tickCount % 5 === 0 && lastBinancePrices && lastBinancePrices[asset] != null && lastBinancePrices[asset] > 0 && openPrice > 0) {
       const spreadBinanceVsOpen = ((lastBinancePrices[asset] - openPrice) / lastBinancePrices[asset]) * 100;
       const diffPct = Math.abs(signedSpread - spreadBinanceVsOpen);
       if (diffPct >= BINANCE_CHAINLINK_SKEW_THRESHOLD_PCT) anyBinanceChainlinkSkew = true;
@@ -533,8 +533,8 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     }
   }
 
-  // Update skew block state when we ran the check (every 10 ticks), log comparison every time, and log on block state change
-  if (tickCount % 10 === 0 && lastBinancePrices != null) {
+  // Update skew block state when we ran the check (every 5 ticks), log comparison every time, and log on block state change
+  if (tickCount % 5 === 0 && lastBinancePrices != null) {
     if (skewCheckParts.length > 0) {
       console.log('[B123c] skew check | ' + skewCheckParts.join(' | '));
     }
