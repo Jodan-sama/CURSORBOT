@@ -2,7 +2,9 @@
  * Resolve win/loss for Kalshi B1/B2/B3 positions. Updates positions.outcome and resolved_at.
  * Run every 15 min at :03, :18, :33, :48 (calm period) via cron on D1. Uses KALSHI_* and SUPABASE_* from env.
  *
- * Fill check: if order has fill_count 0 or missing, set outcome = 'no_fill' (still shown in dashboard; not counted in win rate).
+ * Fill check: if order has fill_count 0 or missing, we do NOT set no_fill immediately — Kalshi can report fills
+ * with a delay. We only set no_fill when the position is older than FILL_GRACE_MS (default 2h). Otherwise we
+ * leave outcome null so the next run retries. This avoids marking filled+won orders as no_fill due to timing.
  * Resolution: GET /portfolio/settlements; match by ticker; derive side from yes_count/no_count; set win/loss.
  * Backlog: all unresolved Kalshi positions are processed (settlements fetched for last 30 days, paginated).
  */
@@ -11,11 +13,15 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getKalshiOrder } from '../kalshi/orders.js';
 import { getKalshiSettlements, type KalshiSettlement } from '../kalshi/settlements.js';
 
+/** Don't set no_fill for "order not filled" until position is this old (Kalshi may report fill with delay). */
+const FILL_GRACE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 type PositionRow = {
   id: string;
   bot: string;
   ticker_or_slug: string | null;
   order_id: string | null;
+  entered_at: string | null;
 };
 
 /** Build map ticker -> latest settlement (by settled_time). One settlement per ticker. */
@@ -41,7 +47,7 @@ async function main() {
 
   const { data: rows, error: selectError } = await supabase
     .from('positions')
-    .select('id, bot, ticker_or_slug, order_id')
+    .select('id, bot, ticker_or_slug, order_id, entered_at')
     .eq('venue', 'kalshi')
     .in('bot', ['B1', 'B2', 'B3'])
     .is('outcome', null);
@@ -102,13 +108,19 @@ async function main() {
       /* API error */
     }
     if (!order || (order.fill_count ?? 0) === 0) {
+      const enteredAt = row.entered_at ? new Date(row.entered_at).getTime() : 0;
+      const ageMs = Date.now() - enteredAt;
+      if (ageMs < FILL_GRACE_MS) {
+        // Leave outcome null so next run retries; Kalshi may report fill with delay
+        continue;
+      }
       const { error: updateError } = await supabase
         .from('positions')
         .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
         .eq('id', row.id);
       if (!updateError) {
         updated++;
-        console.log(`Resolved ${row.bot} ${ticker}: no_fill (order not filled)`);
+        console.log(`Resolved ${row.bot} ${ticker}: no_fill (order not filled after ${Math.round(ageMs / 60000)}m)`);
       }
       continue;
     }
