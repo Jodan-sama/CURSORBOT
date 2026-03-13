@@ -272,17 +272,25 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       }
     } catch (e) {
       await logError(e, { asset, stage: 'market_data' });
+      console.log(`[tick] ${asset} spread n/a (market_data error)`);
       continue;
     }
 
-    if (signedSpreadPct == null) continue;
+    if (signedSpreadPct == null) {
+      const reason = !kalshiTicker ? 'no Kalshi ticker' : kalshiStrike == null ? 'no valid strike' : 'no price';
+      console.log(`[tick] ${asset} spread n/a (${reason})`);
+      continue;
+    }
+
+    /** Always log spread for all four assets regardless of blocking. */
+    console.log(`[tick] ${asset} spread ${signedSpreadPct.toFixed(2)}%`);
+    /** If blocked, log why every tick (no throttle). */
+    if (blocked) console.log(`[tick] ${asset} blocked: B3 cooldown (B1/B2 skipped this window)`);
+    if (blocked && isB2Window(minutesLeft)) console.log(`[tick] B2 ${asset} skip: blocked by B3 cooldown; spread ${signedSpreadPct.toFixed(2)}%`);
     const spreadMagnitude = Math.abs(signedSpreadPct);
-    /** Log block/skip with spread so journals always show spread when skipping. */
-    if (blocked && tickCount % 12 === 0) console.log(`[tick] ${asset} B1/B2 blocked by B3 cooldown (1h); B3 still eligible; spread ${signedSpreadPct.toFixed(2)}%`);
-    if (isB2Window(minutesLeft) && blocked && tickCount % 6 === 0) console.log(`[tick] B2 ${asset} skip: blocked by B3 cooldown; spread ${signedSpreadPct.toFixed(2)}%`);
     // Failsafe: never enter on 0 spread or |spread| > 2% (bad/stale data).
     if (spreadMagnitude === 0) {
-      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: spread is 0 (failsafe)`);
+      console.log(`[tick] ${asset} skip: spread is 0 (failsafe)`);
       continue;
     }
 
@@ -302,7 +310,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     }
 
     if (spreadMagnitude > MAX_SPREAD_PCT) {
-      if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: |spread| ${spreadMagnitude.toFixed(2)}% > ${MAX_SPREAD_PCT}% (failsafe)`);
+      console.log(`[tick] ${asset} skip: |spread| ${spreadMagnitude.toFixed(2)}% > ${MAX_SPREAD_PCT}% (failsafe)`);
       continue;
     }
     const side = sideFromSignedSpread(signedSpreadPct);
@@ -315,7 +323,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     const sizePolyB3 = getPositionSizeFromMatrix(positionSizesMatrix, 'polymarket', 'B3', asset);
 
     // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). Blocked when B3 placed recently. ---
-    if (isB1Window(minutesLeft) && blocked && tickCount % 6 === 0) {
+    if (isB1Window(minutesLeft) && blocked) {
       console.log(`[tick] B1 ${asset} skip: blocked by B3 cooldown; spread ${signedSpreadPct.toFixed(2)}%`);
     }
     if (!blocked && isB1Window(minutesLeft)) {
