@@ -232,6 +232,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     getPositionsInWindowB123(windowStartMs),
   ]);
 
+  /** Collect spread (or n/a) per asset so we print one line for all four after the loop. */
+  const spreadForTick: Record<Asset, string> = { BTC: '', ETH: '', SOL: '', XRP: '' };
+
   for (const asset of ASSETS) {
     if (asset !== ASSETS[0]) await new Promise((r) => setTimeout(r, ASSET_DELAY_MS));
     /** B3 block: when B3 placed recently, block B1/B2 only. B3 can always place in new windows. */
@@ -272,18 +275,17 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       }
     } catch (e) {
       await logError(e, { asset, stage: 'market_data' });
-      console.log(`[tick] ${asset} spread n/a (market_data error)`);
+      spreadForTick[asset] = 'n/a (market_data error)';
       continue;
     }
 
     if (signedSpreadPct == null) {
       const reason = !kalshiTicker ? 'no Kalshi ticker' : kalshiStrike == null ? 'no valid strike' : 'no price';
-      console.log(`[tick] ${asset} spread n/a (${reason})`);
+      spreadForTick[asset] = `n/a (${reason})`;
       continue;
     }
 
-    /** Always log spread for all four assets regardless of blocking. */
-    console.log(`[tick] ${asset} spread ${signedSpreadPct.toFixed(2)}%`);
+    spreadForTick[asset] = `${signedSpreadPct.toFixed(2)}%`;
     /** If blocked, log why every tick (no throttle). */
     if (blocked) console.log(`[tick] ${asset} blocked: B3 cooldown (B1/B2 skipped this window)`);
     if (blocked && isB2Window(minutesLeft)) console.log(`[tick] B2 ${asset} skip: blocked by B3 cooldown; spread ${signedSpreadPct.toFixed(2)}%`);
@@ -353,7 +355,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
             : false;
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB1) {
-        console.log(`[tick] B1 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
+        console.log(`[tick] B1 ${asset} skip: inside threshold`);
         continue;
       }
       if (!bidOk) {
@@ -524,7 +526,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
         console.log(`B2 Poly ${asset} skip: ${reason}; spread ${signedSpreadPct.toFixed(2)}%`);
       }
       } else if (!outsideB2) {
-        console.log(`[tick] B2 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
+        console.log(`[tick] B2 ${asset} skip: inside threshold`);
       }
     }
 
@@ -547,7 +549,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
       if (enteredThisWindow.has(key)) continue;
       if (!outsideB3) {
-        console.log(`[tick] B3 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
+        console.log(`[tick] B3 ${asset} skip: inside threshold`);
         continue;
       }
 
@@ -632,6 +634,8 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       }
     }
   }
+
+  console.log(`[tick] ${ASSETS.map((a) => `${a} ${spreadForTick[a]}`).join(' ')}`);
 
   // Prune old window keys (older than current window)
   const cutoff = windowEndMs - 15 * 60 * 1000;
