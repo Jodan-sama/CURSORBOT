@@ -236,12 +236,6 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
     if (asset !== ASSETS[0]) await new Promise((r) => setTimeout(r, ASSET_DELAY_MS));
     /** B3 block: when B3 placed recently, block B1/B2 only. B3 can always place in new windows. */
     const blocked = blockedSet.has(asset);
-    if (blocked && tickCount % 12 === 0) console.log(`[tick] ${asset} B1/B2 blocked by B3 cooldown (1h); B3 still eligible`);
-
-    /** Log when B2 window is active but B2 is skipped because blocked by B3, so logs clearly show B3 blocking. */
-    if (isB2Window(minutesLeft) && blocked && tickCount % 6 === 0) {
-      console.log(`[tick] B2 ${asset} skip: blocked by B3 cooldown`);
-    }
 
     let kalshiTicker: string | null = null;
     let kalshiStrike: number | null = null;
@@ -283,6 +277,9 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
 
     if (signedSpreadPct == null) continue;
     const spreadMagnitude = Math.abs(signedSpreadPct);
+    /** Log block/skip with spread so journals always show spread when skipping. */
+    if (blocked && tickCount % 12 === 0) console.log(`[tick] ${asset} B1/B2 blocked by B3 cooldown (1h); B3 still eligible; spread ${signedSpreadPct.toFixed(2)}%`);
+    if (isB2Window(minutesLeft) && blocked && tickCount % 6 === 0) console.log(`[tick] B2 ${asset} skip: blocked by B3 cooldown; spread ${signedSpreadPct.toFixed(2)}%`);
     // Failsafe: never enter on 0 spread or |spread| > 2% (bad/stale data).
     if (spreadMagnitude === 0) {
       if (tickCount % 12 === 0) console.log(`[tick] ${asset} skip: spread is 0 (failsafe)`);
@@ -319,7 +316,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
 
     // --- B1: last 2.5 min. First 1.5 min: bid ≥90% → 96 limit. Final 1 min: bid 90–96% → market (only if no limit placed yet). Blocked when B3 placed recently. ---
     if (isB1Window(minutesLeft) && blocked && tickCount % 6 === 0) {
-      console.log(`[tick] B1 ${asset} skip: blocked by B3 cooldown`);
+      console.log(`[tick] B1 ${asset} skip: blocked by B3 cooldown; spread ${signedSpreadPct.toFixed(2)}%`);
     }
     if (!blocked && isB1Window(minutesLeft)) {
       const key = windowKey('B1', asset, windowEndMs);
@@ -332,7 +329,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       if (tHigh != null && now.getTime() - tHigh < b2HighSpreadBlockMs) {
         if (tickCount % 6 === 0) {
           const minLeft = Math.ceil((b2HighSpreadBlockMs - (now.getTime() - tHigh)) / 60000);
-          console.log(`[tick] B1 ${asset} skip: ${delays.b2HighSpreadBlockMin} min delay after B2 saw spread >${delays.b2HighSpreadThresholdPct}% (${minLeft} min left)`);
+          console.log(`[tick] B1 ${asset} skip: ${delays.b2HighSpreadBlockMin} min delay after B2 saw spread >${delays.b2HighSpreadThresholdPct}% (${minLeft} min left); spread ${signedSpreadPct.toFixed(2)}%`);
         }
         continue;
       }
@@ -353,7 +350,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       }
       if (!bidOk) {
         const want = inLimitWindow ? 'bid ≥90%' : 'bid 90–96%';
-        console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% (${want})`);
+        console.log(`[tick] B1 ${asset} skip: bid ${bidPct}% (${want}); spread ${signedSpreadPct.toFixed(2)}%`);
         continue;
       }
 
@@ -430,7 +427,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
                     ? polyErrorReason(polyResult.polyError)
                     : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B1', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
-        console.log(`B1 Poly ${asset} skip: ${reason}`);
+        console.log(`B1 Poly ${asset} skip: ${reason}; spread ${signedSpreadPct.toFixed(2)}%`);
       }
     }
 
@@ -441,7 +438,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       const windowStartMs = windowEndMs - 15 * 60 * 1000;
       if (positionsInWindow.has(`B2-${asset}`)) {
         enteredThisWindow.add(keyB2);
-        console.log(`[tick] B2 ${asset} skip (already placed this window)`);
+        console.log(`[tick] B2 ${asset} skip (already placed this window); spread ${signedSpreadPct.toFixed(2)}%`);
         continue;
       }
       const outsideB2 = isOutsideSpreadThreshold('B2', asset, spreadMagnitude, spreadThresholds);
@@ -516,7 +513,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
                     ? polyErrorReason(polyResult.polyError)
                     : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B2', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
-        console.log(`B2 Poly ${asset} skip: ${reason}`);
+        console.log(`B2 Poly ${asset} skip: ${reason}; spread ${signedSpreadPct.toFixed(2)}%`);
       }
       } else if (!outsideB2) {
         console.log(`[tick] B2 ${asset} skip: spread ${signedSpreadPct.toFixed(2)}% inside threshold`);
@@ -529,14 +526,14 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
       const windowStartMs = windowEndMs - 15 * 60 * 1000;
       if (positionsInWindow.has(`B3-${asset}`)) {
         enteredThisWindow.add(key);
-        console.log(`[tick] B3 ${asset} skip (already placed this window)`);
+        console.log(`[tick] B3 ${asset} skip (already placed this window); spread ${signedSpreadPct.toFixed(2)}%`);
         continue;
       }
       const b3EarlyBlockMs = b3EarlyHighSpreadBlockMin * 60 * 1000;
       const tEarly = lastB3EarlyHighSpreadByAsset.get(asset);
       if (tEarly != null && now.getTime() - tEarly < b3EarlyBlockMs) {
         const minLeft = Math.ceil((b3EarlyBlockMs - (now.getTime() - tEarly)) / 60000);
-        console.log(`[tick] B3 ${asset} skip: high spread >${b3EarlyHighSpreadPct}% detected; block ${minLeft} min left`);
+        console.log(`[tick] B3 ${asset} skip: high spread >${b3EarlyHighSpreadPct}% detected; block ${minLeft} min left; spread ${signedSpreadPct.toFixed(2)}%`);
         continue;
       }
       const outsideB3 = isOutsideSpreadThreshold('B3', asset, spreadMagnitude, spreadThresholds);
@@ -623,7 +620,7 @@ export async function runOneTick(now: Date, tickCount: number = 0): Promise<bool
                     ? polyErrorReason(polyResult.polyError)
                     : 'no orderId or error (check Recent errors)';
         await logPolySkip({ bot: 'B3', asset, reason, kalshiPlaced: !!kalshiResult.orderId });
-        console.log(`B3 Poly ${asset} skip: ${reason}`);
+        console.log(`B3 Poly ${asset} skip: ${reason}; spread ${signedSpreadPct.toFixed(2)}%`);
       }
     }
   }

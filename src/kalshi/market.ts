@@ -27,6 +27,14 @@ export interface GetMarketResponse {
   market: KalshiMarket & Record<string, unknown>;
 }
 
+/** Orderbook: yes_dollars / no_dollars are [price_dollars, count_fp][] sorted by price ascending; best bid = last. */
+export interface GetOrderbookResponse {
+  orderbook_fp?: {
+    yes_dollars?: [string, string][];
+    no_dollars?: [string, string][];
+  };
+}
+
 export interface KalshiMarketListItem {
   ticker: string;
   expiration_time?: string;
@@ -92,6 +100,25 @@ export async function getCurrentKalshiTicker(
   return chosen?.ticker ?? null;
 }
 
+/** Fetch orderbook and return best YES bid as percent (0–100), or null if empty. Fallback when market endpoint returns 0. */
+async function getKalshiBestYesBidFromOrderbook(
+  ticker: string,
+  baseUrl: string = DEFAULT_BASE
+): Promise<number | null> {
+  const url = `${baseUrl.replace(/\/$/, '')}/markets/${encodeURIComponent(ticker)}/orderbook`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const data = (await res.json()) as GetOrderbookResponse;
+  const yes = data.orderbook_fp?.yes_dollars;
+  if (!yes || yes.length === 0) return null;
+  const last = yes[yes.length - 1];
+  const priceStr = last?.[0];
+  if (priceStr == null) return null;
+  const priceDollars = parseFloat(priceStr);
+  if (Number.isNaN(priceDollars)) return null;
+  return Math.round(priceDollars * 100);
+}
+
 export async function getKalshiMarket(
   ticker: string,
   baseUrl: string = DEFAULT_BASE
@@ -101,10 +128,15 @@ export async function getKalshiMarket(
   if (!res.ok) throw new Error(`Kalshi market ${ticker}: ${res.status}`);
   const data = (await res.json()) as GetMarketResponse;
   const m = data.market;
+  let yesBid = m.yes_bid;
+  if (yesBid == null || yesBid === 0) {
+    const fromOb = await getKalshiBestYesBidFromOrderbook(ticker, baseUrl);
+    if (fromOb != null) yesBid = fromOb;
+  }
   return {
     ticker: m.ticker,
     floor_strike: m.floor_strike ?? null,
-    yes_bid: m.yes_bid,
+    yes_bid: yesBid,
     yes_ask: m.yes_ask,
     expiration_time: m.expiration_time,
     status: m.status,
