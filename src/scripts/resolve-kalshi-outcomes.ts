@@ -14,8 +14,8 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getKalshiOrder } from '../kalshi/orders.js';
 import { getKalshiSettlements, type KalshiSettlement } from '../kalshi/settlements.js';
 
-/** Re-check the most recent positions every run (even if already no_fill). */
-const RECENT_RECHECK_LIMIT = 20;
+/** Re-check the most recent positions every run (even if already no_fill). One-time backfill: pass a number, e.g. npx tsx resolve-kalshi-outcomes.ts 500 */
+const DEFAULT_RECHECK_LIMIT = 20;
 /** How far back to fetch settlements (seconds). */
 const SETTLEMENT_LOOKBACK_DAYS = 30;
 
@@ -42,6 +42,17 @@ function settlementMap(settlements: KalshiSettlement[]): Map<string, KalshiSettl
 
 type MarketOutcome = 'win' | 'loss' | 'no_fill';
 
+function heldSideFromSettlement(settlement: KalshiSettlement): 'yes' | 'no' | 'none' | 'both' {
+  const yesCount = settlement.yes_count ?? 0;
+  const noCount = settlement.no_count ?? 0;
+  const heldYes = yesCount > 0;
+  const heldNo = noCount > 0;
+  if (heldYes && !heldNo) return 'yes';
+  if (heldNo && !heldYes) return 'no';
+  if (!heldYes && !heldNo) return 'none';
+  return 'both';
+}
+
 function outcomeFromSettlementAndSide(settlement: KalshiSettlement, side: 'yes' | 'no'): MarketOutcome | null {
   const result = settlement.market_result;
   if (result === 'void' || result === 'scalar') return 'no_fill';
@@ -61,6 +72,16 @@ function uniqById(rows: PositionRow[]): PositionRow[] {
 }
 
 async function main() {
+  // One-time backfill: npx tsx resolve-kalshi-outcomes.ts 500 → re-check last 500 positions
+  const argLimit = process.argv[2];
+  const recheckLimit =
+    typeof argLimit === 'string' && /^\d+$/.test(argLimit)
+      ? Math.min(2000, Math.max(1, parseInt(argLimit, 10)))
+      : DEFAULT_RECHECK_LIMIT;
+  if (recheckLimit !== DEFAULT_RECHECK_LIMIT) {
+    console.log(`Kalshi resolver: one-time backfill recheck_limit=${recheckLimit}`);
+  }
+
   const url = process.env.SUPABASE_URL?.trim();
   const key = process.env.SUPABASE_ANON_KEY?.trim();
   if (!url || !key) {
@@ -101,7 +122,7 @@ async function main() {
     .eq('venue', 'kalshi')
     .in('bot', ['B1', 'B2', 'B3'])
     .order('entered_at', { ascending: false })
-    .limit(RECENT_RECHECK_LIMIT);
+    .limit(recheckLimit);
   if (recentError) {
     console.error('Select recent positions failed:', recentError.message);
   }
@@ -117,6 +138,7 @@ async function main() {
   let skippedNoOrder = 0;
   let skippedNoTicker = 0;
   let skippedUnknownSide = 0;
+  let skippedHeldBoth = 0;
 
   for (const row of positions) {
     const ticker = row.ticker_or_slug?.trim();
@@ -136,6 +158,27 @@ async function main() {
       continue; // not settled yet (or settlement not in lookback window)
     }
 
+    const heldSide = heldSideFromSettlement(settlement);
+    if (heldSide === 'none') {
+      // No settled position for this market => unfilled order (or net 0); mark no_fill.
+      if (row.outcome === 'no_fill') continue;
+      const { error: updateError } = await supabase
+        .from('positions')
+        .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+        .eq('id', row.id);
+      if (!updateError) {
+        updated++;
+        console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → no_fill (settlement held none)`);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      continue;
+    }
+    if (heldSide === 'both') {
+      // Ambiguous portfolio holdings; don't overwrite.
+      skippedHeldBoth++;
+      continue;
+    }
+
     let order: Awaited<ReturnType<typeof getKalshiOrder>> = null;
     try {
       order = await getKalshiOrder(row.order_id.trim());
@@ -146,12 +189,13 @@ async function main() {
       skippedNoOrder++;
       continue;
     }
-    const side = order.side;
-    if (side !== 'yes' && side !== 'no') {
+    const sideFromOrder = order.side;
+    if (sideFromOrder !== 'yes' && sideFromOrder !== 'no') {
       skippedUnknownSide++;
       continue;
     }
-    const outcome = outcomeFromSettlementAndSide(settlement, side);
+    // Prefer settlement-held side (proves the order filled); order.side is used only for sanity/debug.
+    const outcome = outcomeFromSettlementAndSide(settlement, heldSide);
     if (!outcome) continue;
     if (row.outcome === outcome) continue;
 
@@ -165,12 +209,13 @@ async function main() {
       continue;
     }
     updated++;
-    console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → ${outcome}`);
+    const mismatch = sideFromOrder !== heldSide ? ` (order.side=${sideFromOrder}, held=${heldSide})` : '';
+    console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → ${outcome}${mismatch}`);
     await new Promise((r) => setTimeout(r, 100)); // gentle on API
   }
 
   console.log(
-    `Updated ${updated} Kalshi position(s). Skipped: no_ticker=${skippedNoTicker} no_order=${skippedNoOrder} no_settlement=${skippedNoSettlement} unknown_side=${skippedUnknownSide}`
+    `Updated ${updated} Kalshi position(s). Skipped: no_ticker=${skippedNoTicker} no_order=${skippedNoOrder} no_settlement=${skippedNoSettlement} held_both=${skippedHeldBoth} unknown_side=${skippedUnknownSide}`
   );
 }
 
