@@ -3,11 +3,12 @@
  * Run every 15 min at :03, :18, :33, :48 (calm period) via cron on D1. Uses KALSHI_* and SUPABASE_* from env.
  *
  * Strategy:
- * - Resolve from Kalshi settlements repeatedly (cron every 15 min). Do not rely on fill_count timing gates.
- * - Every run, re-check a small sliding window of the most recent Kalshi positions (RECENT_RECHECK_LIMIT)
- *   so missed settlements or delayed API data get corrected automatically.
- * - Also process all unresolved positions (outcome IS NULL).
- * - Use order.side (yes/no) from GET /portfolio/orders/:id to determine win/loss against settlement.market_result.
+ * - Win/loss only when we have proof of fill: (1) settlement shows we held a position (yes_count or no_count > 0),
+ *   OR (2) order.fill_count > 0. We never set win/loss when settlement shows held none and fill_count === 0.
+ * - When settlement shows held yes/no we use that side and market_result → win/loss (settlement is proof of fill).
+ * - When settlement shows held none we require fill_count > 0 and use order.side + market_result.
+ * - When fill_count === 0 and settlement held none → no_fill.
+ * - Every run re-checks a sliding window of recent positions plus all unresolved.
  */
 import 'dotenv/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
@@ -28,14 +29,34 @@ type PositionRow = {
   outcome?: string | null;
 };
 
-/** Build map ticker -> latest settlement (by settled_time). One settlement per ticker. */
+/** True if this settlement row shows we held a position (proof of fill). */
+function settlementShowsPosition(s: KalshiSettlement): boolean {
+  return ((s.yes_count ?? 0) > 0) || ((s.no_count ?? 0) > 0);
+}
+
+/**
+ * Build map ticker -> best settlement. Prefer a row that shows we held (yes_count or no_count > 0);
+ * among those use latest settled_time. Otherwise use latest by settled_time. Avoids overwriting
+ * a "we held" row with a later 0/0 row that might exist in the API.
+ */
 function settlementMap(settlements: KalshiSettlement[]): Map<string, KalshiSettlement> {
   const map = new Map<string, KalshiSettlement>();
   for (const s of settlements) {
     const existing = map.get(s.ticker);
-    if (!existing || new Date(s.settled_time).getTime() > new Date(existing.settled_time).getTime()) {
+    const sHasPosition = settlementShowsPosition(s);
+    const existingHasPosition = existing ? settlementShowsPosition(existing) : false;
+    const sTime = new Date(s.settled_time).getTime();
+    const existingTime = existing ? new Date(existing.settled_time).getTime() : 0;
+    if (!existing) {
       map.set(s.ticker, s);
+      continue;
     }
+    if (sHasPosition && !existingHasPosition) {
+      map.set(s.ticker, s);
+      continue;
+    }
+    if (!sHasPosition && existingHasPosition) continue;
+    if (sTime > existingTime) map.set(s.ticker, s);
   }
   return map;
 }
@@ -155,12 +176,11 @@ async function main() {
     const settlement = byTicker.get(ticker);
     if (!settlement) {
       skippedNoSettlement++;
-      continue; // not settled yet (or settlement not in lookback window)
+      continue;
     }
 
-    const heldSide = heldSideFromSettlement(settlement);
-    if (heldSide === 'none') {
-      // No settled position for this market => unfilled order (or net 0); mark no_fill.
+    const result = settlement.market_result;
+    if (result === 'void' || result === 'scalar') {
       if (row.outcome === 'no_fill') continue;
       const { error: updateError } = await supabase
         .from('positions')
@@ -168,16 +188,14 @@ async function main() {
         .eq('id', row.id);
       if (!updateError) {
         updated++;
-        console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → no_fill (settlement held none)`);
+        console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → no_fill (market ${result})`);
       }
       await new Promise((r) => setTimeout(r, 50));
       continue;
     }
-    if (heldSide === 'both') {
-      // Ambiguous portfolio holdings; don't overwrite.
-      skippedHeldBoth++;
-      continue;
-    }
+    if (result !== 'yes' && result !== 'no') continue;
+
+    const heldSide = heldSideFromSettlement(settlement);
 
     let order: Awaited<ReturnType<typeof getKalshiOrder>> = null;
     try {
@@ -185,18 +203,65 @@ async function main() {
     } catch {
       /* API error */
     }
-    if (!order) {
-      skippedNoOrder++;
+
+    const fillCount = order?.fill_count ?? 0;
+    const orderFilled = fillCount > 0 || order?.status === 'executed';
+
+    if (heldSide === 'none') {
+      if (!orderFilled) {
+        if (row.outcome === 'no_fill') continue;
+        const { error: updateError } = await supabase
+          .from('positions')
+          .update({ outcome: 'no_fill', resolved_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (!updateError) {
+          updated++;
+        console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → no_fill (settlement held none, order not filled)`);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      } else {
+        const side = order?.side === 'yes' || order?.side === 'no' ? order.side : null;
+        if (!side) {
+          skippedUnknownSide++;
+          continue;
+        }
+        const outcome = outcomeFromSettlementAndSide(settlement, side);
+        if (!outcome || outcome === 'no_fill') continue;
+        if (row.outcome === outcome) continue;
+        const { error: updateError } = await supabase
+          .from('positions')
+          .update({ outcome, resolved_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (!updateError) {
+          updated++;
+          console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → ${outcome} (order executed, side from order)`);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
       continue;
     }
-    const sideFromOrder = order.side;
-    if (sideFromOrder !== 'yes' && sideFromOrder !== 'no') {
-      skippedUnknownSide++;
+
+    if (heldSide === 'both') {
+      skippedHeldBoth++;
+      if (orderFilled && (order?.side === 'yes' || order?.side === 'no')) {
+        const outcome = outcomeFromSettlementAndSide(settlement, order.side);
+        if (outcome && outcome !== 'no_fill' && row.outcome !== outcome) {
+          const { error: updateError } = await supabase
+            .from('positions')
+            .update({ outcome, resolved_at: new Date().toISOString() })
+            .eq('id', row.id);
+          if (!updateError) {
+            updated++;
+            console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → ${outcome} (held both, side from order)`);
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
       continue;
     }
-    // Prefer settlement-held side (proves the order filled); order.side is used only for sanity/debug.
+
     const outcome = outcomeFromSettlementAndSide(settlement, heldSide);
-    if (!outcome) continue;
+    if (!outcome || outcome === 'no_fill') continue;
     if (row.outcome === outcome) continue;
 
     const { error: updateError } = await supabase
@@ -209,9 +274,8 @@ async function main() {
       continue;
     }
     updated++;
-    const mismatch = sideFromOrder !== heldSide ? ` (order.side=${sideFromOrder}, held=${heldSide})` : '';
-    console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → ${outcome}${mismatch}`);
-    await new Promise((r) => setTimeout(r, 100)); // gentle on API
+    console.log(`Resolved ${row.bot} ${ticker}: ${row.outcome ?? 'null'} → ${outcome} (settlement held ${heldSide})`);
+    await new Promise((r) => setTimeout(r, 100));
   }
 
   console.log(
