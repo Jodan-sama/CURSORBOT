@@ -312,7 +312,7 @@ export async function getB123cDashboardConfig(): Promise<{
   delays: Awaited<ReturnType<typeof getBotDelays>>;
   positionSize: number;
   emergencyOff: boolean;
-  /** Add this % to spread for B2c SOL/XRP only during Mon–Fri 7:30–7:45am MST (Utah). 0 = off. */
+  /** Add this % to spread for B2c SOL/XRP only during Mon–Fri 7:30–8:00am MST (Utah). 0 = off. */
   b123cB2SolXrpMstBumpPct: number;
 }> {
   const [spreadThresholds, delays, b4Res] = await Promise.all([
@@ -350,15 +350,29 @@ export async function hasKalshiPositionInLastHours(hours: number): Promise<boole
 
 /** All assets currently blocked (B3 filled recently). One query instead of 4. */
 export async function getAssetBlocksAll(): Promise<Set<Asset>> {
-  const now = new Date().toISOString();
+  const r = await getAssetBlocksWithUntil();
+  return r.blockedSet;
+}
+
+/** Blocked assets plus block_until per asset (for logging time left). */
+export async function getAssetBlocksWithUntil(): Promise<{
+  blockedSet: Set<Asset>;
+  blockUntilByAsset: Map<Asset, Date>;
+}> {
+  const now = new Date();
+  const nowIso = now.toISOString();
   const { data, error } = await getDb()
     .from('asset_blocks')
-    .select('asset')
-    .gt('block_until', now);
-  if (error) throw new Error(`getAssetBlocksAll: ${error.message}`);
-  const set = new Set<Asset>();
-  for (const row of (data ?? []) as { asset: Asset }[]) set.add(row.asset);
-  return set;
+    .select('asset, block_until')
+    .gt('block_until', nowIso);
+  if (error) throw new Error(`getAssetBlocksWithUntil: ${error.message}`);
+  const blockedSet = new Set<Asset>();
+  const blockUntilByAsset = new Map<Asset, Date>();
+  for (const row of (data ?? []) as { asset: Asset; block_until: string }[]) {
+    blockedSet.add(row.asset);
+    blockUntilByAsset.set(row.asset, new Date(row.block_until));
+  }
+  return { blockedSet, blockUntilByAsset };
 }
 
 /** True if this asset is currently blocked (B3 filled recently). */

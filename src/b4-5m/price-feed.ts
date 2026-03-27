@@ -25,6 +25,8 @@ let reconnecting = false;
 /** Last time we received a price update. If no update for this long, connection is "silent" — force reconnect. */
 let lastPriceMessageMs = 0;
 const SILENT_RECONNECT_MS = 45_000;
+const FEED_STALE_THRESHOLD_MS = 60_000;
+let feedHealthySinceMs = 0;
 
 function connectRTDS(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -73,9 +75,15 @@ function connectRTDS(): void {
         payload?: { symbol?: string; value?: number; timestamp?: number };
       };
       if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol === 'btc/usd' && msg.payload.value) {
-        lastPriceMessageMs = Date.now();
+        const now = Date.now();
+        const gapMs = lastPriceMessageMs > 0 ? now - lastPriceMessageMs : Infinity;
+        lastPriceMessageMs = now;
         chainlinkPrice = msg.payload.value;
-        chainlinkTimestamp = msg.payload.timestamp ?? Date.now();
+        chainlinkTimestamp = now;
+        if (feedHealthySinceMs === 0 || gapMs > FEED_STALE_THRESHOLD_MS) {
+          feedHealthySinceMs = now;
+          console.log(`[RTDS] feed recovered after ${gapMs === Infinity ? 'startup' : Math.round(gapMs / 1000) + 's gap'} — will skip current window, trade from next clean boundary`);
+        }
       }
     } catch { /* ignore non-JSON pings/acks */ }
   });
@@ -138,6 +146,12 @@ export class PriceFeed {
     this.currentWindowStart = windowStartMs;
     this.didResetThisWindow = false;
 
+    if (feedHealthySinceMs === 0 || feedHealthySinceMs >= windowStartMs) {
+      this.windowOpenChainlink = null;
+      console.warn('[PriceFeed] SKIP WINDOW — feed was not healthy before window start (need prices flowing before boundary)');
+      return;
+    }
+
     const cl = getChainlinkPrice();
     if (cl && cl.ageMs < CHAINLINK_MAX_AGE_MS) {
       this.windowOpenChainlink = cl.price;
@@ -152,6 +166,8 @@ export class PriceFeed {
   async getWindowOpen(): Promise<number> {
     if (this.windowOpenChainlink != null) return this.windowOpenChainlink;
 
+    if (feedHealthySinceMs === 0 || feedHealthySinceMs >= this.currentWindowStart) return 0;
+
     const elapsedSinceWindowStart = Date.now() - this.currentWindowStart;
     if (elapsedSinceWindowStart < CHAINLINK_RETRY_MS) {
       const cl = getChainlinkPrice();
@@ -161,7 +177,6 @@ export class PriceFeed {
         return cl.price;
       }
     } else if (!this.didResetThisWindow) {
-      // No Chainlink for 2 min — reset once so we can try again next window
       this.didResetThisWindow = true;
       this.reset();
     }

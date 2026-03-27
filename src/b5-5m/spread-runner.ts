@@ -243,8 +243,9 @@ async function placeLimitOrder(
       const tickDecimals = String(tickSize).split('.')[1]?.length ?? 2;
       const factor = 10 ** tickDecimals;
       const price = Math.round(limitPrice * factor) / factor;
+      const POLY_MIN_SHARES = 5;
       const minSharesForNotional = Math.ceil(1 / price);
-      const shares = Math.max(minSharesForNotional, Math.floor(size / price));
+      const shares = Math.max(POLY_MIN_SHARES, minSharesForNotional, Math.floor(size / price));
 
       console.log(`[B5] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`);
 
@@ -329,23 +330,38 @@ async function runOneTick(feed: PriceFeed, tickCount: number): Promise<void> {
   let anyBinanceChainlinkSkew = false;
   const skewCheckParts: string[] = [];
 
-  // Early guard: during first 100s, if any asset has |spread| >= threshold → cooldown
-  if (secInWindow <= EARLY_GUARD_WINDOW_SEC && tickCount % EARLY_GUARD_CHECK_TICKS === 0) {
+  // Early guard:
+  // - During the first `EARLY_GUARD_WINDOW_SEC` seconds of each window, if any asset has
+  //   `|spread| >= early_guard_spread_pct`, we start/refresh the cooldown timer.
+  // - Cooldown prevents trades, but we still keep checking spreads during this same early window
+  //   period even if cooldown is already active.
+  if (tickCount % EARLY_GUARD_CHECK_TICKS === 0 && secInWindow <= EARLY_GUARD_WINDOW_SEC) {
+    let shouldTriggerCooldown = false;
+    let triggerAsset: B5Asset | null = null;
+    let triggerSpreadPct = 0;
+
     for (const asset of B5_ASSETS) {
       const windowOpen = await feed.getWindowOpen(asset);
       const spot = await feed.getSpotPrice(asset);
       if (windowOpen <= 0 || spot <= 0) continue;
+
       const signedSpread = (spot - windowOpen) / spot * 100;
       const absSpread = Math.abs(signedSpread);
       if (absSpread >= earlyGuardSpreadPct) {
-        earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;
-        updateB5EarlyGuard(earlyGuardCooldownUntil);
-        console.log(
-          `[B5] EARLY GUARD: ${asset} spread ${signedSpread.toFixed(3)}% exceeds ${earlyGuardSpreadPct}% ` +
-          `at ${secInWindow.toFixed(0)}s — cooldown for ${earlyGuardCooldownMs / 60_000}min`,
-        );
+        shouldTriggerCooldown = true;
+        triggerAsset = asset;
+        triggerSpreadPct = signedSpread;
         break;
       }
+    }
+
+    if (shouldTriggerCooldown) {
+      earlyGuardCooldownUntil = Date.now() + earlyGuardCooldownMs;
+      updateB5EarlyGuard(earlyGuardCooldownUntil);
+      console.log(
+        `[B5] EARLY GUARD: ${triggerAsset} spread ${triggerSpreadPct.toFixed(3)}% exceeds ${earlyGuardSpreadPct}% ` +
+        `at ${secInWindow.toFixed(0)}s — cooldown for ${earlyGuardCooldownMs / 60_000}min`,
+      );
     }
   }
 

@@ -14,7 +14,6 @@ import {
   type CreateOrderOptions,
 } from '@polymarket/clob-client';
 import { SignatureType } from '@polymarket/order-utils';
-import { getTokenIdForOutcome } from './gamma.js';
 import type { ParsedPolyMarket } from './types.js';
 
 const CLOB_HOST = 'https://clob.polymarket.com';
@@ -371,7 +370,7 @@ export async function createAndPostPolyOrder(
 
 /**
  * Build order params from a parsed Gamma market.
- * side: 'yes' = Up, 'no' = Down. Token is resolved by outcome name so order is correct regardless of Gamma array order.
+ * side: 'yes' = first outcome (Up), 'no' = second outcome (Down). We only buy the winning side.
  * Enforces: orderMinSize, $5 min notional, price rounded to tick (avoids INVALID_ORDER_MIN_TICK_SIZE).
  */
 export function orderParamsFromParsedMarket(
@@ -380,8 +379,8 @@ export function orderParamsFromParsedMarket(
   size: number,
   side: 'yes' | 'no' = 'yes'
 ): CreatePolyOrderParams {
-  const tokenId = getTokenIdForOutcome(parsed, side === 'yes');
-  if (!tokenId) throw new Error(`Market has no ${side === 'yes' ? 'Up' : 'Down'} token (outcomes: ${parsed.outcomes.join(',')})`);
+  const tokenId = side === 'yes' ? parsed.clobTokenIds[0] : parsed.clobTokenIds[1];
+  if (!tokenId) throw new Error(`Market has no ${side.toUpperCase()} token`);
   const tickSize = toTickSize(parsed.orderPriceMinTickSize);
   const roundedPrice = roundPriceToTick(price, tickSize);
   const minSizeByMarket = parsed.orderMinSize ?? 1;

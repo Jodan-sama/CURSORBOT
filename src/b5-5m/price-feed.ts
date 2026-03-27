@@ -12,6 +12,7 @@ const PING_INTERVAL_MS = 5_000;
 const RECONNECT_DELAY_MS = 3_000;
 const SILENT_RECONNECT_MS = 45_000;
 const CHAINLINK_MAX_AGE_MS = 10_000;
+const FEED_STALE_THRESHOLD_MS = 60_000;
 
 const SYMBOL_MAP: Record<string, B5Asset> = {
   'eth/usd': 'ETH', 'sol/usd': 'SOL', 'xrp/usd': 'XRP',
@@ -26,6 +27,7 @@ let pingTimer: ReturnType<typeof setInterval> | null = null;
 let staleCheckTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
 let lastPriceMessageMs = 0;
+let feedHealthySinceMs = 0;
 
 function connectRTDS(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -69,8 +71,14 @@ function connectRTDS(): void {
       if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol && msg.payload.value != null) {
         const asset = SYMBOL_MAP[msg.payload.symbol];
         if (asset) {
-          lastPriceMessageMs = Date.now();
-          chainlinkPrices[asset] = { price: msg.payload.value, ts: msg.payload.timestamp ?? Date.now() };
+          const now = Date.now();
+          const gapMs = lastPriceMessageMs > 0 ? now - lastPriceMessageMs : Infinity;
+          lastPriceMessageMs = now;
+          chainlinkPrices[asset] = { price: msg.payload.value, ts: now };
+          if (feedHealthySinceMs === 0 || gapMs > FEED_STALE_THRESHOLD_MS) {
+            feedHealthySinceMs = now;
+            console.log(`[B5 RTDS] feed recovered after ${gapMs === Infinity ? 'startup' : Math.round(gapMs / 1000) + 's gap'} — will skip current window, trade from next clean boundary`);
+          }
         }
       }
     } catch { /* ignore non-JSON pings/acks */ }
@@ -120,6 +128,13 @@ export class PriceFeed {
     this.currentWindowStart = windowStartMs;
     this.didResetThisWindow = false;
     const assets: B5Asset[] = ['ETH', 'SOL', 'XRP'];
+
+    if (feedHealthySinceMs === 0 || feedHealthySinceMs >= windowStartMs) {
+      for (const asset of assets) this.windowOpenChainlink[asset] = undefined;
+      console.warn(`[B5 PriceFeed] SKIP WINDOW — feed was not healthy before window start (need prices flowing before boundary)`);
+      return;
+    }
+
     for (const asset of assets) {
       const cl = getChainlinkPrice(asset);
       if (cl && cl.ageMs < CHAINLINK_MAX_AGE_MS) {
@@ -135,6 +150,8 @@ export class PriceFeed {
   async getWindowOpen(asset: B5Asset): Promise<number> {
     const stored = this.windowOpenChainlink[asset];
     if (stored != null && stored > 0) return stored;
+
+    if (feedHealthySinceMs === 0 || feedHealthySinceMs >= this.currentWindowStart) return 0;
 
     const elapsedSinceWindowStart = Date.now() - this.currentWindowStart;
     if (elapsedSinceWindowStart < CHAINLINK_RETRY_MS) {

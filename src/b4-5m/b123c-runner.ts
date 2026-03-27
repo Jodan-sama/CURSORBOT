@@ -70,6 +70,8 @@ let rtdsLastMessageMs = 0;
 
 /** If no price message received for this long, force reconnect (connection may be open but silent). */
 const RTDS_SILENT_RECONNECT_MS = 45_000;
+const FEED_STALE_THRESHOLD_MS = 60_000;
+let feedHealthySinceMs = 0;
 
 function connectRTDS(): void {
   if (rtdsWs && (rtdsWs.readyState === WebSocket.OPEN || rtdsWs.readyState === WebSocket.CONNECTING)) return;
@@ -104,9 +106,15 @@ function connectRTDS(): void {
         topic?: string; payload?: { symbol?: string; value?: number; timestamp?: number };
       };
       if (msg.topic === 'crypto_prices_chainlink' && msg.payload?.symbol && msg.payload.value) {
-        rtdsLastMessageMs = Date.now();
+        const now = Date.now();
+        const gapMs = rtdsLastMessageMs > 0 ? now - rtdsLastMessageMs : Infinity;
+        rtdsLastMessageMs = now;
         const asset = SYMBOL_MAP[msg.payload.symbol];
-        if (asset) chainlinkPrices[asset] = { price: msg.payload.value, ts: msg.payload.timestamp ?? Date.now() };
+        if (asset) chainlinkPrices[asset] = { price: msg.payload.value, ts: now };
+        if (feedHealthySinceMs === 0 || gapMs > FEED_STALE_THRESHOLD_MS) {
+          feedHealthySinceMs = now;
+          console.log(`[B123c] RTDS feed recovered after ${gapMs === Infinity ? 'startup' : Math.round(gapMs / 1000) + 's gap'} — will skip current window, trade from next clean boundary`);
+        }
       }
     } catch { /* ignore */ }
   });
@@ -162,13 +170,13 @@ function getWindowEndMs(now: Date = new Date()): number {
   return ms - (ms % WINDOW_MS) + WINDOW_MS;
 }
 
-/** True if now is Mon–Fri 7:30–7:44am America/Denver (MST/MDT). Used for B2c SOL/XRP spread add only. */
-function isMstMonFri7h30to7h45(now: Date): boolean {
+/** True if now is Mon–Fri 7:30–7:59am America/Denver (MST/MDT). Used for B2c SOL/XRP spread add only. */
+function isMstMonFri7h30to8h00(now: Date): boolean {
   const hour = parseInt(now.toLocaleString('en-US', { timeZone: 'America/Denver', hour: 'numeric', hour12: false }), 10);
   const min = parseInt(now.toLocaleString('en-US', { timeZone: 'America/Denver', minute: '2-digit' }), 10);
   const day = now.toLocaleString('en-US', { timeZone: 'America/Denver', weekday: 'short' });
   const isWeekday = day !== 'Sat' && day !== 'Sun';
-  return isWeekday && hour === 7 && min >= 30 && min < 45;
+  return isWeekday && hour === 7 && min >= 30;
 }
 
 let currentWindowEndMs = 0;
@@ -379,7 +387,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
   const positionSize = dashboardCache.positionSize;
   const { spreadThresholds, delays, b123cB2SolXrpMstBumpPct } = dashboardCache;
   const b3BlockMs = delays.b3BlockMin * 60_000;
-  const inB2SolXrpMstWindow = isMstMonFri7h30to7h45(now);
+  const inB2SolXrpMstWindow = isMstMonFri7h30to8h00(now);
   const b2HighSpreadBlockMs = delays.b2HighSpreadBlockMin * 60_000;
 
   const positionsInWindow = await getPositionsInWindowB123c(windowStartMs);
@@ -394,11 +402,17 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
     enteredThisWindow.clear();
     noPriceSinceMs = 0;
     didSoftResetThisWindow = false;
-    for (const a of ASSETS) {
-      const p = await getPriceOrFallback(a);
-      if (p && p > 0) {
-        windowOpenPrices[a] = p;
-        if (tickCount > 1) console.log(`[B123c] window open ${a}: $${p.toFixed(2)}`);
+
+    if (feedHealthySinceMs === 0 || feedHealthySinceMs >= windowStartMs) {
+      for (const a of ASSETS) windowOpenPrices[a] = 0;
+      console.warn('[B123c] SKIP WINDOW — feed was not healthy before window start (need prices flowing before boundary)');
+    } else {
+      for (const a of ASSETS) {
+        const p = await getPriceOrFallback(a);
+        if (p && p > 0) {
+          windowOpenPrices[a] = p;
+          if (tickCount > 1) console.log(`[B123c] window open ${a}: $${p.toFixed(2)}`);
+        }
       }
     }
   }
@@ -500,7 +514,7 @@ async function runOneTick(now: Date, tickCount: number): Promise<void> {
       const bumpPct = (asset === 'SOL' || asset === 'XRP') && inB2SolXrpMstWindow && b123cB2SolXrpMstBumpPct > 0 ? b123cB2SolXrpMstBumpPct : 0;
       const spreadForB2 = abSpread + bumpPct;
       if (!enteredThisWindow.has(key) && isOutsideSpreadThreshold('B2', asset, spreadForB2, spreadThresholds) && !skipPlacementBalance) {
-        if (bumpPct > 0 && tickCount % 6 === 0) console.log(`[B123c] B2c ${asset} 7:30-7:45 MST bump +${bumpPct}% → spread ${abSpread.toFixed(3)}% → ${spreadForB2.toFixed(3)}%`);
+        if (bumpPct > 0 && tickCount % 6 === 0) console.log(`[B123c] B2c ${asset} 7:30-8:00 MST bump +${bumpPct}% → spread ${abSpread.toFixed(3)}% → ${spreadForB2.toFixed(3)}%`);
         console.log(`[B123c] attempting B2c ${asset} ${side} 97c | spread=${signedSpread.toFixed(3)}%`);
         const placed = await tryPlace('B2c', asset, slug, 0.97, signedSpread, side, positionSize);
         if (placed) enteredThisWindow.add(key);
