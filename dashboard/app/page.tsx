@@ -1166,7 +1166,7 @@ export default function Dashboard() {
                   </td>
                 </tr>
                 <tr>
-                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>B1c/B2c/B3c B2 SOL/XRP add during Mon–Fri 7:30–7:45am MST (%)</td>
+                  <td style={{ borderBottom: '1px solid #333', padding: '4px 8px', color: '#e5e5e5' }}>B1c/B2c/B3c B2 SOL/XRP add during Mon–Fri 7:30–8:00am MST (%)</td>
                   <td style={{ borderBottom: '1px solid #333', padding: '4px 8px' }}>
                     <input type="number" step="any" min="0" value={b4Config.b123c_b2_sol_xrp_mst_bump_pct} onChange={(e) => setB4Config((p) => ({ ...p, b123c_b2_sol_xrp_mst_bump_pct: e.target.value }))} style={{ width: 72, padding: '4px 6px' }} />
                     <span style={{ marginLeft: 6, fontSize: 12, color: '#888' }}>0 = off. D2 B2c SOL/XRP only.</span>
