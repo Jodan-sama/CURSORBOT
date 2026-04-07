@@ -243,9 +243,7 @@ async function placeLimitOrder(
       const tickDecimals = String(tickSize).split('.')[1]?.length ?? 2;
       const factor = 10 ** tickDecimals;
       const price = Math.round(limitPrice * factor) / factor;
-      const minSharesByMarket = market.orderMinSize ?? 1;
-      const minSharesForNotional = Math.ceil(1 / price);
-      const shares = Math.max(minSharesByMarket, minSharesForNotional, Math.floor(size / price));
+      const shares = Math.max(1, Math.floor(size / price));
 
       console.log(`[B5] LIMIT BUY ${side} price=${price} size=${shares} ($${size}) | ${slug}`);
 

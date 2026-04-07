@@ -290,8 +290,7 @@ async function placeLimitOrder(
       const tickDec = String(tickSize).split('.')[1]?.length ?? 2;
       const factor = 10 ** tickDec;
       const price = Math.round(limitPrice * factor) / factor;
-      const minShares = market.orderMinSize ?? 1;
-      const shares = Math.max(minShares, Math.floor(size / price));
+      const shares = Math.max(1, Math.floor(size / price));
       console.log(`[B123c] LIMIT BUY ${outcomeName} (${side}) price=${price} shares=${shares} ($${size}) | ${slug}`);
       const result = await client.createAndPostOrder(
         { tokenID: tokenId, price, size: shares, side: Side.BUY },
